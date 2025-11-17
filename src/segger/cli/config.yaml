@@ -1,0 +1,42 @@
+# I/O
+data_directory_inputs: ~
+data_directory_outputs: ~
+# Cell representation parameters
+cells_min_counts: 10.
+cells_cluster_n_neighbors: 10.
+cells_cluster_resolution: 3.
+cells_representation: 'pca'  # BENCHMARKING: other option is 'morphology'
+# Gene representation parameters
+genes_clusters_n_neighbors: 5.
+genes_clusters_resolution: 3.
+# Transcript-transcript graph parameters
+transcripts_max_k: 5.
+transcripts_max_dist: 5.
+# Segmentation (prediction) graph parameters
+prediction_mode: 'buffer_cell'  # Other options are 'buffer_nucleus' or 'uniform'
+prediction_buffer_dist: 3.
+prediction_max_k: ~
+prediction_max_dist: ~
+# Tiling parameters
+tiling_margin_training: 10.
+tiling_margin_prediction: 20.
+max_nodes_per_tile: 50000
+max_edges_per_batch: 1000000
+# Model parameters
+n_mid_layers: 2
+n_heads: 2
+in_channels: 128  # This is also the embedding dimension for cells/genes
+hidden_channels: 64
+out_channels: 64
+learning_rate: 0.001
+n_epochs: 10
+# Loss parameters
+segmentation_loss: 'triplet'  # BENCHMARKING: Other option is 'bce'
+transcripts_margin: 0.2
+segmentation_margin: 0.4
+transcripts_loss_weight_start: 1.
+transcripts_loss_weight_end: 1.
+cells_loss_weight_start: 1.
+cells_loss_weight_start: 1.
+segmentation_loss_weight_start: 0.
+segmentation_loss_weight_end: 0.1
