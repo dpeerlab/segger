@@ -105,7 +105,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .group_by(tx_fields.feature)
             .agg(
                 pl
-                .col('segger_similarity')
+                .col('segmentation_similarity')
                 .map_elements(lambda g: threshold(g), return_dtype=pl.Float64)
                 .clip(0.0, 1.0)
                 .alias("threshold")
