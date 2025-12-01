@@ -1,6 +1,6 @@
 from lightning.pytorch.callbacks import BasePredictionWriter
+from skimage.filters import threshold_li, threshold_yen
 from lightning.pytorch import Trainer, LightningModule
-from skimage.filters import threshold_yen
 from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
@@ -10,16 +10,11 @@ from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
 
-def threshold(x: pl.Series):
-    n_bins = min(x.shape[0] / 10, 256)
-    bins = x.hist(
-        bin_count=n_bins,
-        include_breakpoint=True,
-        include_category=False,
+def threshold(x):
+    return min(
+        threshold_li( x[0].to_numpy()),
+        threshold_yen(x[0].to_numpy()),
     )
-    idx = int(threshold_yen(hist=bins['count'].to_numpy()))
-    return bins[idx]['breakpoint'].item()
-
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
     
@@ -65,7 +60,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                     ),
                     pl.from_torch(
                         torch.hstack([batch[1] for batch in predictions]),
-                        schema=[bd_fields.cell_encoding]
+                        schema={bd_fields.cell_encoding: pl.Int64},
                     ),
                     pl.from_torch(
                         torch.hstack([batch[2] for batch in predictions]),
@@ -73,7 +68,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                     ),
                     pl.from_torch(
                         torch.hstack([batch[3] for batch in predictions]),
-                        schema=[tx_fields.feature]
+                        schema={tx_fields.feature: pl.Int64},
                     ),
                 ],
                 how='horizontal'
@@ -85,30 +80,49 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 .cast(pl.Int64)
             )
             .join(
-                pl.from_pandas(trainer.datamodule.ad.obs[
-                    [bd_fields.id, bd_fields.cell_encoding]
-                ]),
+                (
+                    pl
+                    .from_pandas(trainer.datamodule.ad.obs[[
+                        bd_fields.id,
+                        bd_fields.cell_encoding
+                    ]])
+                    .with_columns(
+                        pl
+                        .col(bd_fields.cell_encoding)
+                        .cast(pl.Int64)
+                    )
+                ),
                 on=bd_fields.cell_encoding,
                 how="left",
             )
-            .rename({bd_fields.id: "segmentation_id"})
+            .rename({bd_fields.id: "segger_cell_id"})
             .drop(bd_fields.cell_encoding)
             .sort(
-                by=[tx_fields.row_index, "segmentation_similarity"],
+                by=[tx_fields.row_index, "segger_similarity"],
                 descending=[False, True],
             )
             .unique(tx_fields.row_index, keep="first")
         )
-        # Find per-gene thresholds
+        # Per-gene thresholding
         thresholds = (
             segmentation
             .group_by(tx_fields.feature)
             .agg(
                 pl
-                .col('segmentation_similarity')
-                .map_elements(lambda g: threshold(g), return_dtype=pl.Float64)
-                .clip(0.0, 1.0)
-                .alias("threshold")
+                .col('segger_similarity')
+                .shuffle(seed=0)
+                .head(10_000_000)
+            )
+            .explode('segger_similarity')
+            .group_by(tx_fields.feature)
+            .agg(
+                pl.map_groups(
+                    pl.col('segger_similarity'),
+                    threshold,
+                    return_dtype=pl.Float64,
+                    returns_scalar=True,
+                )
+                .alias("similarity_threshold")
             )
         )
         # Join and write output to file
