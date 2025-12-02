@@ -64,7 +64,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                     ),
                     pl.from_torch(
                         torch.hstack([batch[2] for batch in predictions]),
-                        schema=["segmentation_similarity"]
+                        schema=["segger_similarity"]
                     ),
                     pl.from_torch(
                         torch.hstack([batch[3] for batch in predictions]),
