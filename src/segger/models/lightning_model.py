@@ -43,6 +43,8 @@ class LitISTEncoder(LightningModule):
         sg_weight_start: float = 0.,
         sg_weight_end: float = 0.5,
         update_gene_embedding: bool = True,
+        use_positional_embeddings: bool = True,
+        normalize_embeddings: bool = True,
     ):
         """TODO: Description.
 
@@ -62,6 +64,8 @@ class LitISTEncoder(LightningModule):
             out_channels=out_channels,
             n_mid_layers=n_mid_layers,
             n_heads=n_heads,
+            normalize_embeddings=normalize_embeddings,
+            use_positional_embeddings=use_positional_embeddings,
         )
         self.learning_rate = learning_rate
         self._sg_loss_type = sg_loss_type

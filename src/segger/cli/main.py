@@ -219,6 +219,16 @@ def segment(
         group=group_model,
     )] = registry.get_default("learning_rate"),
 
+    use_positional_embeddings: Annotated[bool, registry.get_parameter(
+        "use_positional_embeddings",
+        group=group_model,
+    )] = registry.get_default("use_positional_embeddings"),
+
+    normalize_embeddings: Annotated[bool, registry.get_parameter(
+        "normalize_embeddings",
+        group=group_model,
+    )] = registry.get_default("normalize_embeddings"),
+
     # Loss
     segmentation_loss: Annotated[
         Literal["triplet", "bce"],
@@ -277,7 +287,6 @@ def segment(
     )] = registry.get_default("sg_weight_end"),
 ):
     """Run cell segmentation on spatial transcriptomics data."""
-    
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False
@@ -324,6 +333,8 @@ def segment(
         bd_weight_end=cells_loss_weight_end,
         sg_weight_start=segmentation_loss_weight_start,
         sg_weight_end=segmentation_loss_weight_end,
+        normalize_embeddings=normalize_embeddings,
+        use_positional_embeddings=use_positional_embeddings,
     )
 
     # Setup Lightning Trainer
@@ -343,4 +354,11 @@ def segment(
     trainer.fit(model=model, datamodule=datamodule)
 
     # Prediction
-    trainer.predict(model=model, datamodule=datamodule)
+    predictions = trainer.predict(model=model, datamodule=datamodule)
+
+    writer.write_on_epoch_end(
+        trainer=trainer,
+        pl_module=model,
+        predictions=predictions,
+        batch_indices=[],
+    )
