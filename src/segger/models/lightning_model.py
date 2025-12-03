@@ -170,16 +170,21 @@ class LitISTEncoder(LightningModule):
             num_bd = embeddings['bd'].size(0)
             N = dst.size(0)
 
-            # choose an offset in (1, num_bd-1)
-            neg = dst + torch.randint(num_bd - 1, (N,), device=dst.device) + 1
-            neg = neg % num_bd
+            # Handle edge case where there are too few boundaries for negative sampling
+            if num_bd <= 1:
+                # Skip segmentation loss when there's only 0 or 1 boundary
+                loss_sg = torch.tensor(0.0, device=embeddings['bd'].device, requires_grad=True)
+            else:
+                # choose an offset in (1, num_bd-1)
+                neg = dst + torch.randint(num_bd - 1, (N,), device=dst.device) + 1
+                neg = neg % num_bd
 
-            anchor   = embeddings['tx'][src]          # (N, d)
-            positive = embeddings['bd'][dst]          # (N, d)
-            negative = embeddings['bd'][neg]          # (N, d)
+                anchor   = embeddings['tx'][src]          # (N, d)
+                positive = embeddings['bd'][dst]          # (N, d)
+                negative = embeddings['bd'][neg]          # (N, d)
 
-            # cosine-margin triplet loss
-            loss_sg = self.loss_sg(anchor, positive, negative)
+                # cosine-margin triplet loss
+                loss_sg = self.loss_sg(anchor, positive, negative)
         
         # BCE loss
         else: 
