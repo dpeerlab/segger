@@ -12,7 +12,7 @@ import cuml
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
-from sieve.geometry.morphology import get_polygon_props
+from segger.geometry.morphology import get_polygon_props
 
 def anndata_from_transcripts(
     tx: pl.DataFrame,
