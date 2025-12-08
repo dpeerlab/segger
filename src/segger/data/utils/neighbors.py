@@ -185,8 +185,8 @@ def setup_prediction_graph(
     max_k: int,
     mode: Literal['uniform', 'cell', 'nucleus'] = 'cell',
     boundary_mode: Literal['buffer', 'scale'] = 'buffer',
-    max_dist: float = 5.0,
-    scale_factor: float = 1.2,
+    max_dist: float = 0.0,
+    scale_factor: float = 1.0,
 ) -> torch.Tensor:
     """
     Setup prediction graph by connecting transcript points to boundary geometries.
@@ -205,8 +205,8 @@ def setup_prediction_graph(
         max_k: Maximum number of nearest neighbors for 'uniform' mode
         mode: Connection mode - 'uniform', 'cell', or 'nucleus'
         boundary_mode: Boundary processing method for shape-based modes - 'buffer' or 'scale'
-        max_dist: Buffer distance for 'buffer' mode (default: 5.0)
-        scale_factor: Scaling factor for 'scale' mode (default: 1.2)
+        max_dist: Buffer distance for 'buffer' mode (default: 0.0)
+        scale_factor: Scaling factor for 'scale' mode (default: 1.0)
                      scale_factor > 1.0: Expand boundaries
                      scale_factor < 1.0: Shrink boundaries
                      scale_factor = 1.0: No change
