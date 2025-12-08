@@ -1,6 +1,7 @@
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from typing import Any, Literal
+from shapely.affinity import scale
+from typing import Any, Literal, Optional
 import geopandas as gpd
 import polars as pl
 import numpy as np
@@ -182,38 +183,103 @@ def setup_prediction_graph(
     tx: pl.DataFrame,
     bd: gpd.GeoDataFrame,
     max_k: int,
-    max_dist: float,
-    mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
+    mode: Literal['uniform', 'cell', 'nucleus'] = 'cell',
+    boundary_mode: Literal['buffer', 'scale'] = 'buffer',
+    max_dist: float = 5.0,
+    scale_factor: float = 1.2,
 ) -> torch.Tensor:
-    """TODO: Add description.
+    """
+    Setup prediction graph by connecting transcript points to boundary geometries.
+    
+    Two main modes:
+    1. 'uniform': Uses kNN to connect each boundary centroid to nearest transcript points
+    2. 'cell'/'nucleus': Uses shape-based connection with either buffer or scale operations
+    
+    For shape-based modes (cell/nucleus), two boundary processing methods:
+    - 'buffer': Expands boundaries by fixed distance using buffer operation
+    - 'scale': Scales boundaries uniformly from their centroids using scale operation
+    
+    Args:
+        tx: Transcript dataframe with x, y coordinates
+        bd: Boundary GeoDataFrame with polygon geometries
+        max_k: Maximum number of nearest neighbors for 'uniform' mode
+        mode: Connection mode - 'uniform', 'cell', or 'nucleus'
+        boundary_mode: Boundary processing method for shape-based modes - 'buffer' or 'scale'
+        max_dist: Buffer distance for 'buffer' mode (default: 5.0)
+        scale_factor: Scaling factor for 'scale' mode (default: 1.2)
+                     scale_factor > 1.0: Expand boundaries
+                     scale_factor < 1.0: Shrink boundaries
+                     scale_factor = 1.0: No change
+    
+    Returns:
+        torch.Tensor: Edge index tensor of shape [2, num_edges] connecting 
+                     boundary indices to transcript indices. The first row contains
+                     boundary indices, the second row contains transcript indices.
+    
+    Raises:
+        ValueError: If parameters are incompatible with selected mode
     """
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
-
+    
+    # Validate parameters
+    if mode in ['cell', 'nucleus'] and boundary_mode == 'buffer' and max_dist <= 0:
+        raise ValueError("max_dist must be positive for buffer mode")
+    if mode in ['cell', 'nucleus'] and boundary_mode == 'scale' and scale_factor <= 0:
+        raise ValueError("scale_factor must be positive for scale mode")
+    
     # Uniform kNN graph
-    if mode == "uniform":
+    if mode == 'uniform':
         points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
         query = bd.geometry.centroid.get_coordinates().values
         edge_index, _ = kdtree_neighbors(
             points=points,
             query=query,
             max_k=max_k,
-            max_dist=max_dist,
+            max_dist=float('inf'),  # Use all neighbors up to max_k
         )
         return edge_index
     
-    # Shape-based graph
+    # Shape-based graph (cell or nucleus)
     points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
-    boundary_type = (bd_fields.cell_value if mode == "cell"
-                     else bd_fields.nucleus_value)
+    
+    # Determine boundary type based on mode
+    if mode == 'cell':
+        boundary_type = bd_fields.cell_value
+    else:  # mode == 'nucleus'
+        boundary_type = bd_fields.nucleus_value
+    
+    # Filter polygons by boundary type
     polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
-    polygons = polygons.buffer(max_dist).reset_index(drop=True)
+    
+    # Process polygons based on boundary_mode
+    if boundary_mode == 'buffer':
+        # Buffer operation: expand by fixed distance
+        # Note: Buffer creates rounded expansions, which may be more natural
+        # for biological shapes than uniform scaling
+        polygons_processed = polygons.buffer(max_dist).reset_index(drop=True)
+        
+    else:  # boundary_mode == 'scale'
+        # Scale operation: scale uniformly from centroid
+        # Using centroid ensures scaling is from the geometric center of mass,
+        # which is more natural for biological shapes than bounding box center
+        polygons_processed = polygons.apply(
+            lambda geom: scale(
+                geom, 
+                xfact=scale_factor,
+                yfact=scale_factor,
+                origin='centroid'  # Fixed to centroid for biological consistency
+            )
+        ).reset_index(drop=True)
+    
+    # Find points contained within processed polygons
     result = points_in_polygons(
         points=points,
-        polygons=polygons,
+        polygons=polygons_processed,
         predicate='contains',
         batches=10,
     )
-
+    
     return torch.tensor(
-        result[['index_query', 'index_match']].values.T).to(torch.int).cpu()
+        result[['index_query', 'index_match']].values.T
+    ).to(torch.int).cpu()
