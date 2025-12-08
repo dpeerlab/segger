@@ -525,7 +525,7 @@ def _infer_platform(data_dir: Path) -> str:
         except Exception as e:
             exceptions.append(e)
     if len(matches) == 0:
-        err_str = ", ".join(exceptions)
+        err_str = ", ".join(map(str, exceptions))
         raise ValueError(
             f"Could not infer platform from data directory: {err_str}."
         )
@@ -542,6 +542,7 @@ def get_preprocessor(
     data_dir: Path,
     platform: str | None = None
 ) -> ISTPreprocessor:
+    data_dir = Path(data_dir)
     if platform is None:
         platform = _infer_platform(data_dir) 
     if platform not in PREPROCESSORS:

@@ -1,6 +1,6 @@
 # Installation
 
-<h2 style="border-bottom: none;">pip</h2>
+## pip
 
 Before installing **segger**, please install GPU-accelerated versions of PyTorch, RAPIDS, and related packages compatible with your system. *Please ensure all CUDA-enabled packages are compiled for the same CUDA version.*
 

@@ -141,7 +141,7 @@ def points_to_geoseries(
         coords = cp.asnumpy(coords)
         points = gpd.GeoSeries(gpd.points_from_xy(*coords.T))
         if isinstance(data, cuspatial.GeoSeries):
-            points.index = pd.Index(data.index.values.get())
+            points.index = pd.Index(data.index.to_numpy())
     else:  # cuspatial
         coords = cp.asarray(coords).ravel().astype('double')
         points = cuspatial.GeoSeries.from_points_xy(coords)
@@ -288,7 +288,7 @@ def polygons_to_geoseries(
             (ring_offsets, part_offsets),
         ))
         if isinstance(data, cuspatial.GeoSeries):
-            polygons.index = pd.Index(data.index.values.get())
+            polygons.index = pd.Index(data.index.to_numpy())
     else:  # cuspatial
         vertices = cp.asarray(vertices).ravel().astype('double')
         ring_offsets = cp.asarray(ring_offsets)

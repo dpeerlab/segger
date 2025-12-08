@@ -1,5 +1,6 @@
 from typing import Literal
 import geopandas as gpd
+import numpy as np
 import cuspatial
 import cudf
 
@@ -17,6 +18,7 @@ def _points_in_polygons_contains(
     points: cuspatial.GeoSeries,
     polygons: cuspatial.GeoSeries,
     max_size: int | None = None,
+    batches: int | None = None,
 ) -> cudf.DataFrame:
     """Finds which points are strictly contained within polygons.
 
@@ -33,6 +35,10 @@ def _points_in_polygons_contains(
     max_size : int, optional
         The maximum number of points allowed in a single quadtree leaf,
         by default 1000.
+    batches : int, optional
+        The number of batches to split the polygons into for processing.
+        If None (default), no batching is used and all polygons are
+        processed together.
 
     Returns
     -------
@@ -41,27 +47,43 @@ def _points_in_polygons_contains(
         mapping each contained point to its containing polygon.
     """
     # Setup inputs for spatial join
-    max_size = 10000 if len(points) > 5e7 else 1000  # heuristic
+    if max_size is None:
+        max_size = 10000 if len(points) > 5e7 else 1000  # heuristic
     point_indices, quadtree = get_quadtree_index(
         points,
         max_size,
         with_bounds=False
     )
-    bboxes = cuspatial.polygon_bounding_boxes(polygons)
     kwargs = get_quadtree_kwargs(points)
-    poly_quad_pairs = cuspatial.join_quadtree_and_bounding_boxes(
-        quadtree=quadtree,
-        bounding_boxes=bboxes,
-        **kwargs
-    )
-    # Run spatial join
-    result = cuspatial.quadtree_point_in_polygon(
-        poly_quad_pairs,
-        quadtree,
-        point_indices,
-        points,
-        polygons,
-    ).rename(
+
+    # Perform spatial join in batches
+    batch_idx = np.linspace(0, len(polygons), (batches or 1) + 1, dtype=int)
+    results = []
+    for start_idx, end_idx in zip(batch_idx, batch_idx[1:]):
+
+        # Get polygons for this batch
+        batch_polygons = polygons.iloc[start_idx:end_idx]
+        bboxes = cuspatial.polygon_bounding_boxes(batch_polygons)
+        poly_quad_pairs = cuspatial.join_quadtree_and_bounding_boxes(
+            quadtree=quadtree,
+            bounding_boxes=bboxes,
+            **kwargs
+        )
+        # Run spatial join
+        result = cuspatial.quadtree_point_in_polygon(
+            poly_quad_pairs,
+            quadtree,
+            point_indices,
+            points,
+            batch_polygons,
+        )
+        # Adjust polygon indices back to global indices
+        result['polygon_index'] += start_idx
+        results.append(result)
+
+    # Concatenate all batch results
+    result = cudf.concat(results, ignore_index=True)
+    result = result.rename(
         {'point_index': 'index_query', 'polygon_index': 'index_match'},
         axis=1,
     )
@@ -78,7 +100,8 @@ def _points_in_polygons_intersects(
     points: cuspatial.GeoSeries,
     polygons: cuspatial.GeoSeries,
     max_unassigned_points: int = 100_000,
-    boundary_buffer: float = 1e-9
+    boundary_buffer: float = 1e-9,
+    batches: int | None = None,
 ) -> cudf.DataFrame:
     """Finds points that intersect polygons, including boundaries.
 
@@ -97,6 +120,10 @@ def _points_in_polygons_intersects(
         number of points sent to the CPU for the final check.
     boundary_buffer : float, optional
         The tiny distance to buffer polygons by for the GPU filter pass.
+    batches : int, optional
+        The number of batches to split the polygons into for processing.
+        If None (default), no batching is used and all polygons are
+        processed together.
 
     Returns
     -------
@@ -105,7 +132,7 @@ def _points_in_polygons_intersects(
         mapping each intersecting point to its polygon.
     """
     # GPU pass to find all points strictly contained by the polygons
-    contains = _points_in_polygons_contains(points, polygons)
+    contains = _points_in_polygons_contains(points, polygons, batches=batches)
     
     # Isolate points not found, which are potential boundary cases
     idx_all = cudf.RangeIndex(len(points))
@@ -151,6 +178,7 @@ def points_in_polygons(
     predicate: Literal['contains', 'intersects'] = 'intersects',
     max_unasigned_points: int = 100_000,
     boundary_buffer: float = 1e-9,
+    batches: int | None = None
 ) -> cudf.DataFrame:
     """Finds which points fall inside which polygons using a given predicate.
 
@@ -175,6 +203,10 @@ def points_in_polygons(
         Used only for the 'intersects' predicate during pre-filtering.
         This is the tiny distance to expand polygons by on the GPU to
         catch points very close to a boundary.
+    batches : int, optional
+        The number of batches to split the polygons into for processing.
+        If None (default), no batching is used and all polygons are
+        processed together.
 
     Returns
     -------
@@ -194,13 +226,14 @@ def points_in_polygons(
 
     # Perform spatial join
     if predicate == 'contains':
-        return _points_in_polygons_contains(points, polygons)
+        return _points_in_polygons_contains(points, polygons, batches=batches)
     else:  # predicate == 'intersects'
         return _points_in_polygons_intersects(
             points,
             polygons,
             max_unasigned_points,
             boundary_buffer,
+            batches,
         )
 
 def polygons_in_polygons(

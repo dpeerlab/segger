@@ -212,6 +212,7 @@ def setup_prediction_graph(
         points=points,
         polygons=polygons,
         predicate='contains',
+        batches=10,
     )
 
     return torch.tensor(
