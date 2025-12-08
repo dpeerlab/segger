@@ -221,6 +221,8 @@ class ISTEncoder(torch.nn.Module):
         out_channels: int = 32,
         n_mid_layers: int = 3,
         n_heads: int = 3,
+        normalize_embeddings: bool = True,
+        use_positional_embeddings: bool = True,
     ):
         """
         Initialize the Segger model.
@@ -243,6 +245,8 @@ class ISTEncoder(torch.nn.Module):
             Number of attention heads. Default is 3.
         """
         super().__init__()
+        self.normalize_embeddings = normalize_embeddings
+        self.use_positional_embeddings = use_positional_embeddings
         # Store hyperparameters for PyTorch Lightning
         self.hparams = locals()
         for k in ['self', '__class__']: 
@@ -303,11 +307,15 @@ class ISTEncoder(torch.nn.Module):
         # Linearly project embedding to input dim
         x_dict = {k: self.lin_first[k](x) for k, x in x_dict.items()}
 
-        # Add positional embedding
-        x_dict = {
+        if self.use_positional_embeddings:
+            x_dict = {
             k: torch.cat((x, self.pos_emb(pos_dict[k], batch_dict[k])), -1)
             for k, x in x_dict.items()
-        }
+            }
+
+        x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
+
+        # Add positional embedding
 
         # GeLu for some reason
         x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
@@ -321,6 +329,6 @@ class ISTEncoder(torch.nn.Module):
         x_dict = self.lin_last(x_dict)
 
         # Normalize so distances are cosine similarities
-        x_dict = {k: F.normalize(x) for k, x in x_dict.items()}
-
+        if self.normalize_embeddings:
+            x_dict = {k: F.normalize(v, dim=-1) for k, v in x_dict.items()}
         return x_dict

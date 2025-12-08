@@ -9,6 +9,7 @@ from pathlib import Path
 import polars as pl
 import torch
 import gc
+import numpy as np
 
 from .tile_dataset import (
     TileFitDataset,
@@ -198,14 +199,18 @@ class ISTDataModule(LightningDataModule):
             genes_min_counts=self.genes_min_counts,
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
+            compute_morphology=(self.cells_representation_mode == "morphology"),
         )
-
-        # Generate HeteroData Graph
         self.data = setup_heterodata(
             transcripts=tx,
             boundaries=bd,
             adata=self.ad,
-            segmentation_mask=tx_mask,
+            segmentation_mask=tx_mask, # This is the original mask, which is correct
+            cells_embedding_key=(
+                'X_pca'
+                if self.cells_representation_mode == 'pca'
+                else 'X_morphology'
+            ),
             transcripts_graph_max_k=self.transcripts_graph_max_k,
             transcripts_graph_max_dist=self.transcripts_graph_max_dist,
             prediction_graph_mode=self.prediction_graph_mode,

@@ -12,7 +12,7 @@ import cuml
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
-
+from segger.geometry.morphology import get_polygon_props
 
 def anndata_from_transcripts(
     tx: pl.DataFrame,
@@ -138,6 +138,7 @@ def setup_anndata(
     genes_min_counts: int,
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
+    compute_morphology: bool = False,
 ):
     """TODO: Add description.
     """
@@ -238,4 +239,20 @@ def setup_anndata(
     ad.obs[tx_fields.cell_encoding] = np.arange(len(ad.obs)).astype(int)
     ad.var[tx_fields.gene_encoding] = np.arange(len(ad.var)).astype(int)
 
+    if compute_morphology:
+        # # make sure index matches by cell_id
+        boundaries = boundaries.set_index(bd_fields.id, verify_integrity=True)
+        boundaries = boundaries.loc[ad.obs[bd_fields.id]]
+        # Compute morphology properties and add to AnnData
+        morpho_props = get_polygon_props(
+            boundaries.geometry,
+            area=True,
+            convexity=True,
+            elongation=True,
+            circularity=True,
+        )
+        for col in morpho_props.columns:
+            ad.obs[col] = morpho_props[col].values
+        # concat all morphology properties into a single embedding
+        ad.obsm['X_morphology'] = morpho_props.to_numpy(dtype=np.float32)
     return ad
