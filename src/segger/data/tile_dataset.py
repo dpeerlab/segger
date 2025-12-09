@@ -30,9 +30,14 @@ class TileFitDataset(PartitionDataset):
     geometry_key : str, optional
         The attribute key for accessing node geometry data, by default
         'geometry'.
+    clone : bool, optional
+        If True, clones the data before partitioning, by default True.
     drop_geometry : bool, optional
         If True, removes the geometry attribute from the data after
         partitioning, by default True.
+    transform : BaseTransform, optional
+        Optional transform to apply to each partition when retrieved,
+        by default None.
     """
     def __init__(
         self,
@@ -42,6 +47,7 @@ class TileFitDataset(PartitionDataset):
         geometry_key: str = 'geometry',
         clone: bool = True,
         drop_geometry: bool = True,
+        transform = None,
     ):
         """Initializes and tiles the dataset"""
         self.geometry_key = geometry_key
@@ -51,10 +57,10 @@ class TileFitDataset(PartitionDataset):
         self.tiling = tiling
         self.margin = margin
         partition = self._get_partition(data)
-        
+
         # Partition graph by tiling
         # Note: self.data and self.partition are set inside super.__init__()
-        super().__init__(data=data, partition=partition, clone=clone)
+        super().__init__(data=data, partition=partition, clone=clone, transform=transform)
         self.data = self._mask_data(self.data)
         if drop_geometry:
             self.data = self._drop_geometry(self.data)

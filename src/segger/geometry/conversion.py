@@ -50,7 +50,15 @@ def _(data: list):
     return np.array([p.coords[0] for p in data])
 
 @points_to_coords.register
-def _(data: np.ndarray | cp.ndarray):
+def _(data: np.ndarray):
+    if data.ndim != 2 or data.shape[1] != 2:
+        raise ValueError(
+            f"Input array must have shape (N, 2), but got {data.shape}."
+        )
+    return data
+
+@points_to_coords.register
+def _(data: cp.ndarray):
     if data.ndim != 2 or data.shape[1] != 2:
         raise ValueError(
             f"Input array must have shape (N, 2), but got {data.shape}."

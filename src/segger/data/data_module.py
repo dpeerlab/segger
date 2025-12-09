@@ -103,7 +103,9 @@ class ISTDataModule(LightningDataModule):
     segmentation_graph_mode : {"nucleus", "cell"}, default="nucleus"
         Type of segmentation boundaries used for graph edges.
     segmentation_graph_negative_edge_rate : float, default=1.0
-        Ratio of negative to positive edges in the segmentation graph.
+        Ratio of negative to positive edges in the segmentation graph (only used for BCE loss).
+    segmentation_loss_type : {"triplet", "bce"}, default="triplet"
+        Type of segmentation loss to use. Determines whether negative sampling is applied.
     prediction_graph_mode : {"nucleus", "cell", "uniform"}, default="cell"
         Graph structure used during prediction.
     prediction_graph_max_k : int, default=3
@@ -139,6 +141,7 @@ class ISTDataModule(LightningDataModule):
     transcripts_graph_max_dist: float = 5.
     segmentation_graph_mode: Literal["nucleus", "cell"] = "nucleus"
     segmentation_graph_negative_edge_rate: float = 1.
+    segmentation_loss_type: Literal["triplet", "bce"] = "triplet"
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"] = "cell"
     prediction_graph_max_k: int = 3
     prediction_graph_max_dist: float = 1.
@@ -255,11 +258,21 @@ class ISTDataModule(LightningDataModule):
         """
         # Tile dataset (inner margin) for training
         if stage == "fit":
+            # Create negative sampling transform only for BCE loss
+            # Triplet loss generates negatives dynamically and doesn't need this
+            transform = None
+            if self.segmentation_loss_type == "bce":
+                transform = NegativeSampling(
+                    edge_type=('tx', 'belongs', 'bd'),
+                    sampling_ratio=self.segmentation_graph_negative_edge_rate,
+                )
+
             self.fit_dataset = TileFitDataset(
                 data=self.data,
                 tiling=self.tiling,
-                margin=self.tiling_margin_training,            
+                margin=self.tiling_margin_training,
                 clone=True,  # Keep: Tiling removes edges needed in prediction
+                transform=transform,
             )
             # Setup training-validation split
             n = self.fit_dataset._num_partitions

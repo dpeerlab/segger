@@ -21,6 +21,14 @@ for file_path, class_name in to_register:
 # CLI App
 app = App(name="Segger")
 
+
+def cli_param(name: str, **kwargs) -> Parameter:
+    """
+    Get a Parameter from the registry with additional kwargs.
+    This is just an alias for registry.get_parameter().
+    """
+    return registry.get_parameter(name, **kwargs)
+
 # Parameter groups
 group_io = Group(
     name="I/O",
@@ -61,14 +69,14 @@ group_loss = Group(
 @app.command
 def segment(
     # I/O
-    input_directory: Annotated[Path, registry.get_parameter(
+    input_directory: Annotated[Path, cli_param(
         "input_directory",
         alias="-i",
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("input_directory"),
 
-    output_directory: Annotated[Path, registry.get_parameter(
+    output_directory: Annotated[Path, cli_param(
         "output_directory",
         alias="-o",
         group=group_io,
@@ -84,24 +92,24 @@ def segment(
         required=False,
     )] = registry.get_default("cells_embedding_size"),
 
-    cells_representation: Annotated[Literal['pca', 'morphology'], registry.get_parameter(
+    cells_representation: Annotated[Literal['pca', 'morphology'], cli_param(
         "cells_representation_mode",
         group=group_nodes,
     )] = registry.get_default("cells_representation_mode"),
 
-    cells_min_counts: Annotated[int, registry.get_parameter(
+    cells_min_counts: Annotated[int, cli_param(
         "cells_min_counts",
         validator=validators.Number(gte=0),
         group=group_nodes,
     )] = registry.get_default("cells_min_counts"),
 
-    cells_clusters_n_neighbors: Annotated[int, registry.get_parameter(
+    cells_clusters_n_neighbors: Annotated[int, cli_param(
         "cells_clusters_n_neighbors",
         validator=validators.Number(gt=0),
         group=group_nodes,
     )] = registry.get_default("cells_clusters_n_neighbors"),
 
-    cells_clusters_resolution: Annotated[float, registry.get_parameter(
+    cells_clusters_resolution: Annotated[float, cli_param(
         "cells_clusters_resolution",
         validator=validators.Number(gt=0, lte=5),
         group=group_nodes,
@@ -109,13 +117,13 @@ def segment(
 
 
     # Gene Representation
-    genes_clusters_n_neighbors: Annotated[int, registry.get_parameter(
+    genes_clusters_n_neighbors: Annotated[int, cli_param(
         "genes_clusters_n_neighbors",
         validator=validators.Number(gt=0),
         group=group_nodes,
     )] = registry.get_default("genes_clusters_n_neighbors"),
 
-    genes_clusters_resolution: Annotated[float, registry.get_parameter(
+    genes_clusters_resolution: Annotated[float, cli_param(
         "genes_clusters_resolution",
         validator=validators.Number(gt=0, lte=5),
         group=group_nodes,
@@ -123,13 +131,13 @@ def segment(
 
 
     # Transcript-Transcript Graph
-    transcripts_max_k: Annotated[int, registry.get_parameter(
+    transcripts_max_k: Annotated[int, cli_param(
         "transcripts_graph_max_k",  
         validator=validators.Number(gt=0),
         group=group_transcripts_graph,
     )] = registry.get_default("transcripts_graph_max_k"),
 
-    transcripts_max_dist: Annotated[float, registry.get_parameter(
+    transcripts_max_dist: Annotated[float, cli_param(
         "transcripts_graph_max_dist",
         validator=validators.Number(gt=0),
         group=group_transcripts_graph,
@@ -139,44 +147,44 @@ def segment(
     # Segmentation (Prediction) Graph
     prediction_mode: Annotated[
         Literal["nucleus", "cell", "uniform"],
-        registry.get_parameter(
+        cli_param(
             "prediction_graph_mode",
             group=group_prediction,
         )
     ] = registry.get_default("prediction_graph_mode"),
 
-    prediction_max_k: Annotated[int | None, registry.get_parameter(
+    prediction_max_k: Annotated[int | None, cli_param(
         "prediction_graph_max_k",
         validator=validators.Number(gt=0),
         group=group_prediction,
     )] = registry.get_default("prediction_graph_max_k"),
 
-    prediction_max_dist: Annotated[float | None, registry.get_parameter(
+    prediction_max_dist: Annotated[float | None, cli_param(
         "prediction_graph_max_dist",
         validator=validators.Number(gt=0),
         group=group_prediction,
     )] = registry.get_default("prediction_graph_max_dist"),
 
     # Tiling
-    tiling_margin_training: Annotated[float, registry.get_parameter(
+    tiling_margin_training: Annotated[float, cli_param(
         "tiling_margin_training",
         validator=validators.Number(gte=0),
         group=group_tiling,
     )] = registry.get_default("tiling_margin_training"),
 
-    tiling_margin_prediction: Annotated[float, registry.get_parameter(
+    tiling_margin_prediction: Annotated[float, cli_param(
         "tiling_margin_prediction",
         validator=validators.Number(gte=0),
         group=group_tiling,
     )] = registry.get_default("tiling_margin_prediction"),
 
-    max_nodes_per_tile: Annotated[int, registry.get_parameter(
+    max_nodes_per_tile: Annotated[int, cli_param(
         "tiling_nodes_per_tile",
         validator=validators.Number(gt=0),
         group=group_tiling,
     )] = registry.get_default("tiling_nodes_per_tile"),
 
-    max_edges_per_batch: Annotated[int, registry.get_parameter(
+    max_edges_per_batch: Annotated[int, cli_param(
         "edges_per_batch",
         validator=validators.Number(gt=0),
         group=group_tiling,
@@ -189,42 +197,42 @@ def segment(
         help="Number of training epochs.",
     )] = 20,
 
-    n_mid_layers: Annotated[int, registry.get_parameter(
+    n_mid_layers: Annotated[int, cli_param(
         "n_mid_layers",
         validator=validators.Number(gte=0),
         group=group_model,
     )] = registry.get_default("n_mid_layers"),
 
-    n_heads: Annotated[int, registry.get_parameter(
+    n_heads: Annotated[int, cli_param(
         "n_heads",
         validator=validators.Number(gt=0),
         group=group_model,
     )] = registry.get_default("n_heads"),
 
-    hidden_channels: Annotated[int, registry.get_parameter(
+    hidden_channels: Annotated[int, cli_param(
         "hidden_channels",
         validator=validators.Number(gt=0),
         group=group_model,
     )] = registry.get_default("hidden_channels"),
 
-    out_channels: Annotated[int, registry.get_parameter(
+    out_channels: Annotated[int, cli_param(
         "out_channels",
         validator=validators.Number(gt=0),
         group=group_model,
     )] = registry.get_default("out_channels"),
 
-    learning_rate: Annotated[float, registry.get_parameter(
+    learning_rate: Annotated[float, cli_param(
         "learning_rate",
         validator=validators.Number(gt=0),
         group=group_model,
     )] = registry.get_default("learning_rate"),
 
-    use_positional_embeddings: Annotated[bool, registry.get_parameter(
+    use_positional_embeddings: Annotated[bool, cli_param(
         "use_positional_embeddings",
         group=group_model,
     )] = registry.get_default("use_positional_embeddings"),
 
-    normalize_embeddings: Annotated[bool, registry.get_parameter(
+    normalize_embeddings: Annotated[bool, cli_param(
         "normalize_embeddings",
         group=group_model,
     )] = registry.get_default("normalize_embeddings"),
@@ -232,59 +240,65 @@ def segment(
     # Loss
     segmentation_loss: Annotated[
         Literal["triplet", "bce"],
-        registry.get_parameter(
+        cli_param(
             "sg_loss_type",
             group=group_loss,
         )
     ] = registry.get_default("sg_loss_type"),
 
-    transcripts_margin: Annotated[float, registry.get_parameter(
+    transcripts_margin: Annotated[float, cli_param(
         "tx_margin",
         validator=validators.Number(gt=0),
         group=group_loss,
     )] = registry.get_default("tx_margin"),
 
-    segmentation_margin: Annotated[float, registry.get_parameter(
+    segmentation_margin: Annotated[float, cli_param(
         "sg_margin",
         validator=validators.Number(gt=0),
         group=group_loss,
     )] = registry.get_default("sg_margin"),
 
-    transcripts_loss_weight_start: Annotated[float, registry.get_parameter(
+    transcripts_loss_weight_start: Annotated[float, cli_param(
         "tx_weight_start",
         validator=validators.Number(gte=0),
         group=group_loss,
     )] = registry.get_default("tx_weight_start"),
 
-    transcripts_loss_weight_end: Annotated[float, registry.get_parameter(
+    transcripts_loss_weight_end: Annotated[float, cli_param(
         "tx_weight_end",
         validator=validators.Number(gte=0),
         group=group_loss,
     )] = registry.get_default("tx_weight_end"),
 
-    cells_loss_weight_start: Annotated[float, registry.get_parameter(
+    cells_loss_weight_start: Annotated[float, cli_param(
         "bd_weight_start",
         validator=validators.Number(gte=0),
         group=group_loss,
     )] = registry.get_default("bd_weight_start"),
 
-    cells_loss_weight_end: Annotated[float, registry.get_parameter(
+    cells_loss_weight_end: Annotated[float, cli_param(
         "bd_weight_end",
         validator=validators.Number(gte=0),
         group=group_loss,
     )] = registry.get_default("bd_weight_end"),
 
-    segmentation_loss_weight_start: Annotated[float, registry.get_parameter(
+    segmentation_loss_weight_start: Annotated[float, cli_param(
         "sg_weight_start",
         validator=validators.Number(gte=0),
         group=group_loss,
     )] = registry.get_default("sg_weight_start"),
 
-    segmentation_loss_weight_end: Annotated[float, registry.get_parameter(
+    segmentation_loss_weight_end: Annotated[float, cli_param(
         "sg_weight_end",
         validator=validators.Number(gte=0),
         group=group_loss,
     )] = registry.get_default("sg_weight_end"),
+
+    segmentation_negative_sampling_rate: Annotated[float, cli_param(
+        "segmentation_graph_negative_edge_rate",
+        validator=validators.Number(gt=0),
+        group=group_loss,
+    )] = registry.get_default("segmentation_graph_negative_edge_rate"),
 ):
     """Run cell segmentation on spatial transcriptomics data."""
     # Remove SLURM environment autodetect
@@ -311,6 +325,8 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
+        segmentation_graph_negative_edge_rate=segmentation_negative_sampling_rate,
+        segmentation_loss_type=segmentation_loss,
     )
     
     # Setup Lightning Model
