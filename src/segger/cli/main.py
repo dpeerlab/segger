@@ -115,6 +115,16 @@ def segment(
         group=group_nodes,
     )] = registry.get_default("cells_clusters_resolution"),
 
+    reference_for_custom_filtering: Annotated[str | None, Parameter(
+        help="Optional Celltypist model path or name for filtering cells before PCA.",
+        group=group_nodes,
+    )] = None,
+
+    cell_types_to_filter: Annotated[list[str] | None, Parameter(
+        help="List of cell types to filter out (e.g., 'Neutrophils,Monocytes'). Defaults to ['Neutrophils'] if reference_for_custom_filtering is provided.",
+        group=group_nodes,
+    )] = None,
+
 
     # Gene Representation
     genes_clusters_n_neighbors: Annotated[int, cli_param(
@@ -314,6 +324,8 @@ def segment(
         cells_min_counts=cells_min_counts,
         cells_clusters_n_neighbors=cells_clusters_n_neighbors,
         cells_clusters_resolution=cells_clusters_resolution,
+        reference_for_custom_filtering=reference_for_custom_filtering,
+        cell_types_to_filter=cell_types_to_filter,
         genes_clusters_n_neighbors=genes_clusters_n_neighbors,
         genes_clusters_resolution=genes_clusters_resolution,
         transcripts_graph_max_k=transcripts_max_k,

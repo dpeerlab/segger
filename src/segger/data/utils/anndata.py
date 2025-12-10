@@ -14,6 +14,86 @@ from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
 from segger.geometry.morphology import get_polygon_props
 
+
+def filter_cells_with_celltypist(
+    adata: sc.AnnData,
+    reference_model: str,
+    cell_types_to_remove: list[str] | None = None,
+) -> np.ndarray:
+    """
+    Use Celltypist to predict cell types and return a boolean mask for filtering.
+
+    Parameters
+    ----------
+    adata : sc.AnnData
+        AnnData object with normalized counts in adata.X or a layer
+    reference_model : str
+        Path to Celltypist model file or name of a built-in model
+    cell_types_to_remove : list[str] | None
+        List of cell type labels to filter out. If None, defaults to ['Neutrophils']
+
+    Returns
+    -------
+    np.ndarray
+        Boolean array where True means keep the cell, False means filter it out
+    """
+    try:
+        import celltypist
+        from celltypist import models
+    except ImportError:
+        raise ImportError(
+            "celltypist is required for cell type filtering. "
+            "Install it with: pip install celltypist"
+        )
+
+    if cell_types_to_remove is None:
+        cell_types_to_remove = ['Neutrophils']
+
+    # Load model
+    try:
+        if reference_model.endswith('.pkl'):
+            # Custom model path
+            model = models.Model.load(reference_model)
+        else:
+            # Try to download/use built-in model
+            model = models.Model.load(model=reference_model)
+    except Exception as e:
+        raise ValueError(
+            f"Could not load Celltypist model '{reference_model}'. "
+            f"Error: {e}\n"
+            f"Available models can be listed with: celltypist.models.models_description()"
+        )
+
+    # Predict cell types
+    # Celltypist expects log-normalized data
+    predictions = celltypist.annotate(
+        adata,
+        model=model,
+        majority_voting=True,  # Use majority voting for more robust predictions
+    )
+
+    # Get predicted cell types
+    predicted_labels = predictions.predicted_labels['majority_voting']
+
+    # Create filter mask (True = keep, False = remove)
+    keep_mask = ~predicted_labels.isin(cell_types_to_remove)
+
+    # Add predictions to adata for inspection
+    adata.obs['celltypist_cell_type'] = predicted_labels
+    adata.obs['celltypist_conf_score'] = predictions.predicted_labels['conf_score']
+
+    print(f"Celltypist filtering summary:")
+    print(f"  Total cells: {len(adata)}")
+    print(f"  Cell types to remove: {cell_types_to_remove}")
+    for cell_type in cell_types_to_remove:
+        n_removed = (predicted_labels == cell_type).sum()
+        print(f"    {cell_type}: {n_removed} cells ({n_removed/len(adata)*100:.2f}%)")
+    print(f"  Cells kept: {keep_mask.sum()} ({keep_mask.sum()/len(adata)*100:.2f}%)")
+    print(f"  Cells removed: {(~keep_mask).sum()} ({(~keep_mask).sum()/len(adata)*100:.2f}%)")
+
+    return keep_mask.values
+
+
 def anndata_from_transcripts(
     tx: pl.DataFrame,
     feature_column: str,
@@ -139,8 +219,21 @@ def setup_anndata(
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
     compute_morphology: bool = False,
+    reference_for_custom_filtering: str | None = None,
+    cell_types_to_filter: list[str] | None = None,
 ):
-    """TODO: Add description.
+    """
+    Setup AnnData object for segmentation with optional cell type filtering.
+
+    Parameters
+    ----------
+    reference_for_custom_filtering : str | None
+        Optional path to Celltypist model or model name for cell type-based filtering.
+        If provided, cells will be annotated with Celltypist and specified cell types
+        will be filtered out before PCA embedding computation.
+    cell_types_to_filter : list[str] | None
+        List of cell type labels to filter out. If None and reference_for_custom_filtering
+        is provided, defaults to ['Neutrophils'].
     """
     # Standard fields
     tx_fields = TrainingTranscriptFields()
@@ -191,6 +284,34 @@ def setup_anndata(
     ad.layers['norm'] = ad.layers['counts'].copy()
     target_sum = ad.obs.loc[ad.obs['filtered'], 'n_counts'].median()
     sc.pp.normalize_total(ad, target_sum=target_sum, layer='norm')
+
+    # Apply optional Celltypist filtering (e.g., to remove neutrophils)
+    if reference_for_custom_filtering is not None:
+        # Default to filtering neutrophils if not specified
+        if cell_types_to_filter is None:
+            cell_types_to_filter = ['Neutrophils']
+
+        print(f"\nApplying Celltypist filtering with model: {reference_for_custom_filtering}")
+        print(f"Cell types to filter: {cell_types_to_filter}")
+
+        # Prepare AnnData for Celltypist (needs log-normalized data)
+        ad_temp = ad.copy()
+        ad_temp.X = ad_temp.layers['norm'].copy()
+        sc.pp.log1p(ad_temp)
+
+        # Get cell type filter mask
+        celltypist_keep_mask = filter_cells_with_celltypist(
+            ad_temp,
+            reference_model=reference_for_custom_filtering,
+            cell_types_to_remove=cell_types_to_filter,
+        )
+
+        # Combine with existing filtered mask
+        # Cells must pass both count filter AND cell type filter
+        ad.obs['filtered'] = ad.obs['filtered'] & celltypist_keep_mask
+
+        print(f"  Updated filtered cell count: {ad.obs['filtered'].sum()}")
+        print()
 
     # Build gene embedding on filtered dataset
     C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)

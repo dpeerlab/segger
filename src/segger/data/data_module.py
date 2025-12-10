@@ -137,6 +137,8 @@ class ISTDataModule(LightningDataModule):
     genes_min_counts: int = 100
     genes_clusters_n_neighbors: int = 5
     genes_clusters_resolution: float = 2.
+    reference_for_custom_filtering: str | None = None
+    cell_types_to_filter: list[str] | None = None
     transcripts_graph_max_k: int = 5
     transcripts_graph_max_dist: float = 5.
     segmentation_graph_mode: Literal["nucleus", "cell"] = "nucleus"
@@ -203,6 +205,8 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
+            reference_for_custom_filtering=self.reference_for_custom_filtering,
+            cell_types_to_filter=self.cell_types_to_filter,
         )
         self.data = setup_heterodata(
             transcripts=tx,
