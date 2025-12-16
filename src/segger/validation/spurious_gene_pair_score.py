@@ -251,6 +251,7 @@ def get_segmentation_relative_spurious_scores(xenium_dir_path: os.PathLike, segm
     spurious_pairs = spurious_pairs_scores["log_conditional_coexpression"] > cutoff
     segmentation_conditional_coexpression = find_conditional_coexpression(segmentation_adata)
 
+    nuclear_conditional_coexpression = nuclear_conditional_coexpression.fillna(0)
     segmentation_condition_normalized = segmentation_conditional_coexpression.copy()
     segmentation_condition_normalized = segmentation_condition_normalized.fillna(0)
     segmentation_condition_normalized = segmentation_condition_normalized.div(nuclear_conditional_coexpression).fillna(0).replace([np.inf, -np.inf], 0)
