@@ -152,10 +152,10 @@ def segment(
     )] = registry.get_default("prediction_graph_max_k"),
 
     prediction_max_dist: Annotated[float | None, registry.get_parameter(
-        "prediction_graph_max_dist",
+        "prediction_graph_buffer_ratio",
         validator=validators.Number(gt=0),
         group=group_prediction,
-    )] = registry.get_default("prediction_graph_max_dist"),
+    )] = registry.get_default("prediction_graph_buffer_ratio"),
 
     # Tiling
     tiling_margin_training: Annotated[float, registry.get_parameter(
@@ -306,7 +306,7 @@ def segment(
         transcripts_graph_max_dist=transcripts_max_dist,
         prediction_graph_mode=prediction_mode,
         prediction_graph_max_k=prediction_max_k,
-        prediction_graph_max_dist=prediction_max_dist,
+        prediction_graph_buffer_ratio=prediction_expansion_ratio,
         tiling_margin_training=tiling_margin_training,
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
