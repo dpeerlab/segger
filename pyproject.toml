@@ -3,11 +3,8 @@ name = "segger"
 version = "0.1.0"
 description = "Segmentation of spatial transcriptomics data"
 authors = [
-    {
-        name = "Elyas Heidari", email = "elyas.heidari@dkfz-heidelberg.de",
-        name = "Andrew Moorman", email = "moormana@mskcc.org",
-    },
-
+    {name = "Elyas Heidari", email = "elyas.heidari@dkfz-heidelberg.de"},
+    {name = "Andrew Moorman", email = "moormana@mskcc.org"},
 ]
 keywords = ["spatial-transcriptomics", "segmentation", "image-analysis"]
 license = { text = "MIT" }
