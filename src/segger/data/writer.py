@@ -8,6 +8,7 @@ import torch
 
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
+from .utils.anndata import anndata_from_transcripts
 
 
 def threshold(x):
@@ -24,9 +25,14 @@ class ISTSegmentationWriter(BasePredictionWriter):
         Path to write outputs.
     """
 
-    def __init__(self, output_directory: Path):
+    def __init__(
+        self,
+        output_directory: Path,
+        save_anndata: bool = True,
+    ):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
+        self.save_anndata = save_anndata
 
     def write_on_epoch_end(
         self,
@@ -125,10 +131,61 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 .alias("similarity_threshold")
             )
         )
-        # Join and write output to file
+        # Join thresholds
+        segmentation = segmentation.join(thresholds, on=tx_fields.feature, how='left')
+
+        # Map gene encoding to gene names
+        gene_index = (
+            pl
+            .from_pandas(trainer.datamodule.ad.var.reset_index())
+            .rename({"index": tx_fields.feature})
+            .select([tx_fields.feature, tx_fields.gene_encoding])
+        )
+        segmentation = (
+            segmentation
+            .rename({tx_fields.feature: tx_fields.gene_encoding})
+            .join(gene_index, on=tx_fields.gene_encoding, how='left')
+        )
+
+        # Write segmentation output (keep prior columns)
         (
             segmentation
-            .join(thresholds, on=tx_fields.feature, how='left')
-            .drop(tx_fields.feature)
+            .drop([tx_fields.feature, tx_fields.gene_encoding])
             .write_parquet(self.output_directory / 'segger_segmentation.parquet')
         )
+
+        # Optional: save AnnData
+        if self.save_anndata:
+            tx = trainer.datamodule.tx
+            transcripts = (
+                segmentation
+                .join(
+                    tx.select([
+                        tx_fields.row_index,
+                        tx_fields.x,
+                        tx_fields.y,
+                        tx_fields.feature,
+                    ]),
+                    on=tx_fields.row_index,
+                    how='left',
+                )
+                .rename({tx_fields.feature: "segger_gene"})
+                .select([
+                    tx_fields.row_index,
+                    "segger_gene",
+                    "segger_cell_id",
+                    "segger_similarity",
+                    "similarity_threshold",
+                    tx_fields.x,
+                    tx_fields.y,
+                ])
+            )
+
+            adata = anndata_from_transcripts(
+                transcripts,
+                feature_column="segger_gene",
+                cell_id_column="segger_cell_id",
+                score_column="segger_similarity",
+                coordinate_columns=[tx_fields.x, tx_fields.y],
+            )
+            adata.write_h5ad(self.output_directory / 'segger_anndata.h5ad')

@@ -75,7 +75,11 @@ def segment(
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
     
-
+    save_anndata: Annotated[bool, registry.get_parameter(
+        "save_anndata",
+        group=group_io,
+    )] = registry.get_default("save_anndata"),
+    
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -347,7 +351,10 @@ def segment(
     from ..data import ISTSegmentationWriter
     from lightning.pytorch import Trainer
     logger = CSVLogger(output_directory)
-    writer = ISTSegmentationWriter(output_directory)
+    writer = ISTSegmentationWriter(
+        output_directory=output_directory,
+        save_anndata=save_anndata,
+    )
     trainer = Trainer(
         logger=logger,
         max_epochs=n_epochs,
