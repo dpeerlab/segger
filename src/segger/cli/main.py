@@ -80,6 +80,11 @@ def segment(
         group=group_io,
     )] = registry.get_default("save_anndata"),
     
+    save_cell_masks: Annotated[bool, registry.get_parameter(
+        "save_cell_masks",
+        group=group_io,
+    )] = registry.get_default("save_cell_masks"),
+    
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -354,6 +359,7 @@ def segment(
     writer = ISTSegmentationWriter(
         output_directory=output_directory,
         save_anndata=save_anndata,
+        save_cell_masks=save_cell_masks,
     )
     trainer = Trainer(
         logger=logger,

@@ -9,6 +9,7 @@ import torch
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 from .utils.anndata import anndata_from_transcripts
+from ..geometry import generate_cell_boundaries
 
 
 def threshold(x):
@@ -29,10 +30,13 @@ class ISTSegmentationWriter(BasePredictionWriter):
         self,
         output_directory: Path,
         save_anndata: bool = True,
+        save_cell_masks: bool = False,
     ):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
+        self.output_directory.mkdir(parents=True, exist_ok=True)
         self.save_anndata = save_anndata
+        self.save_cell_masks = save_cell_masks
 
     def write_on_epoch_end(
         self,
@@ -154,13 +158,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .write_parquet(self.output_directory / 'segger_segmentation.parquet')
         )
 
-        # Optional: save AnnData
-        if self.save_anndata:
-            tx = trainer.datamodule.tx
+        transcripts = None
+        if self.save_anndata or self.save_cell_masks:
             transcripts = (
                 segmentation
                 .join(
-                    tx.select([
+                    trainer.datamodule.tx.select([
                         tx_fields.row_index,
                         tx_fields.x,
                         tx_fields.y,
@@ -170,7 +173,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
                     how='left',
                 )
                 .rename({tx_fields.feature: "segger_gene"})
-                .select([
+            )
+
+        # Optional: save AnnData
+        if self.save_anndata and transcripts is not None:
+            adata = anndata_from_transcripts(
+                transcripts.select([
                     tx_fields.row_index,
                     "segger_gene",
                     "segger_cell_id",
@@ -178,14 +186,42 @@ class ISTSegmentationWriter(BasePredictionWriter):
                     "similarity_threshold",
                     tx_fields.x,
                     tx_fields.y,
-                ])
-            )
-
-            adata = anndata_from_transcripts(
-                transcripts,
+                ]),
                 feature_column="segger_gene",
                 cell_id_column="segger_cell_id",
                 score_column="segger_similarity",
                 coordinate_columns=[tx_fields.x, tx_fields.y],
             )
             adata.write_h5ad(self.output_directory / 'segger_anndata.h5ad')
+
+        if self.save_cell_masks and transcripts is not None:
+            cell_ids = (
+                transcripts
+                .get_column("segger_cell_id")
+                .drop_nulls()
+                .unique()
+                .to_list()
+            )
+
+            if len(cell_ids) > 0:
+                bd_fields = TrainingBoundaryFields()
+                boundaries = trainer.datamodule.bd
+                cell_boundaries = boundaries[
+                    (boundaries[bd_fields.boundary_type] == bd_fields.cell_value)
+                    & (boundaries[bd_fields.id].isin(cell_ids))
+                ]
+
+                if cell_boundaries.empty:
+                    cell_boundaries = generate_cell_boundaries(
+                        transcripts=transcripts,
+                        x_column=tx_fields.x,
+                        y_column=tx_fields.y,
+                        cell_id_column="segger_cell_id",
+                    )
+
+                if not cell_boundaries.empty:
+                    cell_boundaries.to_parquet(
+                        self.output_directory / "segger_cell_boundaries.parquet",
+                        write_covering_bbox=True,
+                        geometry_encoding="geoarrow",
+                    )
