@@ -151,7 +151,7 @@ def segment(
         group=group_prediction,
     )] = registry.get_default("prediction_graph_max_k"),
 
-    prediction_max_dist: Annotated[float | None, registry.get_parameter(
+    prediction_expansion_ratio: Annotated[float | None, registry.get_parameter(
         "prediction_graph_buffer_ratio",
         validator=validators.Number(gt=0),
         group=group_prediction,

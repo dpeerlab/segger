@@ -10,11 +10,6 @@ from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
 
-def threshold(x):
-    return min(
-        threshold_li( x[0].to_numpy()),
-        threshold_yen(x[0].to_numpy()),
-    )
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
     
@@ -103,32 +98,44 @@ class ISTSegmentationWriter(BasePredictionWriter):
             )
             .unique(tx_fields.row_index, keep="first")
         )
-        # Per-gene thresholding
-        thresholds = (
+        
+        # Per-gene thresholding (iterative to reduce memory usage)
+        feature_counts = (
             segmentation
-            .group_by(tx_fields.feature)
-            .agg(
-                pl
-                .col('segger_similarity')
-                .shuffle(seed=0)
-                .head(10_000_000)
-            )
-            .explode('segger_similarity')
-            .group_by(tx_fields.feature)
-            .agg(
-                pl.map_groups(
-                    pl.col('segger_similarity'),
-                    threshold,
-                    return_dtype=pl.Float64,
-                    returns_scalar=True,
-                )
-                .alias("similarity_threshold")
-            )
+            .filter(pl.col('segger_cell_id').is_not_null())
+            .select(tx_fields.feature)
+            .to_series()
+            .value_counts()
         )
+        thresholds = []
+        n = 10_000_000
+        for feature, count in feature_counts.iter_rows():
+            similarities = (
+                segmentation
+                .filter(
+                    (pl.col(tx_fields.feature) == feature) &
+                    (pl.col('segger_cell_id').is_not_null())
+                )
+                .select('segger_similarity')
+            )
+            if count > n:
+                similarities = similarities.sample(n=n, seed=0)
+            similarities = similarities.to_series().to_numpy()
+            threshold_value = min(
+                threshold_li( similarities),
+                threshold_yen(similarities),
+            )
+            thresholds.append({
+                tx_fields.feature: feature,
+                'similarity_threshold': threshold_value,
+            })
+        thresholds = pl.DataFrame(thresholds)
+        
         # Join and write output to file
         (
             segmentation
             .join(thresholds, on=tx_fields.feature, how='left')
             .drop(tx_fields.feature)
-            .write_parquet(self.output_directory / 'segger_segmentation.parquet')
+            .write_parquet(
+                self.output_directory / 'segger_segmentation.parquet')
         )

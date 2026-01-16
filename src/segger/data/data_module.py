@@ -141,7 +141,7 @@ class ISTDataModule(LightningDataModule):
     segmentation_graph_negative_edge_rate: float = 1.
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"] = "cell"
     prediction_graph_max_k: int = 3
-    prediction_graph_buffer_ratio: float = 1.2
+    prediction_graph_buffer_ratio: float = 1.05
     tiling_mode: Literal["adaptive", "square"] = "adaptive"  # TODO: Remove (benchmarking only)
     tiling_margin_training: float = 20.
     tiling_margin_prediction: float = 20.
