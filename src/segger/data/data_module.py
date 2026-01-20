@@ -146,7 +146,7 @@ class ISTDataModule(LightningDataModule):
     segmentation_loss_type: Literal["triplet", "bce"] = "triplet"
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"] = "cell"
     prediction_graph_max_k: int = 3
-    prediction_graph_max_dist: float = 1.
+    prediction_graph_buffer_ratio: float = 0.05
     tiling_mode: Literal["adaptive", "square"] = "adaptive"  # TODO: Remove (benchmarking only)
     tiling_margin_training: float = 20.
     tiling_margin_prediction: float = 20.
@@ -222,7 +222,7 @@ class ISTDataModule(LightningDataModule):
             transcripts_graph_max_dist=self.transcripts_graph_max_dist,
             prediction_graph_mode=self.prediction_graph_mode,
             prediction_graph_max_k=self.prediction_graph_max_k,
-            prediction_graph_max_dist=self.prediction_graph_max_dist,
+            prediction_graph_buffer_ratio=self.prediction_graph_buffer_ratio,
         )
         # Tile graph dataset
         node_positions = torch.vstack([

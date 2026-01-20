@@ -186,7 +186,7 @@ def setup_prediction_graph(
     tx: pl.DataFrame,
     bd: gpd.GeoDataFrame,
     max_k: int,
-    max_dist: float,
+    buffer_ratio: float,
     mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
 ) -> torch.Tensor:
     """TODO: Add description.
@@ -202,7 +202,6 @@ def setup_prediction_graph(
             points=points,
             query=query,
             max_k=max_k,
-            max_dist=max_dist,
         )
         return edge_index
     
@@ -211,11 +210,13 @@ def setup_prediction_graph(
     boundary_type = (bd_fields.cell_value if mode == "cell"
                      else bd_fields.nucleus_value)
     polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
-    polygons = polygons.buffer(max_dist).reset_index(drop=True)
+    buffer_dists = np.sqrt(polygons.area / np.pi) * buffer_ratio
+    polygons = polygons.buffer(buffer_dists).reset_index(drop=True)
     result = points_in_polygons(
         points=points,
         polygons=polygons,
         predicate='contains',
+        batches=10,
     )
 
     return torch.tensor(

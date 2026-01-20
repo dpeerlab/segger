@@ -164,51 +164,47 @@ class LitISTEncoder(LightningModule):
             batch['bd']['cluster'][bd_mask],
         )
         
-        # Triplet margin segmentation loss
-        if self._sg_loss_type == 'triplet':
-            src, dst = batch['tx', 'belongs', 'bd'].edge_index
-            num_bd = embeddings['bd'].size(0)
-            N = dst.size(0)
+        # Segmentation loss
+        src_pos, dst_pos = batch['tx', 'belongs', 'bd'].edge_index
+        num_bd = embeddings['bd'].size(0)
+        N = src_pos.size(0)
 
-            # Handle edge case where there are too few boundaries for negative sampling
-            if num_bd <= 1:
-                # Skip segmentation loss when there's only 0 or 1 boundary
-                loss_sg = torch.tensor(0.0, device=embeddings['bd'].device, requires_grad=True)
-            else:
-                # choose an offset in (1, num_bd-1)
-                neg = dst + torch.randint(num_bd - 1, (N,), device=dst.device) + 1
-                neg = neg % num_bd
+        # Handle edge case where there are too few boundaries for sampling
+        if num_bd <= 1:
+            loss_sg = torch.tensor(0.0, device=embeddings['bd'].device, 
+                                   requires_grad=True)
+        else:
+            # Generate negative destination nodes
+            dst_neg = (
+                dst_pos + torch.randint(1, num_bd, (N,), device=dst_pos.device)
+            ) % num_bd
 
-                anchor   = embeddings['tx'][src]          # (N, d)
-                positive = embeddings['bd'][dst]          # (N, d)
-                negative = embeddings['bd'][neg]          # (N, d)
+            if self._sg_loss_type == 'triplet':
+                anchor   = embeddings['tx'][src_pos]
+                positive = embeddings['bd'][dst_pos]
+                negative = embeddings['bd'][dst_neg]
 
-                # cosine-margin triplet loss
                 loss_sg = self.loss_sg(anchor, positive, negative)
-        
-        # BCE loss
-        else: 
-            # Get edge labels and logits
-            pos_index = batch['tx', 'belongs', 'bd'].edge_index
-            neg_index = batch['tx', 'belongs', 'bd'].neg_edge_index
+            
+            # BCE loss
+            else:
+                src = torch.cat([src_pos, src_pos])
+                dst = torch.cat([dst_pos, dst_neg])
 
-            src = torch.cat([pos_index[0], neg_index[0]])
-            dst = torch.cat([pos_index[1], neg_index[1]])
+                uniq_src, inv_src = torch.unique(src, return_inverse=True)
+                uniq_dst, inv_dst = torch.unique(dst, return_inverse=True)
 
-            uniq_src,  inv_src = torch.unique(src, return_inverse=True)
-            uniq_dst,  inv_dst = torch.unique(dst, return_inverse=True)
+                src_vecs = embeddings['tx'].index_select(0, uniq_src)
+                dst_vecs = embeddings['bd'].index_select(0, uniq_dst)
 
-            src_vecs = embeddings['tx'].index_select(0, uniq_src)
-            dst_vecs = embeddings['bd'].index_select(0, uniq_dst)
+                logits = (src_vecs[inv_src] * dst_vecs[inv_dst]).sum(dim=-1)
 
-            logits = (src_vecs[inv_src] * dst_vecs[inv_dst]).sum(dim=-1)
+                labels = torch.cat([
+                    torch.ones(N, device=logits.device),
+                    torch.zeros(N, device=logits.device)
+                ])
 
-            labels = torch.cat([
-                torch.ones(pos_index.size(1), device=logits.device),
-                torch.zeros(neg_index.size(1), device=logits.device)
-            ])
-            # Compute binary cross-entropy loss with logits (no sigmoid here)
-            loss_sg = self.loss_sg(logits, labels)
+                loss_sg = self.loss_sg(logits, labels)
 
         # Compute final weighted combination of losses
         w_tx, w_bd, w_sg = self._scheduled_weights(self._w_start, self._w_end)
