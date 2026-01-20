@@ -168,12 +168,16 @@ def setup_segmentation_graph(
     """TODO: Add description.
     """
     tx_fields = TrainingTranscriptFields()
+    if segmentation_mask is None:
+        segmentation_mask = pl.lit(True)
     return (
         tx
         .with_row_index("_tid")
         .filter(segmentation_mask)
+        .filter(pl.col(tx_fields.cell_encoding).is_not_null())
         .select(["_tid", tx_fields.cell_encoding])
         .to_torch()
+        .to(torch.long)
         .T
     )
 

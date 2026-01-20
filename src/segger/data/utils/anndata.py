@@ -17,70 +17,101 @@ from segger.geometry.morphology import get_polygon_props
 
 def filter_cells_with_celltypist(
     adata: sc.AnnData,
-    reference_model: str,
+    reference_h5ad: str,
     cell_types_to_remove: list[str] | None = None,
+    cell_type_col: str = "cell_type_annotation",
 ) -> np.ndarray:
     """
     Use Celltypist to predict cell types and return a boolean mask for filtering.
+
+    Trains a CellTypist model from a reference h5ad file, then uses it to annotate
+    and filter cells.
 
     Parameters
     ----------
     adata : sc.AnnData
         AnnData object with normalized counts in adata.X or a layer
-    reference_model : str
-        Path to Celltypist model file or name of a built-in model
+    reference_h5ad : str
+        Path to reference h5ad file with cell type annotations
     cell_types_to_remove : list[str] | None
         List of cell type labels to filter out. If None, defaults to ['Neutrophils']
+    cell_type_col : str
+        Column name in reference h5ad containing cell type annotations.
+        Default 'cell_type_annotation'
 
     Returns
     -------
     np.ndarray
         Boolean array where True means keep the cell, False means filter it out
     """
-    try:
-        import celltypist
-        from celltypist import models
-    except ImportError:
-        raise ImportError(
-            "celltypist is required for cell type filtering. "
-            "Install it with: pip install celltypist"
-        )
+    from segger.validation.celltypist_utils import build_celltypist_model, annotate_cell_types
 
     if cell_types_to_remove is None:
         cell_types_to_remove = ['Neutrophils']
 
-    # Load model
-    try:
-        if reference_model.endswith('.pkl'):
-            # Custom model path
-            model = models.Model.load(reference_model)
-        else:
-            # Try to download/use built-in model
-            model = models.Model.load(model=reference_model)
-    except Exception as e:
-        raise ValueError(
-            f"Could not load Celltypist model '{reference_model}'. "
-            f"Error: {e}\n"
-            f"Available models can be listed with: celltypist.models.models_description()"
-        )
+    print(f"Loading reference atlas from: {reference_h5ad}")
+    ad_ref = sc.read_h5ad(reference_h5ad)
 
-    # Predict cell types
-    # Celltypist expects log-normalized data
-    predictions = celltypist.annotate(
-        adata,
-        model=model,
-        majority_voting=True,  # Use majority voting for more robust predictions
+    # Handle ENSEMBL IDs
+    if ad_ref.var.index.str.startswith("ENS").mean() > 0.5:
+        if "feature_name" in ad_ref.var.columns:
+            ad_ref.var.set_index("feature_name", inplace=True)
+
+    # Remove duplicates
+    mask = ~ad_ref.var.index.duplicated(keep="first")
+    ad_ref = ad_ref[:, mask]
+
+    # Determine where counts are stored
+    if "counts" in ad_ref.layers:
+        counts_layer = "counts"
+        ad_ref.X = ad_ref.layers["counts"].copy()
+    elif ad_ref.X is not None:
+        ad_ref.layers["counts"] = ad_ref.X.copy()
+        counts_layer = "counts"
+    else:
+        raise ValueError("Reference AnnData has no counts in .X or .layers['counts']")
+
+    # Basic filtering
+    sc.pp.filter_cells(ad_ref, min_counts=10, inplace=True)
+    sc.pp.filter_genes(ad_ref, min_counts=10, inplace=True)
+
+    # Filter to annotated cells
+    if cell_type_col not in ad_ref.obs.columns:
+        raise ValueError(f"Reference AnnData must have '{cell_type_col}' in .obs")
+
+    ad_ref = ad_ref[~ad_ref.obs[cell_type_col].isna()]
+
+    print(f"  Reference cells: {ad_ref.n_obs}, genes: {ad_ref.n_vars}")
+    print(f"  Building CellTypist model...")
+
+    # Build CellTypist model
+    model = build_celltypist_model(
+        ad_atlas=ad_ref,
+        celltype_col=cell_type_col,
+        raw_layer=counts_layer,
+        target_sum=10000,
+        sample_size=1000,
+    )
+
+    print(f"  Annotating query cells...")
+
+    # Annotate query cells
+    annotate_cell_types(
+        ad=adata,
+        raw_layer="counts",
+        ct_model=model,
+        cluster_col=None,
+        target_sum=10000,
     )
 
     # Get predicted cell types
-    predicted_labels = predictions.predicted_labels['majority_voting']
+    predicted_labels = adata.obs['celltypist_label']
 
     # Create filter mask (True = keep, False = remove)
     keep_mask = ~predicted_labels.isin(cell_types_to_remove)
 
-    # Add predictions to adata for inspection
+    # Rename for consistency
     adata.obs['celltypist_cell_type'] = predicted_labels
-    adata.obs['celltypist_conf_score'] = predictions.predicted_labels['conf_score']
 
     print(f"Celltypist filtering summary:")
     print(f"  Total cells: {len(adata)}")
@@ -291,18 +322,16 @@ def setup_anndata(
         if cell_types_to_filter is None:
             cell_types_to_filter = ['Neutrophils']
 
-        print(f"\nApplying Celltypist filtering with model: {reference_for_custom_filtering}")
+        print(f"\nApplying Celltypist filtering with reference: {reference_for_custom_filtering}")
         print(f"Cell types to filter: {cell_types_to_filter}")
 
-        # Prepare AnnData for Celltypist (needs log-normalized data)
+        # Prepare AnnData for Celltypist (needs counts layer)
         ad_temp = ad.copy()
-        ad_temp.X = ad_temp.layers['norm'].copy()
-        sc.pp.log1p(ad_temp)
 
         # Get cell type filter mask
         celltypist_keep_mask = filter_cells_with_celltypist(
             ad_temp,
-            reference_model=reference_for_custom_filtering,
+            reference_h5ad=reference_for_custom_filtering,
             cell_types_to_remove=cell_types_to_filter,
         )
 
