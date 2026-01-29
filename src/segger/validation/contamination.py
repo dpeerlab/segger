@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from typing import Dict, List
-
-import cupy as cp
-import scanpy as sc
 import cuml
+import cupy as cp
+
 import numpy as np
 import pandas as pd
 import polars as pl
 import scipy.sparse as sp
-from anndata import AnnData
 from scipy import sparse
+
+import scanpy as sc
+from anndata import AnnData
 
 
 def map_with_default(
-    keys: List[str] | np.ndarray,
-    mapping: Dict[str, int],
+    keys: list[str] | np.ndarray,
+    mapping: dict[str, int],
     default: int = -1,
     dtype: np.dtype = np.int32,
 ) -> np.ndarray:
@@ -36,6 +36,7 @@ def map_with_default(
     for i, k in enumerate(keys):
         out[i] = mapping.get(str(k), default)
     return out
+
 
 def get_neighbor_frequencies(
     ad: AnnData,
@@ -99,6 +100,7 @@ def get_neighbor_frequencies(
     ad.obsm[key_added] = df
     return df
 
+
 def calculate_contamination(
     adata: AnnData,
     reference: pl.DataFrame,
@@ -157,10 +159,8 @@ def calculate_contamination(
     X_layer = adata.layers[counts_layer]
     X = X_layer.tocoo() if isinstance(X_layer, sp.spmatrix) else X_layer.to_coo()
     rows, cols, vals = X.row, X.col, X.data
-    
-    host_ct_idx_all = map_with_default(
-        adata.obs[cell_type_key].astype(str), ct_map, -1
-    )
+
+    host_ct_idx_all = map_with_default(adata.obs[cell_type_key].astype(str), ct_map, -1)
     host_ct_idx = host_ct_idx_all[rows]
     gene_idx_all = map_with_default(adata.var_names, gn_map, -1)
     gene_idx = gene_idx_all[cols]
@@ -192,31 +192,20 @@ def calculate_contamination(
     q_back[missing_gene] = 0
 
     shape = adata.layers[counts_layer].shape
-    adata.layers["q_self"] = sparse.coo_matrix(
-        (q_self, (rows, cols)), shape=shape
-    ).tocsr()
-    adata.layers["q_neighbor"] = sparse.coo_matrix(
-        (q_neigh, (rows, cols)), shape=shape
-    ).tocsr()
-    adata.layers["q_background"] = sparse.coo_matrix(
-        (q_back, (rows, cols)), shape=shape
-    ).tocsr()
+    adata.layers["q_self"] = sparse.coo_matrix((q_self, (rows, cols)), shape=shape).tocsr()
+    adata.layers["q_neighbor"] = sparse.coo_matrix((q_neigh, (rows, cols)), shape=shape).tocsr()
+    adata.layers["q_background"] = sparse.coo_matrix((q_back, (rows, cols)), shape=shape).tocsr()
 
     # percent contamination per cell
     contam_mask = q_self < contam_cutoff
     contam_mask[missing_gene] = False
     contam_vals = np.where(contam_mask, vals, 0.0)
-    adata.layers["contamination"] = sparse.coo_matrix(
-        (contam_vals, (rows, cols)), shape=shape
-    ).tocsr()
+    adata.layers["contamination"] = sparse.coo_matrix((contam_vals, (rows, cols)), shape=shape).tocsr()
 
-    contam_counts = np.bincount(
-        rows[contam_mask], weights=vals[contam_mask], minlength=adata.n_obs
-    )
+    contam_counts = np.bincount(rows[contam_mask], weights=vals[contam_mask], minlength=adata.n_obs)
     total_counts = np.bincount(rows, weights=vals, minlength=adata.n_obs)
-    adata.obs["percent_contamination"] = (
-        100.0 * contam_counts / np.maximum(total_counts, 1)
-    )
+    adata.obs["percent_contamination"] = 100.0 * contam_counts / np.maximum(total_counts, 1)
+
 
 def contamination_flow(
     ad: AnnData,
@@ -284,15 +273,15 @@ def contamination_flow(
         flow[d] = sums / np.maximum(cell_counts, 1)
 
     flow = pd.DataFrame(flow, index=donor_types, columns=host_types)
-    flow.index.name = 'source'
-    flow.columns.name = 'host'
+    flow.index.name = "source"
+    flow.columns.name = "host"
 
     return flow
 
 
 def group_reference(
     reference: pl.DataFrame,
-    grouping: Dict[str, str],
+    grouping: dict[str, str],
     *,
     cell_type_name_col: str = "cell_type_name",
     gene_name_col: str = "gene_name",
@@ -327,11 +316,7 @@ def group_reference(
         .alias(cell_type_name_col)
     )
 
-    ref = ref.with_columns(
-        (
-            pl.col(mean_expr_col) * pl.col(n_pos_cells_col)
-        ).alias("weighted_expr")
-    )
+    ref = ref.with_columns((pl.col(mean_expr_col) * pl.col(n_pos_cells_col)).alias("weighted_expr"))
 
     agg = (
         ref.group_by([cell_type_name_col, gene_name_col])
@@ -341,68 +326,59 @@ def group_reference(
             pl.sum("weighted_expr").alias("expr_sum"),
         )
         .with_columns(
-            (
-                pl.col("expr_sum") / pl.col(n_pos_cells_col)
-            ).fill_null(0).alias(mean_expr_col),
-            (
-                pl.col(n_pos_cells_col) / pl.col(n_cells_col)
-            ).fill_null(0).alias(percent_col),
+            (pl.col("expr_sum") / pl.col(n_pos_cells_col)).fill_null(0).alias(mean_expr_col),
+            (pl.col(n_pos_cells_col) / pl.col(n_cells_col)).fill_null(0).alias(percent_col),
         )
         .drop("expr_sum")
     )
     return agg
 
+
 def expression_summary_from_anndata(
-    ad: sc.AnnData,
-    cell_type_col: str,
-    raw_layer: str,
-    min_counts: int = 2
+    ad: sc.AnnData, cell_type_col: str, raw_layer: str, min_counts: int = 2
 ) -> pl.DataFrame:
     # TODO: Add documentation
-    
+
     # Normalize as in CellxGene
-    ad.layers['_cxg_norm'] = ad.layers[raw_layer].copy()
-    sc.pp.normalize_total(ad, target_sum=1e4, layer='_cxg_norm')
-    sc.pp.log1p(ad, layer='_cxg_norm')
+    ad.layers["_cxg_norm"] = ad.layers[raw_layer].copy()
+    sc.pp.normalize_total(ad, target_sum=1e4, layer="_cxg_norm")
+    sc.pp.log1p(ad, layer="_cxg_norm")
 
     # Filter as in CellxGene
     mask = ad.layers[raw_layer] >= min_counts
-    ad.layers['_cxg_norm'] = ad.layers['_cxg_norm'].multiply(mask)
-    ad.layers['_cxg_norm'].eliminate_zeros()
+    ad.layers["_cxg_norm"] = ad.layers["_cxg_norm"].multiply(mask)
+    ad.layers["_cxg_norm"].eliminate_zeros()
 
     # Summary data from CellxGene expression summary
     aggs = {
-        'n': 'count_nonzero',   # 1) Non-zero counts per cell type
-        'me': 'sum',            # 2) Mean expression in positive cells
+        "n": "count_nonzero",  # 1) Non-zero counts per cell type
+        "me": "sum",  # 2) Mean expression in positive cells
     }
-    stats = dict()
+    stats = {}
     for name, func in aggs.items():
         stats[name] = pl.from_pandas(
-            sc.get.aggregate(ad, by=cell_type_col, func=func, layer='_cxg_norm')
+            sc.get.aggregate(ad, by=cell_type_col, func=func, layer="_cxg_norm")
             .to_df(layer=func)
-            .melt(value_name=name, ignore_index=False, var_name='gene_name')
-            .reset_index(names='cell_type_name')
+            .melt(value_name=name, ignore_index=False, var_name="gene_name")
+            .reset_index(names="cell_type_name")
         )
 
     # 3) Number of cells per cell type
     n_ct = pl.from_pandas(
         ad.obs.value_counts(cell_type_col)
         .reset_index()
-        .rename(
-            {cell_type_col: 'cell_type_name', 'count': 'n_cells_cell_type'},
-            axis=1
-        )
-    ).with_columns(pl.col('cell_type_name').cast(pl.String))
+        .rename({cell_type_col: "cell_type_name", "count": "n_cells_cell_type"}, axis=1)
+    ).with_columns(pl.col("cell_type_name").cast(pl.String))
 
     # Join into summary dataframe
     summary = (
-        stats['n']
-        .join(stats['me'], on=['cell_type_name', 'gene_name'])
-        .join(n_ct, on='cell_type_name')
-        .filter(pl.col('n') > 0)
-        .with_columns(pl.col('me') / pl.col('n'))
-        .with_columns(pc=pl.col('n') / pl.col('n_cells_cell_type'))
-        .with_columns(pl.col('n').cast(pl.Int64))
+        stats["n"]
+        .join(stats["me"], on=["cell_type_name", "gene_name"])
+        .join(n_ct, on="cell_type_name")
+        .filter(pl.col("n") > 0)
+        .with_columns(pl.col("me") / pl.col("n"))
+        .with_columns(pc=pl.col("n") / pl.col("n_cells_cell_type"))
+        .with_columns(pl.col("n").cast(pl.Int64))
     )
 
     return summary

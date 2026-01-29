@@ -2,15 +2,16 @@
 
 ## pip
 
-Before installing **segger**, please install GPU-accelerated versions of PyTorch, RAPIDS, and related packages compatible with your system. *Please ensure all CUDA-enabled packages are compiled for the same CUDA version.*
+Before installing **segger**, please install GPU-accelerated versions of PyTorch, RAPIDS, and related packages compatible with your system. _Please ensure all CUDA-enabled packages are compiled for the same CUDA version._
 
-- **PyTorch & torchvision:** [Installation guide](https://pytorch.org/get-started/locally/)
-- **torch_scatter:** [Installation guide](https://github.com/rusty1s/pytorch_scatter#installation)
-- **RAPIDS (cuDF, cuML, cuGraph):** [Installation guide](https://docs.rapids.ai/install)
-- **CuPy:** [Installation guide](https://docs.cupy.dev/en/stable/install.html)
-- **cuSpatial:** [Installation guide](https://docs.rapids.ai/api/cuspatial/stable/user_guide/cuspatial_api_examples/#Installing-cuSpatial)
+-   **PyTorch & torchvision:** [Installation guide](https://pytorch.org/get-started/locally/)
+-   **torch_scatter:** [Installation guide](https://github.com/rusty1s/pytorch_scatter#installation)
+-   **RAPIDS (cuDF, cuML, cuGraph):** [Installation guide](https://docs.rapids.ai/install)
+-   **CuPy:** [Installation guide](https://docs.cupy.dev/en/stable/install.html)
+-   **cuSpatial:** [Installation guide](https://docs.rapids.ai/api/cuspatial/stable/user_guide/cuspatial_api_examples/#Installing-cuSpatial)
 
 For example, on Linux with CUDA 12.1 and PyTorch 2.5.0:
+
 ```bash
 # Install PyTorch and torchvision for CUDA 12.1
 pip install torch==2.5.0 torchvision==0.20.0 --index-url https://download.pytorch.org/whl/cu121
@@ -24,6 +25,7 @@ pip install --extra-index-url=https://pypi.nvidia.com cuspatial-cu12 cudf-cu12 c
 # Install CuPy for CUDA 12.x
 pip install cupy-cuda12x
 ```
+
 **December 2025:** To stay up-to-date with new developments, we recommend installing the latest version directly from GitHub:
 
 ```bash
@@ -35,11 +37,13 @@ pip install -e .
 # Usage
 
 You can run **segger** from the command line with:
+
 ```bash
 segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/
 ```
 
 To see all available parameter options:
+
 ```bash
 segger segment --help
 ```

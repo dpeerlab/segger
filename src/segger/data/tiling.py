@@ -1,18 +1,17 @@
-from functools import cached_property
 from abc import ABC, abstractmethod
-from numpy.typing import ArrayLike
-from shapely import box
+from functools import cached_property
+
+import cudf
+import torch
+from geometry import *
+
 import geopandas as gpd
 import numpy as np
-import torch
-import cudf
-
-from ..geometry import *
+from shapely import box
 
 
 class Tiling(ABC):
-    """
-    An abstract base class for spatial tilings.
+    """An abstract base class for spatial tilings.
 
     Implementing classes must define the `tiles` property, which returns a
     geopandas GeoSeries. This property should be computed once and cached.
@@ -25,8 +24,7 @@ class Tiling(ABC):
     @property
     @abstractmethod
     def tiles(self) -> gpd.GeoSeries:
-        """
-        A collection of Polygon geometries representing the tiles.
+        """A collection of Polygon geometries representing the tiles.
 
         This is an abstract property that must be implemented by subclasses.
         It is recommended to use @cached_property in the implementation for
@@ -35,12 +33,11 @@ class Tiling(ABC):
         ...
 
     def _check_tiles(self):
-        """
-        Explicitly ensure `self.tiles` is a collection of Polygon geometries,
+        """Explicitly ensure `self.tiles` is a collection of Polygon geometries,
         e.g., not MultiPolygon or Line.
         """
-        assert self.tiles.geom_type.eq('Polygon').all()
-    
+        assert self.tiles.geom_type.eq("Polygon").all()
+
     def _query_tiles(
         self,
         geometry: torch.Tensor,
@@ -88,16 +85,14 @@ class Tiling(ABC):
                 f"or polygons of shape (N, V, 2), but got {geometry.shape}."
             )
         if margin < 0:
-            raise ValueError(
-                f"The margin must be non-negative, but got {margin}."
-            )
+            raise ValueError(f"The margin must be non-negative, but got {margin}.")
         # Buffer tiles
         tiles = self.tiles
         if margin > 0:
             buffered = tiles.buffer(
                 -margin,
-                cap_style='square',
-                join_style='mitre',
+                cap_style="square",
+                join_style="mitre",
                 mitre_limit=margin / 2,
             )
             missing = buffered.is_empty.sum()
@@ -109,20 +104,20 @@ class Tiling(ABC):
             tiles = buffered
 
         # Spatial query
-        predicate = 'intersects' if inclusive else 'contains'
-        if geometry.dim() == 2: # points
+        predicate = "intersects" if inclusive else "contains"
+        if geometry.dim() == 2:  # points
             result = points_in_polygons(geometry, tiles, predicate)
-        else: # polygons
+        else:  # polygons
             result = polygons_in_polygons(geometry, tiles, predicate)
-        result = result.drop_duplicates('index_query')
+        result = result.drop_duplicates("index_query")
 
         # Format to tensor of indices (-1 where no match found)
-        kwargs = dict(device=geometry.device, dtype=torch.int64)
+        kwargs = {"device": geometry.device, "dtype": torch.int64}
         labels = torch.full((len(geometry),), -1, **kwargs)
         return labels.scatter_(
             dim=0,
-            index=torch.tensor(result['index_query'], **kwargs),
-            src=  torch.tensor(result['index_match'], **kwargs),
+            index=torch.tensor(result["index_query"], **kwargs),
+            src=torch.tensor(result["index_match"], **kwargs),
         )
 
     def label(
@@ -177,6 +172,7 @@ class Tiling(ABC):
         labels = self._query_tiles(geometry, inclusive=False, margin=margin)
         return labels != -1
 
+
 class QuadTreeTiling(Tiling):
     """A tiling system based on a quadtree decomposition of input points.
 
@@ -192,30 +188,31 @@ class QuadTreeTiling(Tiling):
     max_tile_size : int
         The maximum number of points allowed in any single quadtree tile.
     """
+
     def __init__(
         self,
         positions: torch.Tensor,
         max_tile_size: int,
     ):
         # Calculate QuadTree on points and set as tiles
-        points = points_to_geoseries(positions, backend='cuspatial')
+        points = points_to_geoseries(positions, backend="cuspatial")
         _, quadtree = get_quadtree_index(
             points,
             max_tile_size,
             with_bounds=True,
         )
-        self._tiles = quadtree_to_geoseries(quadtree, backend='geopandas')
+        self._tiles = quadtree_to_geoseries(quadtree, backend="geopandas")
 
     @property
     def tiles(self) -> gpd.GeoSeries:
-        """
-        A collection of Polygon geometries representing the boundaries of the
+        """A collection of Polygon geometries representing the boundaries of the
         leaves of the generated QuadTree.
         """
         return self._tiles
 
 
 ### Benchmarking Class ###
+
 
 class SquareTiling(Tiling):
     """A tiling system based on a uniform square grid.
@@ -233,23 +230,19 @@ class SquareTiling(Tiling):
     side_length : float
         The side length of each square tile. Must be positive.
     """
+
     def __init__(
         self,
         positions: torch.Tensor,
         side_length: float,
     ):
         if side_length <= 0:
-            raise ValueError(
-                f"side_length must be positive, but got {side_length}."
-            )
+            raise ValueError(f"side_length must be positive, but got {side_length}.")
         if positions.dim() != 2 or positions.shape[-1] != 2:
-            raise ValueError(
-                f"positions must be a tensor of shape (N, 2), "
-                f"but got {positions.shape}."
-            )
+            raise ValueError(f"positions must be a tensor of shape (N, 2), " f"but got {positions.shape}.")
         if len(positions) == 0:
             raise ValueError("positions cannot be empty.")
-        
+
         # Store only the spatial extent, not the positions
         self.min_x = positions[:, 0].min().item()
         self.max_x = positions[:, 0].max().item()
@@ -260,10 +253,9 @@ class SquareTiling(Tiling):
 
     @cached_property
     def tiles(self) -> gpd.GeoSeries:
-        """
-        A collection of Polygon geometries representing square tiles
+        """A collection of Polygon geometries representing square tiles
         covering the spatial extent of the input positions.
-        
+
         Returns
         -------
         gpd.GeoSeries
@@ -272,11 +264,14 @@ class SquareTiling(Tiling):
         x, y = np.meshgrid(
             np.arange(self.min_x, self.max_x, self.side_length),
             np.arange(self.min_y, self.max_y, self.side_length),
-            indexing='ij'
+            indexing="ij",
         )
-        coords = np.column_stack([
-            x.ravel(), y.ravel(),
-            np.minimum(x.ravel() + self.side_length, self.max_x),
-            np.minimum(y.ravel() + self.side_length, self.max_y)
-        ])
+        coords = np.column_stack(
+            [
+                x.ravel(),
+                y.ravel(),
+                np.minimum(x.ravel() + self.side_length, self.max_x),
+                np.minimum(y.ravel() + self.side_length, self.max_y),
+            ]
+        )
         return gpd.GeoSeries([box(*c) for c in coords])

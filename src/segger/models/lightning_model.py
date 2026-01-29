@@ -1,20 +1,17 @@
-from torch.nn import Embedding, BCEWithLogitsLoss, TripletMarginLoss
-from torch_geometric.data import Batch
-from lightning import LightningModule
-from torch_scatter import scatter_max
-from torch.nn import functional as F
-from typing import Any
-import polars as pl
-import pandas as pd
-import numpy as np
-import torch
 import math
-import os
+from io.fields import StandardTranscriptFields
 
-from .triplet_loss import TripletLoss, MetricLoss
-from ..io.fields import StandardTranscriptFields
-from ..data.data_module import ISTDataModule
+import torch
+from data.data_module import ISTDataModule
+from torch.nn import BCEWithLogitsLoss, Embedding, TripletMarginLoss
+from torch_scatter import scatter_max
+
+from lightning import LightningModule
+from torch_geometric.data import Batch
+
 from .ist_encoder import ISTEncoder
+from .triplet_loss import MetricLoss, TripletLoss
+
 
 class LitISTEncoder(LightningModule):
     """TODO: Description.
@@ -24,6 +21,7 @@ class LitISTEncoder(LightningModule):
     output_directory : Path
         Description.
     """
+
     def __init__(
         self,
         n_genes: int,
@@ -33,14 +31,14 @@ class LitISTEncoder(LightningModule):
         n_mid_layers: int = 2,
         n_heads: int = 2,
         learning_rate: float = 1e-3,
-        sg_loss_type: str = 'triplet',
+        sg_loss_type: str = "triplet",
         tx_margin: float = 0.3,
         sg_margin: float = 0.4,
-        tx_weight_start: float = 1.,
-        tx_weight_end: float = 1.,
-        bd_weight_start: float = 1.,
-        bd_weight_end: float = 1.,
-        sg_weight_start: float = 0.,
+        tx_weight_start: float = 1.0,
+        tx_weight_end: float = 1.0,
+        bd_weight_start: float = 1.0,
+        bd_weight_end: float = 1.0,
+        sg_weight_start: float = 0.0,
         sg_weight_end: float = 0.5,
         update_gene_embedding: bool = True,
         use_positional_embeddings: bool = True,
@@ -54,7 +52,7 @@ class LitISTEncoder(LightningModule):
             Description.
         """
         super().__init__()
-        
+
         self.save_hyperparameters()
 
         self.model = ISTEncoder(
@@ -71,36 +69,36 @@ class LitISTEncoder(LightningModule):
         self._sg_loss_type = sg_loss_type
         self._tx_margin = tx_margin
         self._sg_margin = sg_margin
-        self._w_start = torch.tensor([
-            tx_weight_start,
-            bd_weight_start,
-            sg_weight_start,
-        ])
-        self._w_end = torch.tensor([
-            tx_weight_end,
-            bd_weight_end,
-            sg_weight_end,
-        ])
+        self._w_start = torch.tensor(
+            [
+                tx_weight_start,
+                bd_weight_start,
+                sg_weight_start,
+            ]
+        )
+        self._w_end = torch.tensor(
+            [
+                tx_weight_end,
+                bd_weight_end,
+                sg_weight_end,
+            ]
+        )
         self._freeze_gene_embedding = not update_gene_embedding
 
     def setup(self, stage):
         # LitISTEncoder needs supp. data from ISTDataModule to train
         if not isinstance(self.trainer.datamodule, ISTDataModule):
             raise TypeError(
-                f"Expected data module to be `ISTDataModule` but got "
-                f"{type(self.trainer.datamodule).__name__}."
+                f"Expected data module to be `ISTDataModule` but got " f"{type(self.trainer.datamodule).__name__}."
             )
 
         # Only set gene embeddings if exist in data module
         if hasattr(self.trainer.datamodule, "gene_embedding"):
             tx_fields = StandardTranscriptFields()
             embedding_weights = (
-                self.trainer.datamodule.gene_embedding
-                .drop(tx_fields.feature)
-                .to_torch()
-                .to(torch.float)
+                self.trainer.datamodule.gene_embedding.drop(tx_fields.feature).to_torch().to(torch.float)
             )
-            self.model.lin_first['tx'] = Embedding.from_pretrained(
+            self.model.lin_first["tx"] = Embedding.from_pretrained(
                 embedding_weights,
                 freeze=self._freeze_gene_embedding,
             )
@@ -113,9 +111,9 @@ class LitISTEncoder(LightningModule):
         self.loss_bd = MetricLoss(
             self.trainer.datamodule.bd_similarity,
         )
-        if self._sg_loss_type == 'triplet':
+        if self._sg_loss_type == "triplet":
             self.loss_sg = TripletMarginLoss(margin=self._sg_margin)
-        elif self._sg_loss_type == 'bce':
+        elif self._sg_loss_type == "bce":
             self.loss_sg = BCEWithLogitsLoss()
         else:
             raise ValueError(
@@ -145,47 +143,44 @@ class LitISTEncoder(LightningModule):
         alpha = 0.5 * (1.0 + math.cos(math.pi * t))
         w = w_end + (w_start - w_end) * alpha
         if normalize:
-            w /= (w.sum() + 1e-8)
+            w /= w.sum() + 1e-8
         return w.to(self.device)
-    
+
     def get_losses(self, batch: Batch) -> tuple[torch.Tensor]:
         """Get all training losses and combine."""
         embeddings = self.forward(batch)
-        tx_mask = batch['tx']['mask']
-        bd_mask = batch['bd']['mask'] & (batch['bd']['cluster'] >= 0)
+        tx_mask = batch["tx"]["mask"]
+        bd_mask = batch["bd"]["mask"] & (batch["bd"]["cluster"] >= 0)
 
         # Both triplet losses
         loss_tx = self.loss_tx.forward(
-            embeddings['tx'][tx_mask],
-            batch['tx']['cluster'][tx_mask],
+            embeddings["tx"][tx_mask],
+            batch["tx"]["cluster"][tx_mask],
         )
         loss_bd = self.loss_bd.forward(
-            embeddings['bd'][bd_mask],
-            batch['bd']['cluster'][bd_mask],
+            embeddings["bd"][bd_mask],
+            batch["bd"]["cluster"][bd_mask],
         )
-        
+
         # Segmentation loss
-        src_pos, dst_pos = batch['tx', 'belongs', 'bd'].edge_index
-        num_bd = embeddings['bd'].size(0)
+        src_pos, dst_pos = batch["tx", "belongs", "bd"].edge_index
+        num_bd = embeddings["bd"].size(0)
         N = src_pos.size(0)
 
         # Handle edge case where there are too few boundaries for sampling
         if num_bd <= 1:
-            loss_sg = torch.tensor(0.0, device=embeddings['bd'].device, 
-                                   requires_grad=True)
+            loss_sg = torch.tensor(0.0, device=embeddings["bd"].device, requires_grad=True)
         else:
             # Generate negative destination nodes
-            dst_neg = (
-                dst_pos + torch.randint(1, num_bd, (N,), device=dst_pos.device)
-            ) % num_bd
+            dst_neg = (dst_pos + torch.randint(1, num_bd, (N,), device=dst_pos.device)) % num_bd
 
-            if self._sg_loss_type == 'triplet':
-                anchor   = embeddings['tx'][src_pos]
-                positive = embeddings['bd'][dst_pos]
-                negative = embeddings['bd'][dst_neg]
+            if self._sg_loss_type == "triplet":
+                anchor = embeddings["tx"][src_pos]
+                positive = embeddings["bd"][dst_pos]
+                negative = embeddings["bd"][dst_neg]
 
                 loss_sg = self.loss_sg(anchor, positive, negative)
-            
+
             # BCE loss
             else:
                 src = torch.cat([src_pos, src_pos])
@@ -194,15 +189,12 @@ class LitISTEncoder(LightningModule):
                 uniq_src, inv_src = torch.unique(src, return_inverse=True)
                 uniq_dst, inv_dst = torch.unique(dst, return_inverse=True)
 
-                src_vecs = embeddings['tx'].index_select(0, uniq_src)
-                dst_vecs = embeddings['bd'].index_select(0, uniq_dst)
+                src_vecs = embeddings["tx"].index_select(0, uniq_src)
+                dst_vecs = embeddings["bd"].index_select(0, uniq_dst)
 
                 logits = (src_vecs[inv_src] * dst_vecs[inv_dst]).sum(dim=-1)
 
-                labels = torch.cat([
-                    torch.ones(N, device=logits.device),
-                    torch.zeros(N, device=logits.device)
-                ])
+                labels = torch.cat([torch.ones(N, device=logits.device), torch.zeros(N, device=logits.device)])
 
                 loss_sg = self.loss_sg(logits, labels)
 
@@ -259,7 +251,7 @@ class LitISTEncoder(LightningModule):
             batch_size=batch.num_graphs,
         )
         return loss
-    
+
     def predict_step(
         self,
         batch: Batch,
@@ -267,32 +259,31 @@ class LitISTEncoder(LightningModule):
         min_similarity: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Prediction pass for the batch of data."""
-
         # Compute embeddings on full dataset
         embeddings = self.forward(batch)
-        
+
         # Compute all top assignments
-        src, dst = batch['tx', 'neighbors', 'bd'].edge_index
+        src, dst = batch["tx", "neighbors", "bd"].edge_index
         sim = torch.cosine_similarity(
-            embeddings['tx'][src],
-            embeddings['bd'][dst],
+            embeddings["tx"][src],
+            embeddings["bd"][dst],
         )
         max_sim, max_idx = scatter_max(
             sim,
             src,
-            dim_size=batch['tx'].num_nodes,
+            dim_size=batch["tx"].num_nodes,
         )
         # Filter by similarity
         valid = max_idx < dst.shape[0]
         if min_similarity is not None:
             valid &= max_sim >= min_similarity
 
-        src_idx = batch['tx']['index']
-        dst_idx = batch['bd']['index'].to(torch.long)
+        src_idx = batch["tx"]["index"]
+        dst_idx = batch["bd"]["index"].to(torch.long)
         seg_idx = torch.full_like(max_idx, -1)
         seg_idx[valid] = dst_idx[dst[max_idx[valid]]]
-        gen_idx = batch['tx']['x']
-        mask = batch['tx']['predict_mask']
+        gen_idx = batch["tx"]["x"]
+        mask = batch["tx"]["predict_mask"]
 
         return src_idx[mask], seg_idx[mask], max_sim[mask], gen_idx[mask]
 

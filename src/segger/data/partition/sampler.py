@@ -1,9 +1,8 @@
-from typing import List, Literal, Iterator, Optional
-from torch_geometric.loader import DataLoader
-import random
-import torch
 import math
+import random
+from typing import Iterator, List, Literal, Optional
 
+import torch
 
 from .dataset import PartitionDataset
 
@@ -15,8 +14,8 @@ def best_fit_decreasing(
 ) -> List[List[int]]:
     """Implements the Best-Fit Decreasing (BFD) bin packing algorithm.
 
-    BFD works by first sorting all items from largest to smallest. Then, each 
-    item is placed into the bin where it fits most tightly (i.e., the bin with 
+    BFD works by first sorting all items from largest to smallest. Then, each
+    item is placed into the bin where it fits most tightly (i.e., the bin with
     the least remaining capacity that can still hold the item).
 
     Parameters
@@ -26,32 +25,27 @@ def best_fit_decreasing(
     bin_capacity : float
         The capacity of each bin.
     skip_too_big : bool, optional
-        If True, items larger than `bin_capacity` or <= 0 are ignored instead 
+        If True, items larger than `bin_capacity` or <= 0 are ignored instead
         of raising an error. Defaults to False.
 
     Returns
     -------
     list of list of int
-        A list of bins, where each bin is a list of the original indices of the 
+        A list of bins, where each bin is a list of the original indices of the
         items it contains.
 
     Raises
     ------
     ValueError
-        If any item has a size greater than `bin_capacity` or less than or 
+        If any item has a size greater than `bin_capacity` or less than or
         equal to 0, and `skip_too_big` is False.
 
     """
     if skip_too_big:
-        indexed_items = [
-            (val, i) for i, val in enumerate(items)
-            if 0 < val <= bin_capacity
-        ]
+        indexed_items = [(val, i) for i, val in enumerate(items) if 0 < val <= bin_capacity]
     else:
         if not all(0 < item <= bin_capacity for item in items):
-            raise ValueError(
-                "All items must be > 0 and <= bin_capacity."
-            )
+            raise ValueError("All items must be > 0 and <= bin_capacity.")
         indexed_items = [(val, i) for i, val in enumerate(items)]
 
     # Sort items by size in descending order.
@@ -62,7 +56,7 @@ def best_fit_decreasing(
 
     for item_val, item_idx in indexed_items:
         best_bin_idx = -1
-        min_remaining_space = float('inf')
+        min_remaining_space = float("inf")
         # Find the best bin for the current item.
         for i, capacity in enumerate(bin_capacities):
             if capacity >= item_val:
@@ -90,11 +84,11 @@ def harmonic_k(
 ) -> List[List[int]]:
     """Implements the Harmonic-k online bin packing algorithm.
 
-    Classifies each incoming item into a harmonic interval based on its size 
-    and packs it with other items from the same interval. It processes items 
+    Classifies each incoming item into a harmonic interval based on its size
+    and packs it with other items from the same interval. It processes items
     in the order they arrive.
 
-    The `k` parameter defines `k-1` intervals for items > 1/k, while 
+    The `k` parameter defines `k-1` intervals for items > 1/k, while
     items <= 1/k are treated as "small" and packed together.
 
     Parameters
@@ -107,19 +101,19 @@ def harmonic_k(
         The integer defining the harmonic intervals. Must be >= 2.
         Defaults to 6.
     skip_too_big : bool, optional
-        If True, items larger than `bin_capacity` or <= 0 are ignored instead 
+        If True, items larger than `bin_capacity` or <= 0 are ignored instead
         of raising an error. Defaults to False.
 
     Returns
     -------
     list of list of int
-        A list of bins, where each bin is a list of the original indices of the 
+        A list of bins, where each bin is a list of the original indices of the
         items it contains.
 
     Raises
     ------
     ValueError
-        If an invalid item size is found and `skip_too_big` is False, or if `k` 
+        If an invalid item size is found and `skip_too_big` is False, or if `k`
         is less than 2.
 
     """
@@ -127,15 +121,10 @@ def harmonic_k(
         raise ValueError("Parameter k must be an integer >= 2.")
 
     if skip_too_big:
-        indexed_items = [
-            (val, i) for i, val in enumerate(items)
-            if 0 < val <= bin_capacity
-        ]
+        indexed_items = [(val, i) for i, val in enumerate(items) if 0 < val <= bin_capacity]
     else:
         if not all(0 < item <= bin_capacity for item in items):
-            raise ValueError(
-                "All items must be > 0 and <= bin_capacity."
-            )
+            raise ValueError("All items must be > 0 and <= bin_capacity.")
         indexed_items = list(enumerate(items))
         indexed_items = [(val, i) for i, val in indexed_items]
 
@@ -229,15 +218,10 @@ def first_fit_decreasing_bucketed(
     rng = rng or random
 
     if skip_too_big:
-        indexed_items = [
-            (val, i) for i, val in enumerate(items)
-            if 0 < val <= bin_capacity
-        ]
+        indexed_items = [(val, i) for i, val in enumerate(items) if 0 < val <= bin_capacity]
     else:
         if not all(0 < item <= bin_capacity for item in items):
-            raise ValueError(
-                "All items must be > 0 and <= bin_capacity."
-            )
+            raise ValueError("All items must be > 0 and <= bin_capacity.")
         indexed_items = [(val, i) for i, val in enumerate(items)]
 
     if not indexed_items:
@@ -253,13 +237,8 @@ def first_fit_decreasing_bucketed(
             rng.shuffle(indexed_items)  # Full shuffle
         else:
             # Find positions of the (k-1) largest adjacent gaps.
-            gaps = [
-                (indexed_items[i - 1][0] - indexed_items[i][0], i)
-                for i in range(1, n)
-            ]
-            cut_at = {
-                pos for _, pos in sorted(gaps, reverse=True)[:n_buckets - 1]
-            }
+            gaps = [(indexed_items[i - 1][0] - indexed_items[i][0], i) for i in range(1, n)]
+            cut_at = {pos for _, pos in sorted(gaps, reverse=True)[: n_buckets - 1]}
 
             # Shuffle within each bucket.
             start = 0
@@ -280,7 +259,7 @@ def first_fit_decreasing_bucketed(
                 bin_capacities[i] -= item_val
                 placed_in_bin = True
                 break
-        
+
         # If no suitable bin was found, open a new one.
         if not placed_in_bin:
             bins.append([item_idx])
@@ -292,15 +271,16 @@ def first_fit_decreasing_bucketed(
 class PartitionSampler(torch.utils.data.Sampler):
     """A batch sampler that packs data partitions into pre-computed batches.
 
-    This sampler groups partitions (e.g., subgraphs) into batches using bin 
-    packing algorithms. Batches are pre-computed to ensure the sampler's length 
+    This sampler groups partitions (e.g., subgraphs) into batches using bin
+    packing algorithms. Batches are pre-computed to ensure the sampler's length
     is always accurate.
 
     If `shuffle` is True, it uses an online algorithm (Harmonic-k) and
     regenerates the batches with a new shuffle after iterating through once
-    (e.g., at the beginning of a new epoch). If `shuffle` is False, it uses an 
+    (e.g., at the beginning of a new epoch). If `shuffle` is False, it uses an
     offline algorithm (BFD) and computes the batches only once.
     """
+
     def __init__(
         self,
         dataset: PartitionDataset,
@@ -319,7 +299,7 @@ class PartitionSampler(torch.utils.data.Sampler):
         max_num : int
             The maximum number of nodes or edges allowed per batch.
         mode : {"node", "edge"}, optional
-            Determines whether to use partition node counts or edge counts as 
+            Determines whether to use partition node counts or edge counts as
             the weights for packing. Defaults to "edge".
         subset : list of int, optional
             A list of partition indices to sample from. If None, the entire
@@ -330,7 +310,7 @@ class PartitionSampler(torch.utils.data.Sampler):
             batches. If False, an offline algorithm is used to create a
             fixed, deterministic set of batches. Defaults to False.
         skip_too_big : bool, optional
-            If True, partitions larger than `max_num` are ignored. If False, 
+            If True, partitions larger than `max_num` are ignored. If False,
             the packing algorithm will raise a ValueError. Defaults to False.
         """
         self.dataset = dataset
@@ -339,17 +319,14 @@ class PartitionSampler(torch.utils.data.Sampler):
         self.subset = subset
         self.shuffle = shuffle
         self.skip_too_big = skip_too_big
-        self.packing_algo = (
-            first_fit_decreasing_bucketed if self.shuffle else
-            best_fit_decreasing
-        )
+        self.packing_algo = first_fit_decreasing_bucketed if self.shuffle else best_fit_decreasing
 
         # Get partition sizes in numbers of nodes or edges
         if mode == "edge":
             weights = self.dataset.partition.edge_sizes
         else:
             weights = self.dataset.partition.node_sizes
-        
+
         if self.dataset._is_hetero:
             weights = torch.stack(list(weights.values())).sum(dim=0)
         self.weights = weights.tolist()
@@ -363,8 +340,7 @@ class PartitionSampler(torch.utils.data.Sampler):
 
     def _generate_batches(self) -> None:
         """Generates and stores a new set of batches for an epoch."""
-        indices = self.subset if self.subset is not None else \
-                  list(range(len(self.weights)))
+        indices = self.subset if self.subset is not None else list(range(len(self.weights)))
 
         if self.shuffle:
             random.shuffle(indices)
@@ -389,8 +365,7 @@ class PartitionSampler(torch.utils.data.Sampler):
         """
         if self.stale:
             self._generate_batches()
-        for batch in self.batches:
-            yield batch
+        yield from self.batches
         if self.shuffle:
             self.stale = True
 

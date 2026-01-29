@@ -1,12 +1,14 @@
-from shapely import from_ragged_array, GeometryType
 from typing import Literal
-import geopandas as gpd
-from numba import njit
-import pandas as pd
-import numpy as np
+
+import cudf
 import cupy as cp
 import cuspatial
-import cudf
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+from numba import njit
+from shapely import from_ragged_array, GeometryType
 
 
 def get_quadtree_kwargs(
@@ -39,20 +41,19 @@ def get_quadtree_kwargs(
     scale = extent // (1 << max_depth - 1)
 
     # Return as dictionary
-    return dict(
-        x_min=x_min,
-        x_max=x_max,
-        y_min=y_min,
-        y_max=y_max,
-        scale=scale,
-        max_depth=max_depth,
-    )
+    return {
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+        "scale": scale,
+        "max_depth": max_depth,
+    }
 
 
 @njit
 def keys_to_coordinates(keys):
-    """
-    Decode quadtree keys into 2D integer (x, y) coordinates.
+    """Decode quadtree keys into 2D integer (x, y) coordinates.
 
     Each key encodes the quadrant traversal path using two bits per level:
     - bit 0: x-direction
@@ -97,8 +98,7 @@ def get_quadrant_bounds(
     y_min: float,
     y_max: float,
 ):
-    """
-    Add spatial bounds to each leaf in a cuSpatial quadtree.
+    """Add spatial bounds to each leaf in a cuSpatial quadtree.
 
     This computes the (x_min, x_max, y_min, y_max) of each quadrant
     using its level and key. Coordinates are clipped to the full extent.
@@ -118,21 +118,21 @@ def get_quadrant_bounds(
         Input DataFrame with added bounding box columns: 'x_min', 'x_max',
         'y_min', and 'y_max'.
     """
-    width =  x_max - x_min
+    width = x_max - x_min
     height = y_max - y_min
-    levels = quadtree['level'].astype(float) + 1
-    coords = cp.array(keys_to_coordinates(quadtree['key'].to_numpy()))
+    levels = quadtree["level"].astype(float) + 1
+    coords = cp.array(keys_to_coordinates(quadtree["key"].to_numpy()))
     quadrant_max = np.ceil(np.log2(max(width, height)))
     quadrant_dim = 2 ** (quadrant_max - levels)
-    
-    quadtree['x_min'] = x_min + coords[0] * quadrant_dim
-    quadtree['x_max'] = quadtree['x_min'] + quadrant_dim
-    quadtree['y_min'] = y_min + coords[1] * quadrant_dim
-    quadtree['y_max'] = quadtree['y_min'] + quadrant_dim
 
-    quadtree['x_max'] = quadtree['x_max'].clip(x_min, x_max)
-    quadtree['y_max'] = quadtree['y_max'].clip(y_min, y_max)
-    
+    quadtree["x_min"] = x_min + coords[0] * quadrant_dim
+    quadtree["x_max"] = quadtree["x_min"] + quadrant_dim
+    quadtree["y_min"] = y_min + coords[1] * quadrant_dim
+    quadtree["y_max"] = quadtree["y_min"] + quadrant_dim
+
+    quadtree["x_max"] = quadtree["x_max"].clip(x_min, x_max)
+    quadtree["y_max"] = quadtree["y_max"].clip(y_min, y_max)
+
     return quadtree
 
 
@@ -150,7 +150,7 @@ def get_quadtree_index(
     max_size : int
         Maximum number of points allowed in a single tile.
     with_bounds : bool, optional
-        Whether to return the x, y bounds of each leaf with the quadtree 
+        Whether to return the x, y bounds of each leaf with the quadtree
         DataFrame. Default is True.
 
     Returns
@@ -162,12 +162,12 @@ def get_quadtree_index(
     """
     # Get hyperparams for quadtree
     kwargs = get_quadtree_kwargs(points)
-    x_min = kwargs['x_min']
-    x_max = kwargs['x_max']
-    y_min = kwargs['y_min']
-    y_max = kwargs['y_max']
-    scale = kwargs['scale']
-    max_depth = kwargs['max_depth']
+    x_min = kwargs["x_min"]
+    x_max = kwargs["x_max"]
+    y_min = kwargs["y_min"]
+    y_max = kwargs["y_max"]
+    scale = kwargs["scale"]
+    max_depth = kwargs["max_depth"]
 
     # Calculate quadtree on region
     indices, quadtree = cuspatial.quadtree_on_points(
@@ -183,7 +183,7 @@ def get_quadtree_index(
     # Add bounds of tiles
     if with_bounds:
         quadtree = get_quadrant_bounds(
-            quadtree, 
+            quadtree,
             x_min=x_min,
             x_max=x_max,
             y_min=y_min,
@@ -195,10 +195,10 @@ def get_quadtree_index(
 
 def quadtree_to_geoseries(
     quadtree: cudf.DataFrame,
-    backend: Literal['cuspatial', 'geopandas'],
+    backend: Literal["cuspatial", "geopandas"],
 ) -> cuspatial.GeoSeries | gpd.GeoSeries:
     """Helper function to convert cuspatial Quadtree to leaf geometries.
-    
+
     Parameters
     ----------
     quadtree : cudf.DataFrame
@@ -210,24 +210,24 @@ def quadtree_to_geoseries(
         The quadtree leaves converted to GeoSeries format.
     """
     # Raise error if bounds not added
-    bounds_columns = ['x_min', 'y_min', 'x_max', 'y_max']
+    bounds_columns = ["x_min", "y_min", "x_max", "y_max"]
     if not pd.Index(bounds_columns).isin(quadtree.columns).all():
         raise IndexError("Quadtree missing boundary column(s).")
-    
+
     # Convert to GeoSeries
-    mask = ~quadtree['is_internal_node']
+    mask = ~quadtree["is_internal_node"]
     bounds = quadtree.loc[mask, bounds_columns].values
-    vertices = bounds[:, [0, 1, 0, 3, 2, 3, 2, 1]].astype('double').flatten()
+    vertices = bounds[:, [0, 1, 0, 3, 2, 3, 2, 1]].astype("double").flatten()
     ring_offset = cp.arange(0, bounds.shape[0] * 4 + 1, 4)
     part_offset = geometry_offset = cp.arange(bounds.shape[0] + 1)
-    if backend == 'cuspatial':
+    if backend == "cuspatial":
         return cuspatial.GeoSeries.from_polygons_xy(
             vertices,
             ring_offset,
             part_offset,
             geometry_offset,
         )
-    else: # geopandas
+    else:  # geopandas
         geometry = from_ragged_array(
             GeometryType.POLYGON,
             vertices.reshape(-1, 2).get(),

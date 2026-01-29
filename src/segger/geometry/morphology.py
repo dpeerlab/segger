@@ -1,6 +1,7 @@
 import geopandas as gpd
 import pandas as pd
 
+
 def get_polygon_props(
     polygons: gpd.GeoSeries,
     area: bool = True,
@@ -8,8 +9,7 @@ def get_polygon_props(
     elongation: bool = True,
     circularity: bool = True,
 ) -> pd.DataFrame:
-    """
-    Computes geometric properties of polygons.
+    """Computes geometric properties of polygons.
 
     Parameters
     ----------

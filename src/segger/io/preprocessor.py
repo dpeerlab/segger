@@ -1,32 +1,27 @@
-from pandas.errors import DtypeWarning
-from functools import cached_property
-from abc import ABC, abstractmethod
-from anndata import AnnData
-from typing import Literal
-from pathlib import Path
-import geopandas as gpd
-import polars as pl
-import pandas as pd
-import warnings
 import logging
 import sys
+import warnings
+from abc import ABC, abstractmethod
+from functools import cached_property
+from pathlib import Path
+
+import geopandas as gpd
+import pandas as pd
+import polars as pl
+from pandas.errors import DtypeWarning
+
+from anndata import AnnData
 
 from .cosmx import get_cosmx_polygons
-from .utils import (
-    contours_to_polygons,
-    fix_invalid_geometry,
-)
 from .fields import (
-    MerscopeTranscriptFields,
-    MerscopeBoundaryFields,
-    StandardTranscriptFields,
-    StandardBoundaryFields,
-    XeniumTranscriptFields, 
-    XeniumBoundaryFields,
-    CosMxTranscriptFields,
     CosMxBoundaryFields,
+    CosMxTranscriptFields,
+    StandardBoundaryFields,
+    StandardTranscriptFields,
+    XeniumBoundaryFields,
+    XeniumTranscriptFields,
 )
-
+from .utils import contours_to_polygons, fix_invalid_geometry
 
 # Ignore pandas warnings in CosMX transcripts file
 warnings.filterwarnings("ignore", category=DtypeWarning)
@@ -34,10 +29,10 @@ warnings.filterwarnings("ignore", category=DtypeWarning)
 # Register of available ISTPreprocessor subclasses keyed by platform name.
 PREPROCESSORS = {}
 
+
 def register_preprocessor(name):
-    """
-    Decorator to register a preprocessor class under a given platform name.
-    
+    """Decorator to register a preprocessor class under a given platform name.
+
     Parameters
     ----------
     name : str
@@ -48,21 +43,22 @@ def register_preprocessor(name):
     decorator : Callable
         Class decorator that adds the class to the PREPROCESSORS registry.
     """
+
     def decorator(cls):
         PREPROCESSORS[name] = cls
         return cls
+
     return decorator
 
+
 class ISTPreprocessor(ABC):
-    """
-    Abstract base class for platform-specific preprocessing of spatial
+    """Abstract base class for platform-specific preprocessing of spatial
     transcriptomics data. Subclasses must implement methods to construct
     transcript and boundary GeoDataFrames for the given platform.
     """
 
     def __init__(self, data_dir: Path):
-        """
-        Parameters
+        """Parameters
         ----------
         data_dir : Path
             Path to the raw data directory for the spatial platform.
@@ -74,34 +70,23 @@ class ISTPreprocessor(ABC):
     @staticmethod
     @abstractmethod
     def _validate_directory(data_dir: Path):
-        """
-        Check that all required files/directories are present in `data_dir`.
-        """
+        """Check that all required files/directories are present in `data_dir`."""
         ...
 
     @property
     @abstractmethod
     def transcripts(self) -> pl.DataFrame:
-        """
-        Construct, standardize, and return transcripts as a Polars DataFrame.
-        """
+        """Construct, standardize, and return transcripts as a Polars DataFrame."""
         ...
 
     @property
     @abstractmethod
     def boundaries(self) -> gpd.GeoDataFrame:
-        """
-        Construct, standardize, and return cell boundaries.
-        """
+        """Construct, standardize, and return cell boundaries."""
         ...
 
-    def _get_anndata(
-        self,
-        transcripts: gpd.GeoDataFrame,
-        label: str
-    ) -> AnnData:
-        """
-        Convert transcript data to an AnnData object using a specified 
+    def _get_anndata(self, transcripts: gpd.GeoDataFrame, label: str) -> AnnData:
+        """Convert transcript data to an AnnData object using a specified
         segmentation label column.
 
         Parameters
@@ -118,14 +103,8 @@ class ISTPreprocessor(ABC):
         """
         ...
 
-    def save(
-        self,
-        out_dir: Path,
-        verbose: bool = False,
-        overwrite: bool = False
-    ):
-        """
-        Generate and save GeoParquet files for transcripts, cell and nucleus
+    def save(self, out_dir: Path, verbose: bool = False, overwrite: bool = False):
+        """Generate and save GeoParquet files for transcripts, cell and nucleus
         boundaries, and an AnnData object from transcript-to-nucleus mappings.
 
         Parameters
@@ -137,10 +116,10 @@ class ISTPreprocessor(ABC):
         """
         logger = self._setup_logging(verbose)
 
-        self.tx_out = out_dir / 'transcripts.parquet'
-        self.ad_out = out_dir / 'nucleus_boundaries.h5ad'
-        self.bd_out_cell = out_dir / 'cell_boundaries_geo.parquet'
-        self.bd_out_nuc = out_dir / 'nucleus_boundaries_geo.parquet'
+        self.tx_out = out_dir / "transcripts.parquet"
+        self.ad_out = out_dir / "nucleus_boundaries.h5ad"
+        self.bd_out_cell = out_dir / "cell_boundaries_geo.parquet"
+        self.bd_out_nuc = out_dir / "nucleus_boundaries_geo.parquet"
 
         logger.info("Loading transcripts")
         tx = self._get_transcripts()
@@ -150,24 +129,16 @@ class ISTPreprocessor(ABC):
             bd_nuc = gpd.read_parquet(self.bd_out_nuc)
         else:
             logger.info("Constructing & saving nuclear boundaries")
-            bd_nuc = self._get_boundaries('nucleus')
-            bd_nuc.to_parquet(
-                self.bd_out_nuc,
-                write_covering_bbox=True,
-                geometry_encoding="geoarrow"
-            )
-        
+            bd_nuc = self._get_boundaries("nucleus")
+            bd_nuc.to_parquet(self.bd_out_nuc, write_covering_bbox=True, geometry_encoding="geoarrow")
+
         if self.bd_out_cell.exists() and not overwrite:
             logger.info("Loading cell boundaries (from file)")
             bd_cell = gpd.read_parquet(self.bd_out_cell)
         else:
             logger.info("Constructing & saving cell boundaries")
-            bd_cell = self._get_boundaries('cell')
-            bd_cell.to_parquet(
-                self.bd_out_cell,
-                write_covering_bbox=True,
-                geometry_encoding="geoarrow"
-            )
+            bd_cell = self._get_boundaries("cell")
+            bd_cell.to_parquet(self.bd_out_cell, write_covering_bbox=True, geometry_encoding="geoarrow")
 
         logger.info("Assigning to nuclear boundaries")
         lbl = "nucleus_boundaries_id"
@@ -178,7 +149,7 @@ class ISTPreprocessor(ABC):
         tx = self.assign_transcripts_to_boundaries(tx, bd_cell, lbl)
 
         logger.info("Saving transcripts")
-        tx = pd.DataFrame(tx.drop(columns='geometry'))
+        tx = pd.DataFrame(tx.drop(columns="geometry"))
         tx.to_parquet(self.tx_out, index=False)
 
         logger.info("Creating AnnData")
@@ -188,13 +159,9 @@ class ISTPreprocessor(ABC):
         ad.write_h5ad(self.ad_out)
 
     def assign_transcripts_to_boundaries(
-        self,
-        transcripts: gpd.GeoDataFrame,
-        boundaries: gpd.GeoDataFrame,
-        boundary_label: str = "boundaries_id"
+        self, transcripts: gpd.GeoDataFrame, boundaries: gpd.GeoDataFrame, boundary_label: str = "boundaries_id"
     ) -> gpd.GeoDataFrame:
-        """
-        Assign transcripts to boundaries using spatial join.
+        """Assign transcripts to boundaries using spatial join.
 
         Parameters
         ----------
@@ -210,28 +177,21 @@ class ISTPreprocessor(ABC):
         gpd.GeoDataFrame
             Transcripts with assigned segmentation labels.
         """
-        joined = gpd.sjoin(
-            transcripts,
-            boundaries,
-            how="left",
-            predicate="intersects"
-        )
-        
+        joined = gpd.sjoin(transcripts, boundaries, how="left", predicate="intersects")
+
         return joined.rename(columns={"index_right": boundary_label})
-    
+
     def _setup_logging(self, verbose: bool = False) -> logging.Logger:
         class TimeFilter(logging.Filter):
-            
             def filter(self, record):
                 from datetime import datetime
+
                 try:
                     last = self.last
                 except AttributeError:
                     last = record.relativeCreated
-                delta = datetime.fromtimestamp(record.relativeCreated/1e3) - \
-                        datetime.fromtimestamp(last/1e3)
-                record.relative = '{0:.2f}'.format(
-                    delta.seconds + delta.microseconds/1e6)
+                delta = datetime.fromtimestamp(record.relativeCreated / 1e3) - datetime.fromtimestamp(last / 1e3)
+                record.relative = f"{delta.seconds + delta.microseconds / 1e6:.2f}"
                 self.last = record.relativeCreated
                 return True
 
@@ -243,20 +203,16 @@ class ISTPreprocessor(ABC):
             logger.addHandler(handler)
         for hndl in logger.handlers:
             hndl.addFilter(TimeFilter())
-            hndl.setFormatter(logging.Formatter(
-                fmt="%(asctime)s (%(relative)ss) %(message)s"
-            ))
+            hndl.setFormatter(logging.Formatter(fmt="%(asctime)s (%(relative)ss) %(message)s"))
         return logger
 
 
 @register_preprocessor("nanostring_cosmx")
 class CosMXPreprocessor(ISTPreprocessor):
-    """
-    Preprocessor for NanoString CosMX datasets.
-    """
+    """Preprocessor for NanoString CosMX datasets."""
+
     @staticmethod
     def _validate_directory(data_dir: Path):
-
         # Check required files/directories
         bd_fields = CosMxBoundaryFields()
         tx_fields = CosMxTranscriptFields()
@@ -268,14 +224,13 @@ class CosMXPreprocessor(ISTPreprocessor):
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
-                raise IOError(
+                raise OSError(
                     f"CosMx sample directory must contain exactly 1 file or "
                     f"directory matching {pat}, but found {num_matches}."
                 )
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
-
         # Field names
         raw = CosMxTranscriptFields()
         std = StandardTranscriptFields()
@@ -285,9 +240,7 @@ class CosMXPreprocessor(ISTPreprocessor):
             pl.scan_csv(next(self.data_dir.glob(raw.filename)))
             .with_row_index(name=std.row_index)
             # Filter data
-            .filter(pl.col(raw.feature).str.contains(
-                '|'.join(raw.filter_substrings)).not_()
-            )
+            .filter(pl.col(raw.feature).str.contains("|".join(raw.filter_substrings)).not_())
             # Standardize compartment labels
             .with_columns(
                 pl.col(raw.compartment)
@@ -312,11 +265,8 @@ class CosMXPreprocessor(ISTPreprocessor):
             )
             # Map to standard field names
             .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
-
+            # Subset to necessary fields
+            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment])
             # Add numeric index
             .with_row_index()
             .collect()
@@ -324,19 +274,16 @@ class CosMXPreprocessor(ISTPreprocessor):
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        
         # Field names
-        raw = CosMxBoundaryFields()
+        CosMxBoundaryFields()
         std = StandardBoundaryFields()
 
         # Join boundary datasets
-        cells = get_cosmx_polygons(self.data_dir, 'cell').reset_index(
-            drop=False, names=std.id)
+        cells = get_cosmx_polygons(self.data_dir, "cell").reset_index(drop=False, names=std.id)
         cells = fix_invalid_geometry(cells)
         cells[std.boundary_type] = std.cell_value
 
-        nuclei = get_cosmx_polygons(self.data_dir, 'nucleus').reset_index(
-            drop=False, names=std.id)
+        nuclei = get_cosmx_polygons(self.data_dir, "nucleus").reset_index(drop=False, names=std.id)
         nuclei = fix_invalid_geometry(nuclei)
         nuclei[std.boundary_type] = std.nucleus_value
 
@@ -352,29 +299,30 @@ class CosMXPreprocessor(ISTPreprocessor):
             .get(std.boundary_type)
         )
         # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
-            std.nucleus_value: '0',
-            std.cell_value: '1',
-        })
+        bd.index = (
+            bd[std.id]
+            + "_"
+            + bd[std.boundary_type].map(
+                {
+                    std.nucleus_value: "0",
+                    std.cell_value: "1",
+                }
+            )
+        )
         return bd
-    
+
     def _get_anndata(self, transcripts, label):
         return utils.transcripts_to_anndata(
-            transcripts=transcripts,
-            cell_label=label,
-            gene_label=self._gene,
-            coordinate_labels=[self._x, self._y]
+            transcripts=transcripts, cell_label=label, gene_label=self._gene, coordinate_labels=[self._x, self._y]
         )
 
 
 @register_preprocessor("10x_xenium")
 class XeniumPreprocessor(ISTPreprocessor):
-    """
-    Preprocessor for 10x Genomics Xenium datasets.
-    """
+    """Preprocessor for 10x Genomics Xenium datasets."""
+
     @staticmethod
     def _validate_directory(data_dir: Path):
-
         # Check required files/directories
         bd_fields = XeniumBoundaryFields()
         tx_fields = XeniumTranscriptFields()
@@ -385,63 +333,45 @@ class XeniumPreprocessor(ISTPreprocessor):
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
-                raise IOError(
+                raise OSError(
                     f"Xenium sample directory must contain exactly 1 file or "
                     f"directory matching {pat}, but found {num_matches}."
                 )
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
-
         # Field names
         raw = XeniumTranscriptFields()
         std = StandardTranscriptFields()
 
         return (
             # Read in lazily
-            pl.scan_parquet(
-                self.data_dir / raw.filename,
-                parallel='row_groups'
-            )
+            pl.scan_parquet(self.data_dir / raw.filename, parallel="row_groups")
             # Add numeric index at beginning
             .with_row_index(name=std.row_index)
             # Filter data
             .filter(pl.col(raw.quality) >= 20)
-            .filter(pl.col(raw.feature).str.contains(
-                '|'.join(raw.filter_substrings)).not_()
-            )
+            .filter(pl.col(raw.feature).str.contains("|".join(raw.filter_substrings)).not_())
             # Standardize compartment labels
             .with_columns(
                 pl.when(pl.col(raw.compartment) == raw.nucleus_value)
                 .then(std.nucleus_value)
-                .when(
-                    (pl.col(raw.compartment) != raw.nucleus_value) & 
-                    (pl.col(raw.cell_id) != raw.null_cell_id)
-                )
+                .when((pl.col(raw.compartment) != raw.nucleus_value) & (pl.col(raw.cell_id) != raw.null_cell_id))
                 .then(std.cytoplasmic_value)
                 .otherwise(std.extracellular_value)
                 .alias(std.compartment)
             )
             # Standardize cell IDs
-            .with_columns(
-                pl.col(raw.cell_id)
-                .replace(raw.null_cell_id, None)
-                .alias(std.cell_id)
-            )
+            .with_columns(pl.col(raw.cell_id).replace(raw.null_cell_id, None).alias(std.cell_id))
             # Map to standard field names
             .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
+            # Subset to necessary fields
+            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment])
             .collect()
         )
 
     @staticmethod
-    def _get_boundaries(
-        filepath: Path,
-        boundary_type: str
-    ) -> gpd.GeoDataFrame:
+    def _get_boundaries(filepath: Path, boundary_type: str) -> gpd.GeoDataFrame:
         # TODO: Add documentation
 
         # Field names
@@ -449,7 +379,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         std = StandardBoundaryFields()
 
         # Read in flat vertices and convert to geometries
-        bd = pl.read_parquet(filepath, parallel='row_groups')
+        bd = pl.read_parquet(filepath, parallel="row_groups")
         bd = contours_to_polygons(
             x=bd[raw.x].to_numpy(),
             y=bd[raw.y].to_numpy(),
@@ -459,7 +389,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         # Standardize cell ids and types
         bd[std.boundary_type] = boundary_type
         return bd
-    
+
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
         # TODO: Add documentation
@@ -467,18 +397,12 @@ class XeniumPreprocessor(ISTPreprocessor):
         std = StandardBoundaryFields()
 
         # Join boundary datasets
-        cells = self._get_boundaries(
-            self.data_dir / raw.cell_filename,
-            std.cell_value
-        )
-        nuclei = self._get_boundaries(
-            self.data_dir / raw.nucleus_filename,
-            std.nucleus_value
-        )
+        cells = self._get_boundaries(self.data_dir / raw.cell_filename, std.cell_value)
+        nuclei = self._get_boundaries(self.data_dir / raw.nucleus_filename, std.nucleus_value)
 
         # 10X Xenium nucleus segmentation is intersection of geometries
         idx = cells.index.intersection(nuclei.index)
-        ixn = cells.loc[idx].intersection(nuclei.loc[idx])
+        cells.loc[idx].intersection(nuclei.loc[idx])
         # Remove non-overlapping geometries (10X bug)
         # empty = ixn.is_empty
         # nuclei.drop(idx[empty], axis=0, inplace=True)
@@ -492,24 +416,31 @@ class XeniumPreprocessor(ISTPreprocessor):
         cells.loc[idx, std.contains_nucleus] = True
 
         # Join geometries
-        bd = pd.concat([
-            cells.reset_index(drop=False, names=std.id), 
-            nuclei.reset_index(drop=False, names=std.id),
-        ])
+        bd = pd.concat(
+            [
+                cells.reset_index(drop=False, names=std.id),
+                nuclei.reset_index(drop=False, names=std.id),
+            ]
+        )
         # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
-            std.nucleus_value: '0',
-            std.cell_value: '1',
-        })
+        bd.index = (
+            bd[std.id]
+            + "_"
+            + bd[std.boundary_type].map(
+                {
+                    std.nucleus_value: "0",
+                    std.cell_value: "1",
+                }
+            )
+        )
 
         return bd
 
 
 @register_preprocessor("vizgen_merscope")
 class MerscopePreprocessor(ISTPreprocessor):
-    """
-    Preprocessor for Vizgen MERSCOPE datasets.
-    """
+    """Preprocessor for Vizgen MERSCOPE datasets."""
+
     @staticmethod
     def _validate_directory(data_dir: Path):
         raise NotImplementedError()
@@ -526,29 +457,18 @@ def _infer_platform(data_dir: Path) -> str:
             exceptions.append(e)
     if len(matches) == 0:
         err_str = ", ".join(map(str, exceptions))
-        raise ValueError(
-            f"Could not infer platform from data directory: {err_str}."
-        )
+        raise ValueError(f"Could not infer platform from data directory: {err_str}.")
     elif len(matches) > 1:
         conflicting_platforms = ", ".join(matches)
-        raise ValueError(
-            f"Ambiguous data directory: Multiple platforms match: "
-            f"{conflicting_platforms}."
-        )
+        raise ValueError(f"Ambiguous data directory: Multiple platforms match: " f"{conflicting_platforms}.")
     return matches[0]
 
 
-def get_preprocessor(
-    data_dir: Path,
-    platform: str | None = None
-) -> ISTPreprocessor:
+def get_preprocessor(data_dir: Path, platform: str | None = None) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
-        platform = _infer_platform(data_dir) 
+        platform = _infer_platform(data_dir)
     if platform not in PREPROCESSORS:
-        raise ValueError(
-            f"Unknown platform: '{platform}'. "
-            f"Available: {list(PREPROCESSORS)}"
-        )
+        raise ValueError(f"Unknown platform: '{platform}'. " f"Available: {list(PREPROCESSORS)}")
     cls = PREPROCESSORS[platform.lower()]
     return cls(data_dir)

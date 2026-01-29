@@ -1,13 +1,14 @@
-from numpy.typing import ArrayLike
+import cv2
+import skimage
+
 import geopandas as gpd
 import numpy as np
-import skimage
 import shapely
-import cv2
+from numpy.typing import ArrayLike
+
 
 def masks_to_contours(masks: ArrayLike) -> np.ndarray:
-    """
-    Convert labeled mask image to contours with cell ID annotations.
+    """Convert labeled mask image to contours with cell ID annotations.
 
     Parameters
     ----------
@@ -25,19 +26,18 @@ def masks_to_contours(masks: ArrayLike) -> np.ndarray:
     for p in props:
         # Get largest contour with label
         lbl_contours = cv2.findContours(
-            np.pad(p.image, 0).astype('uint8'),
+            np.pad(p.image, 0).astype("uint8"),
             cv2.RETR_LIST,
             cv2.CHAIN_APPROX_SIMPLE,
         )[0]
         contour = sorted(lbl_contours, key=lambda c: c.shape[0])[-1]
         if contour.shape[0] > 2:
-            contour = np.hstack([
-                np.squeeze(contour)[:, ::-1] + p.bbox[:2],  # vertices
-                np.full((contour.shape[0], 1), p.label)  # ID
-            ])
+            contour = np.hstack(
+                [np.squeeze(contour)[:, ::-1] + p.bbox[:2], np.full((contour.shape[0], 1), p.label)]  # vertices  # ID
+            )
             contours.append(contour)
     contours = np.concatenate(contours)
-    
+
     return contours
 
 
@@ -46,8 +46,7 @@ def contours_to_polygons(
     y: ArrayLike,
     ids: ArrayLike,
 ) -> gpd.GeoDataFrame:
-    """
-    Convert contour vertices into Shapely polygons.
+    """Convert contour vertices into Shapely polygons.
 
     Parameters
     ----------
@@ -72,7 +71,7 @@ def contours_to_polygons(
     part_offset = np.arange(len(np.unique(ids)) + 1)
     polygons = shapely.from_ragged_array(
         shapely.GeometryType.POLYGON,
-        coords=np.stack([x, y]).T.copy(order='C'),
+        coords=np.stack([x, y]).T.copy(order="C"),
         offsets=(geometry_offset, part_offset),
     )
 
@@ -81,8 +80,7 @@ def contours_to_polygons(
 
 
 def resort_coordinates(poly):
-    """
-    Sort a list of (x, y) coordinates in counter-clockwise order.
+    """Sort a list of (x, y) coordinates in counter-clockwise order.
 
     Parameters
     ----------
@@ -96,19 +94,18 @@ def resort_coordinates(poly):
     """
     coords = np.asarray(poly.exterior.xy).T
     cx, cy = coords.mean(axis=0)
-    angles = np.arctan2(coords[:,1] - cy, coords[:,0] - cx)
+    angles = np.arctan2(coords[:, 1] - cy, coords[:, 0] - cx)
     sorted_coords = coords[np.argsort(angles)]
 
     return shapely.Polygon(sorted_coords)
 
 
 def fix_invalid_geometry(gdf: gpd.GeoDataFrame):
-    """
-    Fix invalid geometries by resorting coordinates.
-    """
+    """Fix invalid geometries by resorting coordinates."""
     mask = ~gdf.geometry.is_valid
-    if not mask.any(): return gdf
-    
+    if not mask.any():
+        return gdf
+
     fixed = gdf.loc[mask].geometry.apply(resort_coordinates)
     gdf.loc[mask, gdf.geometry.name] = fixed
     return gdf
