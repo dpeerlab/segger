@@ -4,9 +4,11 @@ from lightning.pytorch import Trainer, LightningModule
 from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
+import numpy as np
 import torch
 
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
+from ..prediction import apply_fragment_mode
 from . import ISTDataModule
 
 
@@ -16,26 +18,61 @@ def threshold(x):
         threshold_yen(x[0].to_numpy()),
     )
 class ISTSegmentationWriter(BasePredictionWriter):
-    """TODO: Description
-    
+    """Writer for segmentation predictions.
+
     Parameters
     ----------
     output_directory : Path
         Path to write outputs.
+    min_similarity : float | None, optional
+        Minimum similarity threshold for transcript-cell assignment.
+        If None (default), uses per-gene auto-thresholding (Li+Yen methods).
+    fragment_mode : bool, optional
+        Enable fragment mode for grouping unassigned transcripts (default: False).
+    fragment_min_transcripts : int, optional
+        Minimum transcripts per fragment cell (default: 5).
+    fragment_similarity_threshold : float, optional
+        Similarity threshold for tx-tx edges in fragment mode (default: 0.5).
     """
 
-    def __init__(self, output_directory: Path):
+    def __init__(
+        self,
+        output_directory: Path,
+        min_similarity: float | None = None,
+        fragment_mode: bool = False,
+        fragment_min_transcripts: int = 5,
+        fragment_similarity_threshold: float = 0.5,
+    ):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
+        self.min_similarity = min_similarity
+        self.fragment_mode = fragment_mode
+        self.fragment_min_transcripts = fragment_min_transcripts
+        self.fragment_similarity_threshold = fragment_similarity_threshold
 
     def write_on_epoch_end(
         self,
         trainer: Trainer,
         pl_module: LightningModule,
-        predictions: Sequence[list], 
+        predictions: Sequence[list],
         batch_indices: Sequence[Any],
     ):
-        """TODO: Description
+        """Write segmentation predictions to file at end of prediction epoch.
+
+        Collects all batch predictions, applies thresholding (fixed or per-gene),
+        optionally applies fragment mode for unassigned transcripts, and writes
+        the final segmentation to a parquet file.
+
+        Parameters
+        ----------
+        trainer : Trainer
+            PyTorch Lightning trainer instance.
+        pl_module : LightningModule
+            The trained model module.
+        predictions : Sequence[list]
+            List of prediction batches, each containing (src_idx, seg_idx, similarity, gen_idx).
+        batch_indices : Sequence[Any]
+            Batch indices (not used).
         """
         tx_fields = TrainingTranscriptFields()
         bd_fields = TrainingBoundaryFields()
@@ -103,32 +140,151 @@ class ISTSegmentationWriter(BasePredictionWriter):
             )
             .unique(tx_fields.row_index, keep="first")
         )
-        # Per-gene thresholding
-        thresholds = (
-            segmentation
-            .group_by(tx_fields.feature)
-            .agg(
-                pl
-                .col('segger_similarity')
-                .shuffle(seed=0)
-                .head(10_000_000)
-            )
-            .explode('segger_similarity')
-            .group_by(tx_fields.feature)
-            .agg(
-                pl.map_groups(
-                    pl.col('segger_similarity'),
-                    threshold,
-                    return_dtype=pl.Float64,
-                    returns_scalar=True,
+        # Apply thresholding
+        if self.min_similarity is not None:
+            # Use fixed threshold
+            output = (
+                segmentation
+                .with_columns(
+                    pl.lit(self.min_similarity).alias("similarity_threshold")
                 )
-                .alias("similarity_threshold")
+                .drop(tx_fields.feature)
             )
+        else:
+            # Per-gene auto-thresholding using Li+Yen methods
+            thresholds = (
+                segmentation
+                .group_by(tx_fields.feature)
+                .agg(
+                    pl
+                    .col('segger_similarity')
+                    .shuffle(seed=0)
+                    .head(10_000_000)
+                )
+                .explode('segger_similarity')
+                .group_by(tx_fields.feature)
+                .agg(
+                    pl.map_groups(
+                        pl.col('segger_similarity'),
+                        threshold,
+                        return_dtype=pl.Float64,
+                        returns_scalar=True,
+                    )
+                    .alias("similarity_threshold")
+                )
+            )
+            output = (
+                segmentation
+                .join(thresholds, on=tx_fields.feature, how='left')
+                .drop(tx_fields.feature)
+            )
+
+        # Apply similarity threshold to determine final assignments
+        output = output.with_columns(
+            pl.when(pl.col("segger_similarity") >= pl.col("similarity_threshold"))
+            .then(pl.col("segger_cell_id"))
+            .otherwise(None)
+            .alias("segger_cell_id")
         )
-        # Join and write output to file
-        (
-            segmentation
-            .join(thresholds, on=tx_fields.feature, how='left')
-            .drop(tx_fields.feature)
-            .write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+        # Apply fragment mode if enabled
+        if self.fragment_mode:
+            output = self._apply_fragment_mode(output, trainer)
+
+        # Write output to file
+        output.write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+    def _apply_fragment_mode(
+        self,
+        segmentation_df: pl.DataFrame,
+        trainer: Trainer,
+    ) -> pl.DataFrame:
+        """Apply fragment mode to group unassigned transcripts.
+
+        Collects tx-tx edges from the prediction dataset. If edge similarities
+        (edge_attr) are not stored, computes them post-hoc using gene embeddings
+        from the data module.
+
+        Parameters
+        ----------
+        segmentation_df : pl.DataFrame
+            Segmentation results with cell assignments.
+        trainer : Trainer
+            PyTorch Lightning trainer with access to datamodule.
+
+        Returns
+        -------
+        pl.DataFrame
+            Updated segmentation with fragment cell assignments.
+        """
+        tx_fields = TrainingTranscriptFields()
+
+        # Get tx-tx edges from the dataset
+        if not hasattr(trainer.datamodule, 'predict_dataset'):
+            return segmentation_df
+
+        dataset = trainer.datamodule.predict_dataset
+        datamodule = trainer.datamodule
+
+        # Check if we have gene embeddings for post-hoc similarity computation
+        gene_embeddings = None
+        if hasattr(datamodule, 'ad') and 'X_corr' in datamodule.ad.varm:
+            gene_embeddings = torch.tensor(
+                datamodule.ad.varm['X_corr'],
+                dtype=torch.float32,
+            )
+
+        # Collect tx-tx edges from the base HeteroData (not tiles)
+        # This is more efficient than iterating tiles
+        base_data = datamodule.data
+        if ('tx', 'neighbors', 'tx') not in base_data.edge_types:
+            return segmentation_df
+
+        tx_tx_store = base_data['tx', 'neighbors', 'tx']
+        edge_index = tx_tx_store.edge_index
+
+        if edge_index.size(1) == 0:
+            return segmentation_df
+
+        # Get global transcript indices (identity for base data)
+        src_global = edge_index[0].numpy()
+        dst_global = edge_index[1].numpy()
+
+        # Get similarities - either from stored edge_attr or compute post-hoc
+        if hasattr(tx_tx_store, 'edge_attr') and tx_tx_store.edge_attr is not None:
+            similarities = tx_tx_store.edge_attr.numpy()
+        elif gene_embeddings is not None:
+            # Compute similarities post-hoc from gene embeddings
+            gene_indices = base_data['tx']['x']  # gene encoding per transcript
+            src_genes = gene_indices[edge_index[0]]
+            dst_genes = gene_indices[edge_index[1]]
+
+            src_emb = gene_embeddings[src_genes]
+            dst_emb = gene_embeddings[dst_genes]
+
+            # Cosine similarity
+            similarities = torch.nn.functional.cosine_similarity(
+                src_emb, dst_emb, dim=-1
+            ).numpy()
+        else:
+            # No way to compute similarities
+            return segmentation_df
+
+        # Create edges DataFrame
+        tx_tx_edges = pl.DataFrame({
+            "source": src_global,
+            "target": dst_global,
+            "similarity": similarities,
+        })
+
+        # Apply fragment mode
+        return apply_fragment_mode(
+            segmentation_df=segmentation_df,
+            tx_tx_edges=tx_tx_edges,
+            min_transcripts=self.fragment_min_transcripts,
+            similarity_threshold=self.fragment_similarity_threshold,
+            use_gpu=True,
+            cell_id_column="segger_cell_id",
+            transcript_id_column=tx_fields.row_index,
+            similarity_column="similarity",
         )

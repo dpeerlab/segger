@@ -12,18 +12,64 @@ import math
 import os
 
 from .triplet_loss import TripletLoss, MetricLoss
+from .alignment_loss import AlignmentLoss
 from ..io.fields import StandardTranscriptFields
 from ..data.data_module import ISTDataModule
 from .ist_encoder import ISTEncoder
 
 class LitISTEncoder(LightningModule):
-    """TODO: Description.
+    """PyTorch Lightning module for training Segger GNN models.
+
+    This module wraps the ISTEncoder GNN model with training, validation,
+    and prediction logic. It supports multiple loss functions including
+    triplet loss, metric loss, and BCE for segmentation, plus optional
+    alignment loss for mutually exclusive gene constraints.
+
+    The training uses cosine-scheduled weight transitions between loss
+    components, allowing gradual emphasis shifts during training.
 
     Parameters
     ----------
-    output_directory : Path
-        Description.
+    n_genes : int
+        Number of unique genes in the vocabulary.
+    in_channels : int
+        Input feature dimension for boundary nodes.
+    hidden_channels : int
+        Hidden layer dimension in the GNN.
+    out_channels : int
+        Output embedding dimension.
+    n_mid_layers : int
+        Number of intermediate GNN layers.
+    n_heads : int
+        Number of attention heads in GAT layers.
+    learning_rate : float
+        Learning rate for Adam optimizer.
+    sg_loss_type : str
+        Segmentation loss type: 'triplet' or 'bce'.
+    tx_margin : float
+        Margin for transcript triplet loss.
+    sg_margin : float
+        Margin for segmentation triplet loss.
+    tx_weight_start, tx_weight_end : float
+        Cosine-scheduled weight range for transcript loss.
+    bd_weight_start, bd_weight_end : float
+        Cosine-scheduled weight range for boundary loss.
+    sg_weight_start, sg_weight_end : float
+        Cosine-scheduled weight range for segmentation loss.
+    align_loss : bool
+        Whether to enable alignment loss for ME gene constraints.
+    align_weight_start, align_weight_end : float
+        Cosine-scheduled weight range for alignment loss.
+    loss_combination_mode : str
+        How to combine alignment loss: 'interpolate' or 'additive'.
+    update_gene_embedding : bool
+        Whether to update gene embeddings during training.
+    use_positional_embeddings : bool
+        Whether to use positional embeddings in GNN.
+    normalize_embeddings : bool
+        Whether to L2-normalize output embeddings.
     """
+
     def __init__(
         self,
         n_genes: int,
@@ -42,17 +88,14 @@ class LitISTEncoder(LightningModule):
         bd_weight_end: float = 1.,
         sg_weight_start: float = 0.,
         sg_weight_end: float = 0.5,
+        align_loss: bool = False,
+        align_weight_start: float = 0.,
+        align_weight_end: float = 0.1,
+        loss_combination_mode: str = 'interpolate',
         update_gene_embedding: bool = True,
         use_positional_embeddings: bool = True,
         normalize_embeddings: bool = True,
     ):
-        """TODO: Description.
-
-        Parameters
-        ----------
-        output_directory : Path
-            Description.
-        """
         super().__init__()
         
         self.save_hyperparameters()
@@ -82,6 +125,10 @@ class LitISTEncoder(LightningModule):
             sg_weight_end,
         ])
         self._freeze_gene_embedding = not update_gene_embedding
+        self._align_loss_enabled = align_loss
+        self._align_weight_start = align_weight_start
+        self._align_weight_end = align_weight_end
+        self._loss_combination_mode = loss_combination_mode
 
     def setup(self, stage):
         # LitISTEncoder needs supp. data from ISTDataModule to train
@@ -121,6 +168,13 @@ class LitISTEncoder(LightningModule):
             raise ValueError(
                 f"Unrecognized segmentation loss: '{self._sg_loss_type}'. "
                 f"Acceptable values are 'triplet' and 'bce'."
+            )
+
+        # Setup alignment loss for ME gene constraints
+        if self._align_loss_enabled:
+            self.loss_align = AlignmentLoss(
+                weight_start=self._align_weight_start,
+                weight_end=self._align_weight_end,
             )
         return super().setup(stage)
 
@@ -210,15 +264,55 @@ class LitISTEncoder(LightningModule):
             # Compute binary cross-entropy loss with logits (no sigmoid here)
             loss_sg = self.loss_sg(logits, labels)
 
+        # Compute alignment loss for ME gene constraints if enabled
+        loss_align = torch.tensor(0.0, device=embeddings['tx'].device)
+        if self._align_loss_enabled:
+            # Check if alignment edges exist in batch
+            has_align_edges = (
+                ('tx', 'attracts', 'tx') in batch.edge_types and
+                batch['tx', 'attracts', 'tx'].edge_index.size(1) > 0
+            )
+            if has_align_edges:
+                # Get tx-tx alignment edges (ME gene pairs)
+                align_edge_index = batch['tx', 'attracts', 'tx'].edge_index
+                align_labels = batch['tx', 'attracts', 'tx'].edge_label
+
+                src, dst = align_edge_index
+                loss_align = self.loss_align(
+                    embeddings['tx'][src],
+                    embeddings['tx'][dst],
+                    align_labels,
+                )
+
         # Compute final weighted combination of losses
         w_tx, w_bd, w_sg = self._scheduled_weights(self._w_start, self._w_end)
-        loss = w_tx * loss_tx + w_bd * loss_bd + w_sg * loss_sg
+        main_loss = w_tx * loss_tx + w_bd * loss_bd + w_sg * loss_sg
 
-        return loss_tx, loss_bd, loss_sg, loss
+        # Add alignment loss with its own scheduling
+        if self._align_loss_enabled:
+            align_weight = self.loss_align.get_scheduled_weight(
+                self.current_epoch,
+                self.trainer.max_epochs,
+            )
+            if self._loss_combination_mode == 'interpolate':
+                # Interpolate: blend based on scheduling weight
+                loss = (1 - align_weight) * main_loss + align_weight * loss_align
+            elif self._loss_combination_mode == 'additive':
+                # Additive: sum with weight
+                loss = main_loss + align_weight * loss_align
+            else:
+                raise ValueError(
+                    f"Unknown loss_combination_mode: {self._loss_combination_mode}. "
+                    f"Supported modes: 'interpolate', 'additive'."
+                )
+        else:
+            loss = main_loss
+
+        return loss_tx, loss_bd, loss_sg, loss_align, loss
 
     def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
         """Perform a single training step."""
-        loss_tx, loss_bd, loss_sg, loss = self.get_losses(batch)
+        loss_tx, loss_bd, loss_sg, loss_align, loss = self.get_losses(batch)
 
         self.log(
             "train:loss_tx",
@@ -238,11 +332,18 @@ class LitISTEncoder(LightningModule):
             prog_bar=True,
             batch_size=batch.num_graphs,
         )
+        if self._align_loss_enabled:
+            self.log(
+                "train:loss_align",
+                loss_align,
+                prog_bar=True,
+                batch_size=batch.num_graphs,
+            )
         return loss
 
     def validation_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
         """Defines the validation step."""
-        loss_tx, loss_bd, loss_sg, loss = self.get_losses(batch)
+        loss_tx, loss_bd, loss_sg, loss_align, loss = self.get_losses(batch)
 
         self.log(
             "val:loss_tx",
@@ -262,6 +363,13 @@ class LitISTEncoder(LightningModule):
             prog_bar=True,
             batch_size=batch.num_graphs,
         )
+        if self._align_loss_enabled:
+            self.log(
+                "val:loss_align",
+                loss_align,
+                prog_bar=True,
+                batch_size=batch.num_graphs,
+            )
         return loss
     
     def predict_step(
