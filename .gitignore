@@ -206,3 +206,27 @@ __marimo__/
 .dev
 .dev/*
 *.pyc
+
+# Segger-specific
+*.zarr/
+*.zarr.zip
+*.parquet
+!tests/fixtures/*.parquet
+output/
+results/
+checkpoints/
+lightning_logs/
+
+# Large data files (at project root only)
+/data/
+*.h5ad
+*.h5
+
+# Jupyter
+*.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

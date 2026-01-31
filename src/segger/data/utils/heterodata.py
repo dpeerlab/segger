@@ -1,5 +1,22 @@
+"""Heterogeneous graph data construction for spatial transcriptomics.
+
+This module constructs PyTorch Geometric HeteroData objects from spatial
+transcriptomics data, including transcript and boundary nodes with various
+edge types for segmentation tasks.
+
+3D Support
+----------
+When `use_3d=True` (or "auto" with z-coordinates present):
+- Node geometry features include z-coordinate: (x, y, z)
+- Transcript neighbor graphs use 3D distances
+- Boundary geometry remains 2D (polygons are 2D shapes)
+
+The GNN model architecture itself does not change for 3D data - only the
+input features and graph construction are affected.
+"""
+
 from torch_geometric.data import HeteroData
-from typing import Literal
+from typing import Literal, Optional, List, Tuple
 import geopandas as gpd
 import polars as pl
 import scanpy as sc
@@ -7,6 +24,7 @@ import numpy as np
 import torch
 
 from ...io import TrainingBoundaryFields, TrainingTranscriptFields
+from ...models.alignment_loss import compute_me_gene_edges
 from .neighbors import (
     setup_segmentation_graph,
     setup_transcripts_graph,
@@ -30,8 +48,72 @@ def setup_heterodata(
     genes_embedding_key: str = 'X_corr',
     genes_clusters_column: str = 'phenograph_cluster',
     genes_encoding_column: str = 'gene_encoding',
+    compute_tx_similarities: bool = False,
+    use_3d: bool | Literal["auto"] = "auto",
+    me_gene_pairs: Optional[List[Tuple[str, str]]] = None,
 ) -> HeteroData:
-    """TODO: Add description.
+    """Construct HeteroData object for training/prediction.
+
+    Parameters
+    ----------
+    transcripts : pl.DataFrame
+        Transcript DataFrame with coordinates and gene information.
+        May include z-coordinate for 3D data.
+    boundaries : gpd.GeoDataFrame
+        Boundary GeoDataFrame with cell/nucleus polygons.
+    adata : sc.AnnData
+        AnnData object with embeddings and cluster assignments.
+    segmentation_mask : pl.Expr | pl.Series
+        Mask for transcripts assigned to cells.
+    transcripts_graph_max_k : int
+        Maximum neighbors for tx-tx graph.
+    transcripts_graph_max_dist : float
+        Maximum distance for tx-tx edges.
+    prediction_graph_mode : Literal["nucleus", "cell", "uniform"]
+        Mode for tx-bd prediction graph.
+    prediction_graph_max_k : int
+        Maximum neighbors for prediction graph.
+    prediction_graph_buffer_ratio : float
+        Buffer ratio for polygon expansion (fraction of radius).
+    cells_embedding_key : str, optional
+        Key for cell embeddings in adata.obsm.
+    cells_clusters_column : str, optional
+        Column for cell clusters in adata.obs.
+    cells_encoding_column : str, optional
+        Column for cell encodings in adata.obs.
+    genes_embedding_key : str, optional
+        Key for gene embeddings in adata.varm.
+    genes_clusters_column : str, optional
+        Column for gene clusters in adata.var.
+    genes_encoding_column : str, optional
+        Column for gene encodings in adata.var.
+    compute_tx_similarities : bool, optional
+        If True, compute cosine similarities for tx-tx edges using gene
+        embeddings. Required for fragment mode (default: False).
+    use_3d : bool or "auto", optional
+        Whether to use 3D coordinates for graph construction and node features.
+        - "auto": Use 3D if z column exists and has valid data (default)
+        - True: Force 3D (error if z not available)
+        - False: Force 2D (ignore z even if present)
+    me_gene_pairs : list of (str, str) tuples or None, optional
+        Mutually exclusive gene pairs for alignment loss. Each tuple contains
+        two gene names that should not co-localize in the same cell. When
+        provided, generates ('tx', 'attracts', 'tx') edges with labels.
+
+    Returns
+    -------
+    HeteroData
+        PyTorch Geometric HeteroData object with node features and edge indices.
+        When me_gene_pairs is provided, includes:
+        - ('tx', 'attracts', 'tx').edge_index: transcript-transcript edges
+        - ('tx', 'attracts', 'tx').edge_label: 1 if attract, 0 if ME (repel)
+
+    Notes
+    -----
+    When use_3d is enabled:
+    - Transcript node 'geometry' and 'pos' features include z-coordinate
+    - Transcript neighbor graph uses 3D distances
+    - Boundary nodes remain 2D (polygons are 2D shapes)
     """
     # Standard fields
     tx_fields = TrainingTranscriptFields()
@@ -109,6 +191,20 @@ def setup_heterodata(
         .set_index(bd_fields.index)
     )
 
+    # Determine 3D mode
+    has_z = tx_fields.z in transcripts.columns
+    if use_3d == "auto":
+        use_3d_actual = has_z and transcripts[tx_fields.z].null_count() < len(transcripts)
+    elif use_3d is True:
+        if not has_z:
+            raise ValueError(
+                f"use_3d=True but z column '{tx_fields.z}' not found in transcripts. "
+                f"Available columns: {transcripts.columns}"
+            )
+        use_3d_actual = True
+    else:
+        use_3d_actual = False
+
     # Create PyG object
     data = HeteroData()
 
@@ -116,10 +212,19 @@ def setup_heterodata(
     data['tx']['x'] = transcripts[tx_fields.gene_encoding].to_torch()
     data['tx']['cluster'] = transcripts[tx_fields.gene_cluster].to_torch()
     data['tx']['index'] = transcripts[tx_fields.row_index].to_torch()
-    data['tx']['geometry'] = transcripts[[tx_fields.x, tx_fields.y]].to_torch()
+
+    # Geometry features (2D or 3D based on use_3d)
+    coord_cols = [tx_fields.x, tx_fields.y]
+    if use_3d_actual and has_z:
+        coord_cols.append(tx_fields.z)
+
+    data['tx']['geometry'] = transcripts[coord_cols].to_torch()
     data['tx']['pos'] = data['tx']['geometry']
 
-    # Boundary nodes
+    # Store dimensionality flag for downstream use
+    data['tx']['is_3d'] = torch.tensor([use_3d_actual])
+
+    # Boundary nodes (always 2D - polygons are 2D shapes)
     data['bd']['x'] = torch.tensor(
         adata.obsm[cells_embedding_key]).to(torch.float)
     data['bd']['cluster'] = torch.tensor(
@@ -130,12 +235,26 @@ def setup_heterodata(
         adata.obsm['X_spatial']).to(torch.float)
     data['bd']['pos'] = data['bd']['geometry']
 
-    # Transcript neighbors graph
-    data['tx', 'neighbors', 'tx'].edge_index = setup_transcripts_graph(
+    # Transcript neighbors graph (uses 3D if enabled)
+    # Optionally compute tx-tx similarities for fragment mode
+    gene_embedding_tensor = None
+    if compute_tx_similarities and genes_embedding_key in adata.varm:
+        # Get gene embeddings from adata.varm (per-gene)
+        gene_emb_matrix = torch.tensor(adata.varm[genes_embedding_key], dtype=torch.float)
+        # Map to per-transcript embeddings using gene encodings
+        gene_indices = transcripts[tx_fields.gene_encoding].to_torch()
+        gene_embedding_tensor = gene_emb_matrix[gene_indices]
+
+    edge_index, edge_similarity = setup_transcripts_graph(
         transcripts,
         max_k=transcripts_graph_max_k,
         max_dist=transcripts_graph_max_dist,
+        gene_embeddings=gene_embedding_tensor,
+        use_3d=use_3d_actual,
     )
+    data['tx', 'neighbors', 'tx'].edge_index = edge_index
+    if edge_similarity is not None:
+        data['tx', 'neighbors', 'tx'].edge_attr = edge_similarity
 
     # Reference segmentation graph
     data['tx', 'belongs', 'bd'].edge_index = setup_segmentation_graph(
@@ -144,12 +263,43 @@ def setup_heterodata(
     )
 
     # Transcript-cell graph for prediction
+    # Note: Shape-based modes always use 2D for polygon containment
     data['tx', 'neighbors', 'bd'].edge_index = setup_prediction_graph(
         transcripts,
         boundaries,
         max_k=prediction_graph_max_k,
         buffer_ratio=prediction_graph_buffer_ratio,
         mode=prediction_graph_mode,
+        use_3d=use_3d_actual if prediction_graph_mode == "uniform" else False,
     )
+
+    # Generate alignment edges for ME gene constraints
+    if me_gene_pairs is not None and len(me_gene_pairs) > 0:
+        # Convert gene name pairs to index pairs using adata.var index
+        gene_names = list(adata.var.index)
+        gene_to_idx = {name: idx for idx, name in enumerate(gene_names)}
+
+        # Filter to pairs where both genes exist in vocabulary
+        me_gene_indices = []
+        for gene1, gene2 in me_gene_pairs:
+            if gene1 in gene_to_idx and gene2 in gene_to_idx:
+                me_gene_indices.append((gene_to_idx[gene1], gene_to_idx[gene2]))
+
+        if me_gene_indices:
+            me_pairs_tensor = torch.tensor(me_gene_indices, dtype=torch.long)
+
+            # Get existing tx-tx neighbor edges
+            tx_tx_edge_index = data['tx', 'neighbors', 'tx'].edge_index
+
+            # Compute ME gene labels for edges
+            align_edge_index, align_labels = compute_me_gene_edges(
+                gene_indices=data['tx']['x'],  # gene encoding per transcript
+                me_gene_pairs=me_pairs_tensor,
+                edge_index=tx_tx_edge_index,
+            )
+
+            # Store alignment edges and labels
+            data['tx', 'attracts', 'tx'].edge_index = align_edge_index
+            data['tx', 'attracts', 'tx'].edge_label = align_labels
 
     return data
