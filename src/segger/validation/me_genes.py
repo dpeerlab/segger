@@ -25,9 +25,9 @@ from itertools import combinations
 def find_markers(
     adata: ad.AnnData,
     cell_type_column: str,
-    pos_percentile: float = 5,
+    pos_percentile: float = 10,
     neg_percentile: float = 10,
-    percentage: float = 50,
+    percentage: float = 30,
 ) -> Dict[str, Dict[str, List[str]]]:
     """Identify positive and negative markers for each cell type.
 
@@ -38,11 +38,11 @@ def find_markers(
     cell_type_column : str
         Column name in `adata.obs` that specifies cell types.
     pos_percentile : float, optional
-        Percentile threshold for top highly expressed genes (default: 5).
+        Percentile threshold for top highly expressed genes (default: 10).
     neg_percentile : float, optional
         Percentile threshold for top lowly expressed genes (default: 10).
     percentage : float, optional
-        Minimum percentage of cells expressing the marker (default: 50).
+        Minimum percentage of cells expressing the marker (default: 30).
 
     Returns
     -------
@@ -84,8 +84,8 @@ def find_mutually_exclusive_genes(
     adata: ad.AnnData,
     markers: Dict[str, Dict[str, List[str]]],
     cell_type_column: str,
-    expr_threshold_in: float = 0.2,
-    expr_threshold_out: float = 0.05,
+    expr_threshold_in: float = 0.25,
+    expr_threshold_out: float = 0.03,
 ) -> List[Tuple[str, str]]:
     """Identify mutually exclusive genes based on expression criteria.
 
@@ -101,9 +101,9 @@ def find_mutually_exclusive_genes(
     cell_type_column : str
         Column name in `adata.obs` that specifies cell types.
     expr_threshold_in : float, optional
-        Minimum fraction expressing in own cell type (default: 0.2).
+        Minimum fraction expressing in own cell type (default: 0.25).
     expr_threshold_out : float, optional
-        Maximum fraction expressing in other cell types (default: 0.05).
+        Maximum fraction expressing in other cell types (default: 0.03).
 
     Returns
     -------
@@ -199,11 +199,11 @@ def load_me_genes_from_scrna(
     scrna_path: Path,
     cell_type_column: str = "celltype",
     gene_name_column: Optional[str] = None,
-    pos_percentile: float = 5,
+    pos_percentile: float = 10,
     neg_percentile: float = 10,
-    percentage: float = 50,
-    expr_threshold_in: float = 0.2,
-    expr_threshold_out: float = 0.05,
+    percentage: float = 30,
+    expr_threshold_in: float = 0.25,
+    expr_threshold_out: float = 0.03,
 ) -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, List[str]]]]:
     """Load scRNA-seq reference and compute ME gene pairs.
 
@@ -216,15 +216,15 @@ def load_me_genes_from_scrna(
     gene_name_column : str | None, optional
         Column in var for gene names. If None, uses var_names.
     pos_percentile : float, optional
-        Percentile for positive markers (default: 5).
+        Percentile for positive markers (default: 10).
     neg_percentile : float, optional
         Percentile for negative markers (default: 10).
     percentage : float, optional
-        Minimum expression percentage (default: 50).
+        Minimum expression percentage (default: 30).
     expr_threshold_in : float, optional
-        Minimum expression in own cell type (default: 0.2).
+        Minimum expression in own cell type (default: 0.25).
     expr_threshold_out : float, optional
-        Maximum expression in other cell types (default: 0.05).
+        Maximum expression in other cell types (default: 0.03).
 
     Returns
     -------
