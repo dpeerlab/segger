@@ -106,8 +106,9 @@ def setup_heterodata(
     HeteroData
         PyTorch Geometric HeteroData object with node features and edge indices.
         When me_gene_pairs is provided, includes:
-        - ('tx', 'attracts', 'tx').edge_index: transcript-transcript edges
-        - ('tx', 'attracts', 'tx').edge_label: 1 if attract, 0 if ME (repel)
+        - ('tx', 'attracts', 'tx').edge_index: filtered tx-tx edges
+        - ('tx', 'attracts', 'tx').edge_label: 1 for same-gene neighbors,
+          0 for ME gene pairs (other edges dropped)
 
     Notes
     -----

@@ -1,8 +1,8 @@
 """Alignment loss for mutually exclusive gene constraints.
 
-This module implements alignment loss based on mutually exclusive (ME) gene pairs
-from scRNA-seq reference data. The loss enforces that transcripts with ME genes
-should not be assigned to the same cell.
+This module implements alignment loss using ME gene pairs (negatives) and
+same-gene transcript neighbors (positives). Other tx-tx edges are ignored
+for the alignment objective.
 """
 
 import torch
@@ -12,10 +12,11 @@ import math
 
 
 class AlignmentLoss(nn.Module):
-    """Loss for mutually exclusive gene constraints from scRNA-seq reference.
+    """Contrastive loss for ME gene constraints from scRNA-seq reference.
 
     Alignment loss enforces biological constraints where certain gene pairs
-    (e.g., cell-type specific markers) should not co-localize in the same cell.
+    (e.g., cell-type specific markers) should not co-localize in the same cell,
+    while same-gene transcript neighbors are encouraged to be similar.
 
     Uses cosine scheduling to gradually increase alignment importance:
         alpha = 0.5 * (1 + cos(π * step / max_steps))
@@ -79,8 +80,8 @@ class AlignmentLoss(nn.Module):
         embeddings_dst : torch.Tensor
             Destination transcript embeddings, shape (N, D).
         labels : torch.Tensor
-            Edge labels: 1 if transcripts should attract (same cell),
-            0 if they should repel (ME genes), shape (N,).
+            Edge labels: 1 for same-gene neighbors, 0 for ME gene pairs,
+            shape (N,).
 
         Returns
         -------

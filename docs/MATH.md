@@ -227,14 +227,21 @@ where $b'$ is a randomly sampled negative boundary.
 
 ### 4.5 Alignment Loss
 
-For mutually exclusive (ME) gene pairs, we use BCE with cosine similarity:
-$$\mathcal{L}_{align} = \text{BCE}(\sigma(\mathbf{h}_{t_1}^\top \mathbf{h}_{t_2}), y)$$
+Alignment loss is applied on a **subset of tx-tx neighbor edges**:
+- **Positives**: neighboring transcript pairs from the **same gene** ($y=1$)
+- **Negatives**: neighboring transcript pairs whose genes are **mutually exclusive** ($y=0$)
+- All other tx-tx neighbor edges are ignored for alignment loss.
 
-where:
-- $y = 1$: Transcripts should attract (same cell)
-- $y = 0$: Transcripts should repel (ME genes)
+We use a **margin-based contrastive loss** on cosine similarity:
+$$s_{ij} = \hat{\mathbf{h}}_{t_i}^\top \hat{\mathbf{h}}_{t_j}$$
 
-**ME gene pair matching** uses vectorized hash-based lookup:
+$$\mathcal{L}_{align} =
+\mathbb{E}_{(i,j)\in\mathcal{P}}\left[(1 - s_{ij})^2\right]
+\mathbb{E}_{(i,j)\in\mathcal{N}}\left[\max(0, s_{ij} - m)^2\right]$$
+
+with margin $m = 0.2$.
+
+**ME gene pair matching** uses vectorized hash-based lookup on neighbor edges:
 $$\text{key}(g_1, g_2) = \min(g_1, g_2) \cdot G_{max} + \max(g_1, g_2)$$
 
 ---

@@ -71,9 +71,14 @@ Segger uses a multi-task loss combining several components:
 
 ### Alignment Loss (`loss_align`)
 
-**Type**: BCE with cosine scheduling
+**Type**: Contrastive margin loss on cosine similarity
 
 **Purpose**: Enforces biological constraints where mutually exclusive (ME) gene pairs should not co-localize in the same cell.
+
+**Edge selection**:
+- Positives: tx-tx neighbor edges where both transcripts are from the **same gene**
+- Negatives: tx-tx neighbor edges whose genes are **mutually exclusive**
+- All other tx-tx edges are ignored for alignment loss
 
 **Parameters**:
 - `--alignment-loss`: Enable alignment loss (default: False)
@@ -82,6 +87,8 @@ Segger uses a multi-task loss combining several components:
 - `--scrna-reference-path`: Path to scRNA-seq h5ad for ME gene discovery
 - `--scrna-celltype-column`: Cell type column in reference (default: "celltype")
 - `--loss-combination-mode`: How to combine with main loss (default: "interpolate")
+  
+**Fixed margin**: $m = 0.2$ (not user-configurable)
 
 ## Weight Scheduling
 
@@ -225,13 +232,16 @@ L = max(0, ||a - p||² - ||a - n||² + margin)
 
 ### Alignment Loss
 
-For transcript pairs with ME gene labels:
+For selected tx-tx neighbor pairs:
 
 ```
-L = BCE(similarity(emb_src, emb_dst), label)
+sim = dot(emb_src, emb_dst)
+L_pos = (1 - sim)^2            # same-gene positives
+L_neg = max(sim - m, 0)^2      # ME negatives
+L = mean(L_pos) + mean(L_neg)
 ```
 
-Where label=1 means transcripts should attract (same cell), label=0 means they should repel (ME genes).
+Where positives are same-gene neighbors, negatives are ME gene pairs, and $m=0.2$.
 
 ### Combined Loss
 
@@ -266,13 +276,14 @@ where $g_1, g_2$ are mutually exclusive (ME) genes that should not co-occur in t
 
 The alignment loss directly targets MECR by:
 1. Identifying ME gene pairs from scRNA-seq reference
-2. Creating tx-tx edges between transcripts of ME gene pairs
-3. Training embeddings to push ME transcripts apart (label=0)
+2. Selecting tx-tx neighbor edges that are ME pairs (negatives) or same-gene (positives)
+3. Training embeddings to push ME transcripts apart and pull same-gene neighbors together
 
 **Connection:**
 ```
-Alignment Loss (label=0 for ME pairs)
-    → Embeddings of ME transcripts become dissimilar
+Alignment Loss (ME negatives + same-gene positives)
+    → ME transcripts become dissimilar
+    → Same-gene neighbors become more similar
     → Segmentation less likely to assign ME transcripts to same cell
     → Lower MECR in final segmentation
 ```
