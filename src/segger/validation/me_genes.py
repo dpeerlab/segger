@@ -11,6 +11,8 @@ Ported from segger v0.1.0 validation/utils.py.
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 import warnings
+import json
+import hashlib
 import numpy as np
 import anndata as ad
 import scanpy as sc
@@ -228,6 +230,33 @@ def load_me_genes_from_scrna(
         (me_gene_pairs, markers) where me_gene_pairs is a list of
         (gene1, gene2) tuples and markers is the full marker dictionary.
     """
+    # Cache to avoid repeated expensive ME discovery
+    cache_key = _me_cache_key(
+        scrna_path=scrna_path,
+        cell_type_column=cell_type_column,
+        gene_name_column=gene_name_column,
+        pos_percentile=pos_percentile,
+        neg_percentile=neg_percentile,
+        percentage=percentage,
+        expr_threshold_in=expr_threshold_in,
+        expr_threshold_out=expr_threshold_out,
+    )
+    cache_path = _me_cache_path(scrna_path, cache_key)
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r") as f:
+                cached = json.load(f)
+            if cached.get("key") == cache_key:
+                pairs = [
+                    (p[0], p[1])
+                    for p in cached.get("me_gene_pairs", [])
+                    if len(p) == 2
+                ]
+                markers = cached.get("markers", {})
+                return pairs, markers
+        except Exception:
+            pass
+
     # Load scRNA-seq data
     adata = sc.read_h5ad(scrna_path)
 
@@ -265,6 +294,18 @@ def load_me_genes_from_scrna(
         expr_threshold_out=expr_threshold_out,
     )
 
+    # Write cache (best-effort)
+    try:
+        payload = {
+            "key": cache_key,
+            "me_gene_pairs": [list(p) for p in me_gene_pairs],
+            "markers": markers,
+        }
+        with open(cache_path, "w") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
     return me_gene_pairs, markers
 
 
@@ -294,3 +335,38 @@ def me_gene_pairs_to_indices(
             index_pairs.append((gene_to_idx[gene1], gene_to_idx[gene2]))
 
     return index_pairs
+_ME_CACHE_VERSION = 1
+
+
+def _me_cache_key(
+    scrna_path: Path,
+    cell_type_column: str,
+    gene_name_column: Optional[str],
+    pos_percentile: float,
+    neg_percentile: float,
+    percentage: float,
+    expr_threshold_in: float,
+    expr_threshold_out: float,
+) -> str:
+    """Create a stable cache key for ME gene discovery inputs."""
+    st = scrna_path.stat()
+    payload = {
+        "version": _ME_CACHE_VERSION,
+        "path": str(scrna_path.resolve()),
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "cell_type_column": cell_type_column,
+        "gene_name_column": gene_name_column,
+        "pos_percentile": pos_percentile,
+        "neg_percentile": neg_percentile,
+        "percentage": percentage,
+        "expr_threshold_in": expr_threshold_in,
+        "expr_threshold_out": expr_threshold_out,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _me_cache_path(scrna_path: Path, key: str) -> Path:
+    """Cache file path for ME gene discovery outputs."""
+    return Path(f"{scrna_path}.segger_me_cache.{key}.json")
