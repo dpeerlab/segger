@@ -173,6 +173,16 @@ segger segment -i data/ -o output/ --fragment-mode --fragment-min-transcripts 10
 segger export -s results.parquet -i /xenium/data -o /export --n-jobs 4
 ```
 
+### CLI Parameters (New/Updated)
+
+- `--prediction-scale-factor`: polygon scaling for tx→bd candidate edges (default 1.2).
+- `--min-similarity`: fixed similarity threshold; if unset, per-gene auto-thresholding.
+- `--fragment-mode`, `--fragment-min-transcripts`, `--fragment-similarity-threshold`.
+- `--alignment-loss`, `--scrna-reference-path`, `--scrna-celltype-column`.
+- `--alignment-loss-weight-start`, `--alignment-loss-weight-end`, `--loss-combination-mode`.
+- `--use-3d` (`auto` | `true` | `false`) and `--min-qv` for quality filtering.
+- `--tiling-margin-training`, `--tiling-margin-prediction`, `--max-nodes-per-tile`, `--max-edges-per-batch`.
+
 See `docs/LOSS_FUNCTIONS.md` for detailed loss configuration guidance.
 
 ---

@@ -8,13 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- TBD
+- Alignment loss with ME gene constraints from scRNA references.
+- Fragment mode for grouping unassigned transcripts.
+- SpatialData Zarr I/O and export utilities.
+- Synthetic dataset generators, optional-deps helpers, and expanded tests.
 
 ### Changed
-- TBD
+- Prediction graph uses polygon `prediction_scale_factor` (expands/shrinks boundaries).
+- Dependency guidance and install notes for reproducible GPU setups.
 
 ### Fixed
-- TBD
+- Edge permutation now skips negative partition labels to avoid bincount crashes.
 
 ## [0.2.0] - TBD
 
