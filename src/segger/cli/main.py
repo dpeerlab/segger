@@ -458,6 +458,14 @@ def segment(
         "ignore",
         message="The total number of parameters detected may be inaccurate",
     )
+    warnings.filterwarnings(
+        "ignore",
+        message="You are using a custom batch sampler `DynamicBatchSamplerPatch`",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message="The 'predict_dataloader' does not have many workers",
+    )
 
     # Convert use_3d string to proper type
     use_3d_value: bool | str
@@ -490,6 +498,9 @@ def segment(
         edges_per_batch=max_edges_per_batch,
         use_3d=use_3d_value,
         min_qv=min_qv,
+        alignment_loss=alignment_loss,
+        scrna_reference_path=scrna_reference_path,
+        scrna_celltype_column=scrna_celltype_column,
     )
     
     # Setup Lightning Model

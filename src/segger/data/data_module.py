@@ -586,5 +586,4 @@ class ISTDataModule(LightningDataModule):
             self.predict_dataset,
             batch_sampler=sampler,
             shuffle=False,
-            num_workers=self.num_workers,
         )
