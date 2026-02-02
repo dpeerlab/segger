@@ -296,4 +296,10 @@ ME genes are discovered from scRNA-seq reference using:
 2. Find gene pairs where each gene marks a different cell type
 3. These become ME pairs (shouldn't co-occur)
 
+**Defaults** (can be adjusted in code):
+- `pos_percentile=10`
+- `percentage=30`
+- `expr_threshold_in=0.25`
+- `expr_threshold_out=0.03`
+
 See `validation/me_genes.py` for implementation details.
