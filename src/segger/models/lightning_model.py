@@ -175,9 +175,13 @@ class LitISTEncoder(LightningModule):
 
         # Setup alignment loss for ME gene constraints
         if self._align_loss_enabled:
+            pos_weight = None
+            if hasattr(self.trainer.datamodule, "me_pos_weight"):
+                pos_weight = self.trainer.datamodule.me_pos_weight
             self.loss_align = AlignmentLoss(
                 weight_start=self._align_weight_start,
                 weight_end=self._align_weight_end,
+                pos_weight=pos_weight,
             )
         return super().setup(stage)
 
@@ -275,13 +279,34 @@ class LitISTEncoder(LightningModule):
                 # Get tx-tx alignment edges (ME gene pairs)
                 align_edge_index = batch['tx', 'attracts', 'tx'].edge_index
                 align_labels = batch['tx', 'attracts', 'tx'].edge_label
+                # Balance alignment edges to reduce batch-wise instability
+                pos_mask = align_labels > 0.5
+                neg_mask = ~pos_mask
+                n_pos = int(pos_mask.sum().item())
+                n_neg = int(neg_mask.sum().item())
+                if n_pos > 0 and n_neg > 0:
+                    k = min(n_pos, n_neg)
+                    pos_idx = pos_mask.nonzero().flatten()
+                    neg_idx = neg_mask.nonzero().flatten()
+                    if n_pos > k:
+                        pos_idx = pos_idx[
+                            torch.randperm(n_pos, device=pos_idx.device)[:k]
+                        ]
+                    if n_neg > k:
+                        neg_idx = neg_idx[
+                            torch.randperm(n_neg, device=neg_idx.device)[:k]
+                        ]
+                    sel = torch.cat([pos_idx, neg_idx], dim=0)
+                    sel = sel[torch.randperm(sel.numel(), device=sel.device)]
+                    align_edge_index = align_edge_index[:, sel]
+                    align_labels = align_labels[sel]
 
-                src, dst = align_edge_index
-                loss_align = self.loss_align(
-                    embeddings['tx'][src],
-                    embeddings['tx'][dst],
-                    align_labels,
-                )
+                    src, dst = align_edge_index
+                    loss_align = self.loss_align(
+                        embeddings['tx'][src],
+                        embeddings['tx'][dst],
+                        align_labels,
+                    )
 
         # Compute final weighted combination of losses
         w_tx, w_bd, w_sg = self._scheduled_weights(self._w_start, self._w_end)
