@@ -10,9 +10,11 @@ Ported from segger v0.1.0 validation/utils.py.
 
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
+import warnings
 import numpy as np
 import anndata as ad
 import scanpy as sc
+import pandas as pd
 from itertools import combinations
 
 
@@ -229,18 +231,30 @@ def load_me_genes_from_scrna(
     # Load scRNA-seq data
     adata = sc.read_h5ad(scrna_path)
 
+    # Ensure unique var names and log-normalize if needed
+    if not adata.var_names.is_unique:
+        adata.var_names_make_unique()
+    if "log1p" not in adata.uns:
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
+
     # Optionally remap gene names
     if gene_name_column is not None and gene_name_column in adata.var.columns:
         adata.var_names = adata.var[gene_name_column]
 
     # Find markers
-    markers = find_markers(
-        adata,
-        cell_type_column=cell_type_column,
-        pos_percentile=pos_percentile,
-        neg_percentile=neg_percentile,
-        percentage=percentage,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=pd.errors.PerformanceWarning,
+        )
+        markers = find_markers(
+            adata,
+            cell_type_column=cell_type_column,
+            pos_percentile=pos_percentile,
+            neg_percentile=neg_percentile,
+            percentage=percentage,
+        )
 
     # Find ME gene pairs
     me_gene_pairs = find_mutually_exclusive_genes(
