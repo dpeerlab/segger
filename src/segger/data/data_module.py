@@ -535,6 +535,7 @@ class ISTDataModule(LightningDataModule):
             mode="edge",
             subset=self.train_indices.clone(),
             shuffle=True,
+            skip_too_big=True,
         )
         return DataLoader(
             self.fit_dataset,
@@ -557,6 +558,7 @@ class ISTDataModule(LightningDataModule):
             mode="edge",
             subset=self.val_indices.clone(),
             shuffle=False,
+            skip_too_big=True,
         )
         return DataLoader(
             self.fit_dataset,
@@ -584,4 +586,5 @@ class ISTDataModule(LightningDataModule):
             self.predict_dataset,
             batch_sampler=sampler,
             shuffle=False,
+            num_workers=self.num_workers,
         )

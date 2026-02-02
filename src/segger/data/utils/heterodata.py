@@ -22,6 +22,7 @@ import polars as pl
 import scanpy as sc
 import numpy as np
 import torch
+import os
 
 from ...io import TrainingBoundaryFields, TrainingTranscriptFields
 from ...models.alignment_loss import compute_me_gene_edges
@@ -323,6 +324,18 @@ def setup_heterodata(
         use_3d=use_3d_actual if prediction_graph_mode == "uniform" else False,
     )
 
+    debug_me = os.getenv("SEGGER_DEBUG_ME", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    if debug_me:
+        if me_gene_pairs is None:
+            print("[segger][me] me_gene_pairs: None", flush=True)
+        else:
+            print(
+                f"[segger][me] me_gene_pairs input: {len(me_gene_pairs)}",
+                flush=True,
+            )
+
     # Generate alignment edges for ME gene constraints
     if me_gene_pairs is not None and len(me_gene_pairs) > 0:
         # Convert gene name pairs to index pairs using adata.var index
@@ -334,6 +347,12 @@ def setup_heterodata(
         for gene1, gene2 in me_gene_pairs:
             if gene1 in gene_to_idx and gene2 in gene_to_idx:
                 me_gene_indices.append((gene_to_idx[gene1], gene_to_idx[gene2]))
+
+        if debug_me:
+            print(
+                f"[segger][me] me_gene_pairs mapped: {len(me_gene_indices)}",
+                flush=True,
+            )
 
         if me_gene_indices:
             me_pairs_tensor = torch.tensor(me_gene_indices, dtype=torch.long)
@@ -351,5 +370,21 @@ def setup_heterodata(
             # Store alignment edges and labels
             data['tx', 'attracts', 'tx'].edge_index = align_edge_index
             data['tx', 'attracts', 'tx'].edge_label = align_labels
+            if debug_me:
+                n_edges = int(align_edge_index.size(1))
+                n_me = int((align_labels == 0).sum().item()) if n_edges else 0
+                n_attr = n_edges - n_me
+                frac_me = (n_me / n_edges) if n_edges else 0.0
+                print(
+                    "[segger][me] align edges: "
+                    f"{n_edges} (ME={n_me}, non-ME={n_attr}, "
+                    f"frac_ME={frac_me:.3f})",
+                    flush=True,
+                )
+        elif debug_me:
+            print(
+                "[segger][me] no ME pairs matched spatial gene vocabulary",
+                flush=True,
+            )
 
     return data

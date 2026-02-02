@@ -443,6 +443,21 @@ def segment(
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False
+    import warnings
+    warnings.filterwarnings(
+        "ignore",
+        message="The cuda.cudart module is deprecated",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message="The cuda.cuda module is deprecated",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message="The total number of parameters detected may be inaccurate",
+    )
 
     # Convert use_3d string to proper type
     use_3d_value: bool | str
@@ -522,6 +537,7 @@ def segment(
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
         callbacks=[writer],
+        log_every_n_steps=1,
     )
 
     # Training
