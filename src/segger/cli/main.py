@@ -166,11 +166,11 @@ def segment(
         group=group_prediction,
     )] = registry.get_default("prediction_graph_max_k"),
 
-    prediction_expansion_ratio: Annotated[float | None, registry.get_parameter(
-        "prediction_graph_buffer_ratio",
+    prediction_scale_factor: Annotated[float | None, Parameter(
+        help="Scale factor for prediction polygons. >1.0 expands, <1.0 shrinks.",
         validator=validators.Number(gt=0),
         group=group_prediction,
-    )] = registry.get_default("prediction_graph_buffer_ratio"),
+    )] = 1.2,
 
     # Tiling
     tiling_margin_training: Annotated[float, registry.get_parameter(

@@ -41,7 +41,7 @@ def setup_heterodata(
     transcripts_graph_max_dist: float,
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"],
     prediction_graph_max_k: int,
-    prediction_graph_buffer_ratio: float,
+    prediction_graph_scale_factor: float,
     cells_embedding_key: str = 'X_pca',
     cells_clusters_column: str = 'phenograph_cluster',
     cells_encoding_column: str = 'cell_encoding',
@@ -73,8 +73,8 @@ def setup_heterodata(
         Mode for tx-bd prediction graph.
     prediction_graph_max_k : int
         Maximum neighbors for prediction graph.
-    prediction_graph_buffer_ratio : float
-        Buffer ratio for polygon expansion (fraction of radius).
+    prediction_graph_scale_factor : float
+        Scale factor for polygon expansion/shrinking.
     cells_embedding_key : str, optional
         Key for cell embeddings in adata.obsm.
     cells_clusters_column : str, optional
@@ -318,7 +318,7 @@ def setup_heterodata(
         transcripts,
         boundaries,
         max_k=prediction_graph_max_k,
-        buffer_ratio=prediction_graph_buffer_ratio,
+        scale_factor=prediction_graph_scale_factor,
         mode=prediction_graph_mode,
         use_3d=use_3d_actual if prediction_graph_mode == "uniform" else False,
     )
