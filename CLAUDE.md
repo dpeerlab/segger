@@ -86,6 +86,16 @@ segger segment -i data/ -o output/ \
 
 ---
 
+## Install & Runtime Tips
+
+- Set `PYTHONNOUSERSITE=1` to prevent `~/.local` packages from shadowing the env.
+- Match `torch`/CUDA with `torch-geometric` wheels (`data.pyg.org` URL must match).
+- Keep RAPIDS packages from a single channel/version set; avoid pip/conda mixing.
+- NFS cleanup errors (`.nfs*`): set `TMPDIR` to local scratch for temp files.
+- UCX/CUDA segfaults: try `UCX_MEMTYPE_CACHE=n` and `UCX_TLS=sm,self`.
+
+---
+
 ## Architecture
 
 ```
@@ -148,6 +158,12 @@ segger segment -i data/ -o output/ --min-similarity 0.5
 segger segment -i data/ -o output/ \
     --alignment-loss \
     --scrna-reference-path reference.h5ad \
+    --scrna-celltype-column celltype
+
+# Alignment loss (CRC scRNA reference)
+segger segment -i data/ -o output/ \
+    --alignment-loss \
+    --scrna-reference-path segger_experiments/data_raw/scrnaseq/human_crc.h5ad \
     --scrna-celltype-column celltype
 
 # With fragment mode for unassigned transcripts

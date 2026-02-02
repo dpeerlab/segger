@@ -1,6 +1,6 @@
 [project]
 name = "segger"
-version = "0.1.0"
+version = "0.2.0"
 description = "Segmentation of spatial transcriptomics data"
 authors = [
     {name = "Elyas Heidari", email = "elyas.heidari@dkfz-heidelberg.de"},
@@ -16,19 +16,55 @@ dependencies = [
     "cyclopts",
     "geopandas",
     "lightning",
+    "lightning-utilities",
+    "mpmath",
     "numba",
     "numpy",
     "opencv-python",
     "pandas",
     "polars",
+    "pooch",  # For test dataset downloads
+    "pqdm",
     "pyarrow",
+    "rtree",
     "scanpy",
     "scipy",
     "shapely",
     "scikit-image",
     "scikit-learn",
+    "sympy>=1.13.1,<1.14",
     "tifffile",
-    "torch_geometric",
+    "torch-geometric",
+    "torchmetrics",
+    "zarr",
+]
+
+[project.optional-dependencies]
+# SpatialData integration for scverse ecosystem interoperability
+spatialdata = [
+    "spatialdata>=0.2.0",
+    "spatialdata-io>=0.1.0",
+]
+
+# SOPA compatibility for segmentation workflows
+sopa = [
+    "sopa>=1.0.0",
+    "spatialdata>=0.2.0",  # SOPA requires spatialdata
+]
+
+# All SpatialData features including SOPA
+spatialdata-all = [
+    "spatialdata>=0.2.0",
+    "spatialdata-io>=0.1.0",
+    "sopa>=1.0.0",
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "ruff",
 ]
 
 [build-system]
@@ -40,3 +76,96 @@ packages = ["src/segger"]
 
 [project.scripts]
 segger = "segger.cli.main:app"
+
+# =============================================================================
+# Pytest Configuration
+# =============================================================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    # Ignore warnings from optional dependencies
+    "-W", "ignore::DeprecationWarning",
+]
+markers = [
+    "gpu: mark test as requiring GPU (deselect with '-m \"not gpu\"')",
+    "spatialdata: mark test as requiring spatialdata package",
+    "sopa: mark test as requiring sopa package",
+    "slow: mark test as slow (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+]
+
+# =============================================================================
+# Coverage Configuration
+# =============================================================================
+
+[tool.coverage.run]
+source = ["src/segger"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+# =============================================================================
+# Black Configuration
+# =============================================================================
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+)/
+'''
+
+# =============================================================================
+# Ruff Configuration
+# =============================================================================
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # function call in default argument
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["segger"]

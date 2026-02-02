@@ -32,6 +32,14 @@ git clone https://github.com/dpeerlab/segger.git segger && cd segger
 pip install -e .
 ```
 
+## Tips & Troubleshooting (v0.2.0)
+
+- Avoid user-site bleed: set `PYTHONNOUSERSITE=1` so `~/.local` packages do not shadow the env.
+- Torch Geometric wheels must match your `torch` + CUDA version (`data.pyg.org` URL must match).
+- Keep RAPIDS packages from a single channel/version set; avoid pip/conda mixing for RAPIDS.
+- NFS cleanup noise (`.nfs*`): set `TMPDIR` to local scratch to avoid exit-time errors.
+- UCX/CUDA segfaults: try `UCX_MEMTYPE_CACHE=n` and `UCX_TLS=sm,self`.
+
 # Usage
 
 You can run **segger** from the command line with:
@@ -43,3 +51,19 @@ To see all available parameter options:
 ```bash
 segger segment --help
 ```
+
+## Alignment Loss Example
+
+```bash
+segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/ \
+  --alignment-loss \
+  --scrna-reference-path segger_experiments/data_raw/scrnaseq/human_crc.h5ad \
+  --scrna-celltype-column celltype
+```
+
+# Project Docs
+
+- Versioning: `docs/VERSIONING.md`
+- Release process: `docs/RELEASE.md`
+- Installation notes: `docs/INSTALLATION.md`
+- Changelog: `CHANGELOG.md`
