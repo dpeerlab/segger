@@ -79,6 +79,7 @@ Segger uses a multi-task loss combining several components:
 - Positives: tx-tx neighbor edges where both transcripts are from the **same gene**
 - Negatives: tx-tx neighbor edges whose genes are **mutually exclusive**
 - All other tx-tx edges are ignored for alignment loss
+- Positives are subsampled to at most **3×** the number of negatives
 
 **Parameters**:
 - `--alignment-loss`: Enable alignment loss (default: False)

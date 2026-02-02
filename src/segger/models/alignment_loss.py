@@ -157,7 +157,27 @@ def compute_me_gene_edges(
             neg_mask[in_me] = is_me
 
     # Select only positives and negatives for alignment loss
-    keep = pos_mask | neg_mask
+    n_pos = int(pos_mask.sum().item())
+    n_neg = int(neg_mask.sum().item())
+    if n_neg == 0 and n_pos == 0:
+        return edge_index[:, :0], torch.empty((0,), device=edge_index.device)
+
+    if n_neg == 0:
+        # No ME negatives; skip alignment edges to avoid redundant positives
+        return edge_index[:, :0], torch.empty((0,), device=edge_index.device)
+
+    max_pos = 3 * n_neg
+    if n_pos > max_pos:
+        pos_idx = pos_mask.nonzero().flatten()
+        pos_idx = pos_idx[
+            torch.randperm(n_pos, device=pos_idx.device)[:max_pos]
+        ]
+        keep = torch.zeros_like(pos_mask, dtype=torch.bool)
+        keep[pos_idx] = True
+        keep |= neg_mask
+    else:
+        keep = pos_mask | neg_mask
+
     if not keep.any():
         return edge_index[:, :0], torch.empty((0,), device=edge_index.device)
 

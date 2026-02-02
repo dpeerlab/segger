@@ -275,22 +275,18 @@ class LitISTEncoder(LightningModule):
                 # Get tx-tx alignment edges (ME gene pairs)
                 align_edge_index = batch['tx', 'attracts', 'tx'].edge_index
                 align_labels = batch['tx', 'attracts', 'tx'].edge_label
-                # Balance alignment edges to reduce batch-wise instability
+                # Cap positives to reduce imbalance (keep all negatives)
                 pos_mask = align_labels > 0.5
                 neg_mask = ~pos_mask
                 n_pos = int(pos_mask.sum().item())
                 n_neg = int(neg_mask.sum().item())
                 if n_pos > 0 and n_neg > 0:
-                    k = min(n_pos, n_neg)
+                    max_pos = 3 * n_neg
                     pos_idx = pos_mask.nonzero().flatten()
                     neg_idx = neg_mask.nonzero().flatten()
-                    if n_pos > k:
+                    if n_pos > max_pos:
                         pos_idx = pos_idx[
-                            torch.randperm(n_pos, device=pos_idx.device)[:k]
-                        ]
-                    if n_neg > k:
-                        neg_idx = neg_idx[
-                            torch.randperm(n_neg, device=neg_idx.device)[:k]
+                            torch.randperm(n_pos, device=pos_idx.device)[:max_pos]
                         ]
                     sel = torch.cat([pos_idx, neg_idx], dim=0)
                     sel = sel[torch.randperm(sel.numel(), device=sel.device)]

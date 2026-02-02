@@ -232,6 +232,9 @@ Alignment loss is applied on a **subset of tx-tx neighbor edges**:
 - **Negatives**: neighboring transcript pairs whose genes are **mutually exclusive** ($y=0$)
 - All other tx-tx neighbor edges are ignored for alignment loss.
 
+To reduce class imbalance, positives are subsampled to at most **3×** the number
+of negatives before computing $\mathcal{L}_{align}$.
+
 We use a **margin-based contrastive loss** on cosine similarity:
 $$s_{ij} = \hat{\mathbf{h}}_{t_i}^\top \hat{\mathbf{h}}_{t_j}$$
 
