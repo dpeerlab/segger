@@ -3,7 +3,7 @@ from torch_geometric.data import Batch
 from lightning import LightningModule
 from torch_scatter import scatter_max
 from torch.nn import functional as F
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import polars as pl
 import pandas as pd
 import numpy as np
@@ -14,8 +14,10 @@ import os
 from .triplet_loss import TripletLoss, MetricLoss
 from .alignment_loss import AlignmentLoss
 from ..io.fields import StandardTranscriptFields
-from ..data.data_module import ISTDataModule
 from .ist_encoder import ISTEncoder
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..data.data_module import ISTDataModule
 
 class LitISTEncoder(LightningModule):
     """PyTorch Lightning module for training Segger GNN models.
@@ -132,6 +134,7 @@ class LitISTEncoder(LightningModule):
 
     def setup(self, stage):
         # LitISTEncoder needs supp. data from ISTDataModule to train
+        from ..data.data_module import ISTDataModule
         if not isinstance(self.trainer.datamodule, ISTDataModule):
             raise TypeError(
                 f"Expected data module to be `ISTDataModule` but got "

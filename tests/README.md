@@ -26,6 +26,15 @@ PYTHONPATH=src pytest tests/test_fragment_mode.py -v
 # Quality filters
 PYTHONPATH=src pytest tests/test_quality_filter.py -v
 
+# Field definitions
+PYTHONPATH=src pytest tests/test_fields.py -v
+
+# Optional dependency helpers
+PYTHONPATH=src pytest tests/test_optional_deps.py -v
+
+# Sample outputs (CPU-only helper)
+PYTHONPATH=src pytest tests/test_sample_outputs.py -v
+
 # SpatialData I/O
 PYTHONPATH=src pytest tests/test_spatialdata_io.py -v
 

@@ -203,6 +203,40 @@ class TestMerscopeQualityFilter:
         assert qf.platform_name == "MERSCOPE"
 
 
+class TestQualityFilterHelpers:
+    """Tests for helper utilities and dispatch logic."""
+
+    def test_get_quality_filter_aliases(self):
+        """Test that platform aliases resolve to correct filter classes."""
+        assert isinstance(get_quality_filter("xenium"), XeniumQualityFilter)
+        assert isinstance(get_quality_filter("10x_xenium"), XeniumQualityFilter)
+        assert isinstance(get_quality_filter("cosmx"), CosMxQualityFilter)
+        assert isinstance(get_quality_filter("nanostring_cosmx"), CosMxQualityFilter)
+        assert isinstance(get_quality_filter("merscope"), MerscopeQualityFilter)
+        assert isinstance(get_quality_filter("vizgen_merscope"), MerscopeQualityFilter)
+        assert isinstance(get_quality_filter("spatialdata"), SpatialDataQualityFilter)
+
+    def test_get_quality_filter_invalid_platform(self):
+        """Test that invalid platform raises a helpful error."""
+        with pytest.raises(ValueError, match="Unknown platform"):
+            get_quality_filter("not-a-platform")
+
+    def test_filter_transcripts_dispatch_xenium(self, transcripts_with_qv_range: pl.DataFrame):
+        """Test convenience filter_transcripts uses Xenium QV thresholding."""
+        df = transcripts_with_qv_range.lazy()
+        filtered = filter_transcripts(df, platform="xenium", min_qv=25.0).collect()
+        assert filtered["qv"].min() >= 25.0
+
+    def test_filter_transcripts_dispatch_cosmx(self, transcripts_with_control_probes: pl.DataFrame):
+        """Test convenience filter_transcripts removes CosMx control probes."""
+        df = transcripts_with_control_probes.lazy()
+        filtered = filter_transcripts(df, platform="cosmx").collect()
+        remaining_genes = filtered["feature_name"].to_list()
+        assert "Negative_Control_1" not in remaining_genes
+        assert "SystemControl_0001" not in remaining_genes
+        assert "NegPrb_001" not in remaining_genes
+
+
 class TestSpatialDataQualityFilter:
     """Tests for SpatialData platform auto-detection."""
 

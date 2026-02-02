@@ -380,6 +380,10 @@ class PartitionDataset(torch.utils.data.Dataset):
         labels: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Calculates the permutation and pointers for a set of node labels."""
+        # Ensure non-negative labels for bincount; map negatives to 0.
+        if labels.min() < 0:
+            labels = labels.clone()
+            labels[labels < 0] = 0
         # Get permutation to sort nodes by partition
         permutation = torch.argsort(labels)
 
@@ -473,7 +477,9 @@ class PartitionDataset(torch.utils.data.Dataset):
         # Get mask over inter-partition edges
         src_edge_labels = src_edge_labels[permutation]
         dst_edge_labels = dst_edge_labels[permutation]
-        mask = src_edge_labels == dst_edge_labels
+        # Only keep intra-partition edges with valid (non-negative) labels.
+        # This avoids torch.bincount errors when tiling returns -1 labels.
+        mask = (src_edge_labels == dst_edge_labels) & (src_edge_labels >= 0)
 
         # Update edge store with permutation, including edge index
         for attr in edge_store.edge_attrs():
@@ -488,7 +494,7 @@ class PartitionDataset(torch.utils.data.Dataset):
         
         # Get partition properties
         sizes = torch.bincount(
-            src_edge_labels[mask],
+            src_edge_labels[mask].to(torch.int64),
             minlength=self._num_partitions,
         )
         indptr = torch.cat((

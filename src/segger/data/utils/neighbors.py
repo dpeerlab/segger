@@ -1,6 +1,24 @@
+"""Neighbor graph construction utilities for spatial transcriptomics.
+
+This module provides functions for building various neighbor graphs:
+- Transcript-transcript KNN graphs (2D or 3D)
+- Transcript-boundary assignment graphs
+- Segmentation graphs
+
+3D Support
+----------
+Functions support both 2D and 3D coordinates. When `use_3d=True`, distances
+are computed in 3D space using the z-coordinate. This affects:
+- KNN neighbor selection (closer in 3D may be further in 2D projection)
+- Edge construction for graph neural networks
+
+Note: 3D support only affects graph construction (neighbor computation).
+The GNN architecture itself remains unchanged.
+"""
+
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 import geopandas as gpd
 import polars as pl
 import numpy as np
@@ -148,17 +166,75 @@ def setup_transcripts_graph(
     tx: pl.DataFrame,
     max_k: int,
     max_dist: float,
-) -> torch.Tensor:
-    """TODO: Add description.
+    gene_embeddings: torch.Tensor | None = None,
+    use_3d: bool | Literal["auto"] = "auto",
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Construct transcript-transcript neighbor graph with optional similarity scores.
+
+    Parameters
+    ----------
+    tx : pl.DataFrame
+        Transcript DataFrame with x, y coordinates and gene encodings.
+        May also contain z coordinate for 3D graphs.
+    max_k : int
+        Maximum number of neighbors per transcript.
+    max_dist : float
+        Maximum distance for neighbor inclusion.
+    gene_embeddings : torch.Tensor | None, optional
+        Gene embedding tensor of shape (n_transcripts, embedding_dim). If provided,
+        cosine similarities are computed for each edge.
+    use_3d : bool or "auto"
+        Whether to use 3D coordinates for distance computation.
+        - "auto": Use 3D if z column exists and has valid data
+        - True: Force 3D (raises error if z not available)
+        - False: Force 2D (ignore z even if present)
+
+    Returns
+    -------
+    edge_index : torch.Tensor
+        Edge index tensor of shape (2, E).
+    edge_similarity : torch.Tensor | None
+        Cosine similarities for each edge of shape (E,), or None if gene_embeddings
+        is not provided.
+
+    Notes
+    -----
+    When use_3d is enabled, distances are computed in 3D space. This can affect
+    which transcripts are considered neighbors - two transcripts close in 2D
+    projection may be far apart in 3D if they're at different z-levels.
     """
     tx_fields = TrainingTranscriptFields()
-    points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
+
+    # Determine coordinate columns to use
+    coord_cols = [tx_fields.x, tx_fields.y]
+
+    # Check for 3D
+    has_z = tx_fields.z in tx.columns
+    if use_3d == "auto":
+        use_3d = has_z and tx[tx_fields.z].null_count() < len(tx)
+    elif use_3d is True and not has_z:
+        raise ValueError(
+            f"use_3d=True but z column '{tx_fields.z}' not found in transcripts. "
+            f"Available columns: {tx.columns}"
+        )
+
+    if use_3d and has_z:
+        coord_cols.append(tx_fields.z)
+
+    points = tx[coord_cols].to_numpy()
     edge_index, _ = kdtree_neighbors(
         points=points,
         max_k=max_k,
         max_dist=max_dist,
     )
-    return edge_index
+
+    if gene_embeddings is not None:
+        src_emb = gene_embeddings[edge_index[0]]
+        dst_emb = gene_embeddings[edge_index[1]]
+        edge_similarity = torch.nn.functional.cosine_similarity(src_emb, dst_emb, dim=-1)
+        return edge_index, edge_similarity
+
+    return edge_index, None
 
 
 def setup_segmentation_graph(
@@ -182,35 +258,93 @@ def setup_prediction_graph(
     tx: pl.DataFrame,
     bd: gpd.GeoDataFrame,
     max_k: int,
-    buffer_ratio: float,
+    scale_factor: float,
     mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
+    use_3d: bool | Literal["auto"] = False,
+    max_dist: Optional[float] = None,
 ) -> torch.Tensor:
-    """TODO: Add description.
+    """Setup prediction graph connecting transcripts to cell boundaries.
+
+    Parameters
+    ----------
+    tx : pl.DataFrame
+        Transcript DataFrame with x, y coordinates.
+    bd : gpd.GeoDataFrame
+        Boundary GeoDataFrame with cell/nucleus polygons.
+    max_k : int
+        Maximum number of neighbors for uniform mode.
+    scale_factor : float
+        Scale factor for polygon expansion/contraction. Values > 1.0 expand,
+        values < 1.0 shrink the polygons around their centroid.
+    mode : Literal['nucleus', 'cell', 'uniform']
+        Graph construction mode.
+    use_3d : bool or "auto"
+        Whether to use 3D coordinates for uniform mode.
+        Note: Shape-based modes ('cell', 'nucleus') always use 2D for polygon
+        containment checks.
+    max_dist : float, optional
+        Maximum distance for uniform mode (3D KNN).
+
+    Returns
+    -------
+    torch.Tensor
+        Edge index tensor of shape (2, E).
+
+    Notes
+    -----
+    3D support is only available for 'uniform' mode. Shape-based modes ('cell',
+    'nucleus') perform 2D polygon containment checks regardless of use_3d setting.
+    For 3D data with shape-based modes, consider using z-slice boundaries.
     """
+    from shapely.affinity import scale as shapely_scale
+
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
 
     # Uniform kNN graph
     if mode == "uniform":
-        points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
+        # Determine coordinate columns
+        coord_cols = [tx_fields.x, tx_fields.y]
+        has_z = tx_fields.z in tx.columns
+
+        if use_3d == "auto":
+            use_3d = has_z and tx[tx_fields.z].null_count() < len(tx)
+
+        if use_3d and has_z:
+            coord_cols.append(tx_fields.z)
+
+        points = tx[coord_cols].to_numpy()
         query = bd.geometry.centroid.get_coordinates().values
+
+        # For 3D, add z=0 for boundary centroids (they're 2D polygons)
+        if use_3d and len(coord_cols) == 3:
+            query_z = np.zeros((len(query), 1))
+            query = np.hstack([query, query_z])
+
         edge_index, _ = kdtree_neighbors(
             points=points,
             query=query,
             max_k=max_k,
+            max_dist=max_dist if max_dist is not None else float('inf'),
         )
         return edge_index
-    
-    # Shape-based graph
+
+    # Shape-based graph using scale (supports both expansion and shrinking)
+    # Note: Polygon containment is always 2D
     points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
     boundary_type = (bd_fields.cell_value if mode == "cell"
                      else bd_fields.nucleus_value)
     polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
-    buffer_dists = np.sqrt(polygons.area / np.pi) * buffer_ratio
-    polygons = polygons.buffer(buffer_dists).reset_index(drop=True)
+
+    # Scale polygons around their centroid
+    # scale_factor > 1.0 expands, < 1.0 shrinks
+    scaled_polygons = polygons.apply(
+        lambda geom: shapely_scale(geom, xfact=scale_factor, yfact=scale_factor, origin='centroid')
+    ).reset_index(drop=True)
+
     result = points_in_polygons(
         points=points,
-        polygons=polygons,
+        polygons=scaled_polygons,
         predicate='contains',
         batches=10,
     )

@@ -118,6 +118,35 @@ def setup_heterodata(
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
+
+    def _coerce_categorical_numeric(
+        df: "pd.DataFrame",
+        cols: list[str],
+        coerce_index: bool = False,
+        index_name: str | None = None,
+    ) -> "pd.DataFrame":
+        """Coerce pandas categorical columns to numeric when possible.
+
+        Polars does not support non-string dictionary arrays; pandas categoricals
+        of ints trigger a conversion error. Convert those to integer dtype.
+        """
+        if coerce_index:
+            idx = df.index
+            if getattr(idx.dtype, "name", "") == "category":
+                # Stringify categorical index to avoid non-string dictionary arrays.
+                df.index = idx.astype(str)
+            if index_name:
+                df.index.name = index_name
+        for col in cols:
+            if col in df.columns:
+                series = df[col]
+                if getattr(series.dtype, "name", "") == "category":
+                    # Prefer numeric categories (phenograph_cluster, encodings)
+                    try:
+                        df[col] = series.astype("int64")
+                    except Exception:
+                        df[col] = series.astype(str)
+        return df
     
     # List of columns to potentially drop
     drop_columns = [
@@ -135,11 +164,22 @@ def setup_heterodata(
         # Add gene embedding and clusters
         .join(
             pl.from_pandas(
-                adata.var[[genes_encoding_column, genes_clusters_column]],
-                include_index=True
+                _coerce_categorical_numeric(
+                    adata.var[[genes_encoding_column, genes_clusters_column]].copy(),
+                    [genes_encoding_column, genes_clusters_column],
+                    coerce_index=True,
+                    index_name="index"
+                    if (adata.var.index.name is None or adata.var.index.name in ("None", ""))
+                    else adata.var.index.name,
+                ),
+                include_index=True,
             ),
             left_on=tx_fields.feature,
-            right_on=adata.var.index.name if adata.var.index.name else 'None',
+            right_on=(
+                "index"
+                if (adata.var.index.name is None or adata.var.index.name in ("None", ""))
+                else adata.var.index.name
+            ),
         )
         .rename(
             {
@@ -157,8 +197,14 @@ def setup_heterodata(
         )
         .join(
             pl.from_pandas(
-                adata.obs[[bd_fields.id, cells_encoding_column, 
-                           cells_clusters_column]],
+                _coerce_categorical_numeric(
+                    adata.obs[[bd_fields.id, cells_encoding_column, cells_clusters_column]].copy(),
+                    [bd_fields.id, cells_encoding_column, cells_clusters_column],
+                    coerce_index=True,
+                    index_name="index"
+                    if (adata.obs.index.name is None or adata.obs.index.name in ("None", ""))
+                    else adata.obs.index.name,
+                ),
                 include_index=True,
             ),
             left_on='join_id_cell',
@@ -218,8 +264,12 @@ def setup_heterodata(
     if use_3d_actual and has_z:
         coord_cols.append(tx_fields.z)
 
-    data['tx']['geometry'] = transcripts[coord_cols].to_torch()
+    # Keep 3D geometry separately for graph construction, but ensure the
+    # generic 'geometry' attribute used by tiling stays 2D.
+    data['tx']['geometry'] = transcripts[[tx_fields.x, tx_fields.y]].to_torch()
     data['tx']['pos'] = data['tx']['geometry']
+    if use_3d_actual and has_z:
+        data['tx']['geometry_3d'] = transcripts[coord_cols].to_torch()
 
     # Store dimensionality flag for downstream use
     data['tx']['is_3d'] = torch.tensor([use_3d_actual])
