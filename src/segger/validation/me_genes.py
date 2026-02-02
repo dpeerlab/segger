@@ -13,6 +13,8 @@ from pathlib import Path
 import warnings
 import json
 import hashlib
+import time
+import os
 import numpy as np
 import anndata as ad
 import scanpy as sc
@@ -230,6 +232,7 @@ def load_me_genes_from_scrna(
         (me_gene_pairs, markers) where me_gene_pairs is a list of
         (gene1, gene2) tuples and markers is the full marker dictionary.
     """
+    verbose = os.getenv("SEGGER_ME_VERBOSE", "").lower() not in {"0", "false", "no", "off"}
     # Cache to avoid repeated expensive ME discovery
     cache_key = _me_cache_key(
         scrna_path=scrna_path,
@@ -253,9 +256,21 @@ def load_me_genes_from_scrna(
                     if len(p) == 2
                 ]
                 markers = cached.get("markers", {})
+                if verbose:
+                    print(
+                        f"[segger][me] cache hit: {len(pairs)} pairs",
+                        flush=True,
+                    )
                 return pairs, markers
         except Exception:
             pass
+
+    t0 = time.monotonic()
+    if verbose:
+        print(
+            "[segger][me] computing ME gene pairs (this can take a while)...",
+            flush=True,
+        )
 
     # Load scRNA-seq data
     adata = sc.read_h5ad(scrna_path)
@@ -293,6 +308,15 @@ def load_me_genes_from_scrna(
         expr_threshold_in=expr_threshold_in,
         expr_threshold_out=expr_threshold_out,
     )
+
+    if verbose:
+        n_types = adata.obs[cell_type_column].nunique()
+        elapsed = time.monotonic() - t0
+        print(
+            f"[segger][me] done: {len(me_gene_pairs)} pairs "
+            f"across {n_types} cell types in {elapsed:.1f}s",
+            flush=True,
+        )
 
     # Write cache (best-effort)
     try:
