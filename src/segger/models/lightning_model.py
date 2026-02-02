@@ -175,13 +175,9 @@ class LitISTEncoder(LightningModule):
 
         # Setup alignment loss for ME gene constraints
         if self._align_loss_enabled:
-            pos_weight = None
-            if hasattr(self.trainer.datamodule, "me_pos_weight"):
-                pos_weight = self.trainer.datamodule.me_pos_weight
             self.loss_align = AlignmentLoss(
                 weight_start=self._align_weight_start,
                 weight_end=self._align_weight_end,
-                pos_weight=pos_weight,
             )
         return super().setup(stage)
 

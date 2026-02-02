@@ -296,19 +296,6 @@ class ISTDataModule(LightningDataModule):
             use_3d=self.use_3d,
             me_gene_pairs=self.me_gene_pairs,
         )
-        # Compute a fixed pos_weight for alignment loss if ME edges exist
-        self.me_pos_weight = None
-        if self.alignment_loss:
-            try:
-                if ('tx', 'attracts', 'tx') in self.data.edge_types:
-                    labels = self.data['tx', 'attracts', 'tx'].edge_label
-                    if labels.numel() > 0:
-                        pos = (labels > 0.5).sum().item()
-                        neg = labels.numel() - pos
-                        if pos > 0 and neg > 0:
-                            self.me_pos_weight = neg / pos
-            except Exception:
-                self.me_pos_weight = None
         # Tile graph dataset
         node_positions = torch.vstack([
             self.data['tx']['pos'],

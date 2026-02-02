@@ -5,9 +5,9 @@ from scRNA-seq reference data. The loss enforces that transcripts with ME genes
 should not be assigned to the same cell.
 """
 
-from typing import Optional
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 
@@ -27,21 +27,18 @@ class AlignmentLoss(nn.Module):
         Initial weight for alignment loss at epoch 0.
     weight_end : float
         Final weight for alignment loss at last epoch.
-    pos_weight : float, optional
-        Weight for positive class to handle imbalance. If None, computed dynamically.
     """
 
     def __init__(
         self,
         weight_start: float = 0.0,
         weight_end: float = 0.1,
-        pos_weight: Optional[float] = None,
     ):
         super().__init__()
         self.weight_start = weight_start
         self.weight_end = weight_end
-        self._pos_weight = pos_weight
-        self._criterion = nn.BCEWithLogitsLoss()
+        # Fixed margin for contrastive loss (cosine similarity target).
+        self._margin = 0.2
 
     def get_scheduled_weight(
         self,
@@ -91,25 +88,21 @@ class AlignmentLoss(nn.Module):
             Alignment loss value.
         """
         # Compute similarity scores (dot product for normalized embeddings)
-        logits = (embeddings_src * embeddings_dst).sum(dim=-1)
+        sim = (embeddings_src * embeddings_dst).sum(dim=-1)
         labels = labels.float()
 
-        # Handle class imbalance with dynamic pos_weight
-        if self._pos_weight is None:
-            pos_mask = labels == 1
-            if pos_mask.any() and (~pos_mask).any():
-                pos_weight = (~pos_mask).sum() / pos_mask.sum()
-                criterion = nn.BCEWithLogitsLoss(
-                    pos_weight=pos_weight.to(logits.device)
-                )
-            else:
-                criterion = self._criterion
-        else:
-            criterion = nn.BCEWithLogitsLoss(
-                pos_weight=torch.tensor(self._pos_weight, device=logits.device)
-            )
+        pos_mask = labels > 0.5
+        neg_mask = ~pos_mask
 
-        return criterion(logits, labels)
+        loss = torch.tensor(0.0, device=sim.device)
+        if pos_mask.any():
+            pos_loss = (1.0 - sim[pos_mask]) ** 2
+            loss = loss + pos_loss.mean()
+        if neg_mask.any():
+            neg_loss = F.relu(sim[neg_mask] - self._margin) ** 2
+            loss = loss + neg_loss.mean()
+
+        return loss
 
 
 def compute_me_gene_edges(
@@ -117,7 +110,7 @@ def compute_me_gene_edges(
     me_gene_pairs: torch.Tensor,
     edge_index: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute edge labels for mutually exclusive gene pairs.
+    """Compute alignment edges for ME and same-gene positives.
 
     Parameters
     ----------
@@ -131,37 +124,42 @@ def compute_me_gene_edges(
     Returns
     -------
     tuple[torch.Tensor, torch.Tensor]
-        Edge indices and labels (0 for ME pairs that should repel, 1 otherwise).
+        Edge indices and labels: 1 for same-gene neighbors (attract),
+        0 for ME gene pairs (repel). Other edges are dropped.
     """
     src, dst = edge_index
     src_genes = gene_indices[src]
     dst_genes = gene_indices[dst]
 
-    # Labels: 1 = should attract (same cell), 0 = should repel (ME genes)
-    labels = torch.ones(edge_index.size(1), device=edge_index.device)
+    # Positives: same-gene neighbors
+    pos_mask = src_genes == dst_genes
 
-    # Early exit if no ME pairs
-    if me_gene_pairs.numel() == 0:
-        return edge_index, labels
+    # Negatives: ME gene pairs (only for edges with ME genes)
+    neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)
+    if me_gene_pairs.numel() > 0 and src_genes.numel() > 0:
+        me_genes = torch.unique(me_gene_pairs.flatten())
+        in_me = torch.isin(src_genes, me_genes) & torch.isin(dst_genes, me_genes)
+        if in_me.any():
+            pair_min = torch.minimum(me_gene_pairs[:, 0], me_gene_pairs[:, 1])
+            pair_max = torch.maximum(me_gene_pairs[:, 0], me_gene_pairs[:, 1])
+            max_gene = max(
+                src_genes.max().item() if src_genes.numel() > 0 else 0,
+                dst_genes.max().item() if dst_genes.numel() > 0 else 0,
+                pair_max.max().item() if pair_max.numel() > 0 else 0,
+            ) + 1
+            me_pair_keys = pair_min * max_gene + pair_max
 
-    # Vectorized ME pair matching using hash-based lookup
-    # Create bidirectional pair keys (sorted for direction-agnostic matching)
-    pair_min = torch.minimum(me_gene_pairs[:, 0], me_gene_pairs[:, 1])
-    pair_max = torch.maximum(me_gene_pairs[:, 0], me_gene_pairs[:, 1])
-    max_gene = max(
-        src_genes.max().item() if src_genes.numel() > 0 else 0,
-        dst_genes.max().item() if dst_genes.numel() > 0 else 0,
-        pair_max.max().item() if pair_max.numel() > 0 else 0,
-    ) + 1
-    me_pair_keys = pair_min * max_gene + pair_max
+            edge_min = torch.minimum(src_genes[in_me], dst_genes[in_me])
+            edge_max = torch.maximum(src_genes[in_me], dst_genes[in_me])
+            edge_pair_keys = edge_min * max_gene + edge_max
+            is_me = torch.isin(edge_pair_keys, me_pair_keys)
+            neg_mask[in_me] = is_me
 
-    # Create edge pair keys (direction-agnostic)
-    edge_min = torch.minimum(src_genes, dst_genes)
-    edge_max = torch.maximum(src_genes, dst_genes)
-    edge_pair_keys = edge_min * max_gene + edge_max
+    # Select only positives and negatives for alignment loss
+    keep = pos_mask | neg_mask
+    if not keep.any():
+        return edge_index[:, :0], torch.empty((0,), device=edge_index.device)
 
-    # Vectorized membership check
-    is_me = torch.isin(edge_pair_keys, me_pair_keys)
-    labels[is_me] = 0
-
-    return edge_index, labels
+    labels = torch.zeros(keep.sum().item(), device=edge_index.device)
+    labels[pos_mask[keep]] = 1.0
+    return edge_index[:, keep], labels
