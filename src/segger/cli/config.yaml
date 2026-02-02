@@ -1,3 +1,18 @@
+# ============================================================================
+# DEPRECATED: This file is not used by the CLI.
+# ============================================================================
+# CLI parameters are now extracted programmatically from class docstrings via
+# the ParameterRegistry. See cli/registry.py for implementation details.
+#
+# Parameter sources:
+# - ISTDataModule (data/data_module.py)
+# - LitISTEncoder (models/lightning_model.py)
+# - ISTSegmentationWriter (data/writer.py)
+#
+# This file is kept for reference only. To modify CLI defaults, update the
+# corresponding class __init__ signatures and docstrings.
+# ============================================================================
+
 # I/O
 data_directory_inputs: ~
 data_directory_outputs: ~

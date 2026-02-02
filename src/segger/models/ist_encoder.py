@@ -1,5 +1,6 @@
 from torch_geometric.nn import GATv2Conv, Linear, HeteroDictLinear, HeteroConv
 from typing import Dict, Tuple, List, Union, Optional
+from torch_scatter import scatter_min, scatter_max
 from torch import Tensor
 from torch.nn import (
     Sequential,
@@ -52,7 +53,7 @@ class Positional2dEmbedder(Module):
         return embedding
 
     def forward(
-            self, 
+            self,
             pos: torch.Tensor,
             batch: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -60,14 +61,10 @@ class Positional2dEmbedder(Module):
             pos = pos - pos.min(dim=0).values
             pos = pos / pos.max(dim=0).values
         else:
-            # normalize per batch
-            mins = torch.zeros((batch.max()+1, 2), device=pos.device)
-            maxs = torch.zeros((batch.max()+1, 2), device=pos.device)
-            for b in range(batch.max()+1):
-                mask = batch == b
-                if mask.any():
-                    mins[b] = pos[mask].min(dim=0).values
-                    maxs[b] = pos[mask].max(dim=0).values
+            # Vectorized per-batch normalization using scatter operations
+            num_batches = batch.max().item() + 1
+            mins, _ = scatter_min(pos, batch, dim=0, dim_size=num_batches)
+            maxs, _ = scatter_max(pos, batch, dim=0, dim_size=num_batches)
             pos = (pos - mins[batch]) / (maxs[batch] - mins[batch] + 1e-8)
 
         pos_freq = self.embed(pos, self.frequency_embedding_size)  # ... x 2 x freq_dim

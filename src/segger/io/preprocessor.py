@@ -1,8 +1,19 @@
+"""Platform-specific preprocessing for spatial transcriptomics data.
+
+This module provides preprocessors for different spatial transcriptomics platforms:
+- Xenium (10x Genomics)
+- CosMx (NanoString)
+- MERSCOPE (Vizgen)
+
+Each preprocessor normalizes platform-specific data formats to Segger's internal
+representation (StandardTranscriptFields, StandardBoundaryFields).
+"""
+
 from pandas.errors import DtypeWarning
 from functools import cached_property
 from abc import ABC, abstractmethod
 from anndata import AnnData
-from typing import Literal
+from typing import Literal, Optional
 from pathlib import Path
 import geopandas as gpd
 import polars as pl
@@ -21,10 +32,16 @@ from .fields import (
     MerscopeBoundaryFields,
     StandardTranscriptFields,
     StandardBoundaryFields,
-    XeniumTranscriptFields, 
+    XeniumTranscriptFields,
     XeniumBoundaryFields,
     CosMxTranscriptFields,
     CosMxBoundaryFields,
+)
+from .quality_filter import (
+    get_quality_filter,
+    XeniumQualityFilter,
+    CosMxQualityFilter,
+    MerscopeQualityFilter,
 )
 
 
@@ -58,18 +75,43 @@ class ISTPreprocessor(ABC):
     Abstract base class for platform-specific preprocessing of spatial
     transcriptomics data. Subclasses must implement methods to construct
     transcript and boundary GeoDataFrames for the given platform.
+
+    Parameters
+    ----------
+    data_dir : Path
+        Path to the raw data directory for the spatial platform.
+    min_qv : float, optional
+        Minimum quality threshold for transcript filtering.
+        - Xenium: Phred-scaled QV (default 20.0 = 1% error rate)
+        - CosMx/MERSCOPE: Ignored (no per-transcript QV)
+    include_z : bool
+        Whether to include z-coordinates if available. Default True.
     """
 
-    def __init__(self, data_dir: Path):
+    # Default quality threshold (override in subclasses)
+    DEFAULT_MIN_QV: Optional[float] = None
+
+    def __init__(
+        self,
+        data_dir: Path,
+        min_qv: Optional[float] = None,
+        include_z: bool = True,
+    ):
         """
         Parameters
         ----------
         data_dir : Path
             Path to the raw data directory for the spatial platform.
+        min_qv : float, optional
+            Minimum quality threshold. Uses platform default if None.
+        include_z : bool
+            Whether to include z-coordinates. Default True.
         """
         data_dir = Path(data_dir)
         type(self)._validate_directory(data_dir)
         self.data_dir = data_dir
+        self.min_qv = min_qv if min_qv is not None else self.DEFAULT_MIN_QV
+        self.include_z = include_z
 
     @staticmethod
     @abstractmethod
@@ -253,10 +295,16 @@ class ISTPreprocessor(ABC):
 class CosMXPreprocessor(ISTPreprocessor):
     """
     Preprocessor for NanoString CosMX datasets.
+
+    CosMx has no per-transcript quality score. Quality control is done via:
+    - Control probe removal (Negative*, SystemControl*, NegPrb*)
+    - Cell-level thresholds (applied separately)
     """
+
+    DEFAULT_MIN_QV: Optional[float] = None  # No per-transcript QV
+
     @staticmethod
     def _validate_directory(data_dir: Path):
-
         # Check required files/directories
         bd_fields = CosMxBoundaryFields()
         tx_fields = CosMxTranscriptFields()
@@ -275,52 +323,63 @@ class CosMXPreprocessor(ISTPreprocessor):
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
-
         # Field names
         raw = CosMxTranscriptFields()
         std = StandardTranscriptFields()
 
-        return (
-            # Read in lazily
+        # Build base query
+        lf = (
             pl.scan_csv(next(self.data_dir.glob(raw.filename)))
             .with_row_index(name=std.row_index)
-            # Filter data
-            .filter(pl.col(raw.feature).str.contains(
-                '|'.join(raw.filter_substrings)).not_()
-            )
-            # Standardize compartment labels
-            .with_columns(
-                pl.col(raw.compartment)
-                .replace_strict(
-                    {
-                        raw.nucleus_value: std.nucleus_value,
-                        raw.membrane_value: std.cytoplasmic_value,
-                        raw.cytoplasmic_value: std.cytoplasmic_value,
-                        raw.extracellular_value: std.extracellular_value,
-                        None: std.extracellular_value,
-                    },
-                    return_dtype=pl.Int8,
-                )
-                .alias(std.compartment)
-            )
-            # Standardize cell IDs
-            .with_columns(
-                pl.when(pl.col(std.compartment) != std.extracellular_value)
-                .then(pl.col(raw.cell_id))
-                .otherwise(None)
-                .alias(std.cell_id)
-            )
-            # Map to standard field names
-            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
-
-            # Add numeric index
-            .with_row_index()
-            .collect()
         )
+
+        # Apply quality filtering using quality_filter module
+        qf = CosMxQualityFilter()
+        lf = qf.filter(
+            lf,
+            min_threshold=self.min_qv,  # Will warn if provided
+            feature_column=raw.feature,
+        )
+
+        # Standardize compartment labels
+        lf = lf.with_columns(
+            pl.col(raw.compartment)
+            .replace_strict(
+                {
+                    raw.nucleus_value: std.nucleus_value,
+                    raw.membrane_value: std.cytoplasmic_value,
+                    raw.cytoplasmic_value: std.cytoplasmic_value,
+                    raw.extracellular_value: std.extracellular_value,
+                    None: std.extracellular_value,
+                },
+                return_dtype=pl.Int8,
+            )
+            .alias(std.compartment)
+        )
+
+        # Standardize cell IDs
+        lf = lf.with_columns(
+            pl.when(pl.col(std.compartment) != std.extracellular_value)
+            .then(pl.col(raw.cell_id))
+            .otherwise(None)
+            .alias(std.cell_id)
+        )
+
+        # Map to standard field names
+        rename_map = {raw.x: std.x, raw.y: std.y, raw.feature: std.feature}
+        lf = lf.rename(rename_map)
+
+        # Build select columns list
+        select_cols = [std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment]
+
+        # Include z-coordinate if requested and available
+        if self.include_z:
+            schema = lf.collect_schema()
+            if raw.z in schema.names():
+                lf = lf.rename({raw.z: std.z})
+                select_cols.append(std.z)
+
+        return lf.select(select_cols).with_row_index().collect()
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
@@ -371,10 +430,15 @@ class CosMXPreprocessor(ISTPreprocessor):
 class XeniumPreprocessor(ISTPreprocessor):
     """
     Preprocessor for 10x Genomics Xenium datasets.
+
+    Xenium provides per-transcript quality scores (QV) in Phred scale.
+    Default filtering: QV >= 20 (1% error rate).
     """
+
+    DEFAULT_MIN_QV: float = 20.0  # Phred-scaled, 1% error rate
+
     @staticmethod
     def _validate_directory(data_dir: Path):
-
         # Check required files/directories
         bd_fields = XeniumBoundaryFields()
         tx_fields = XeniumTranscriptFields()
@@ -392,50 +456,63 @@ class XeniumPreprocessor(ISTPreprocessor):
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
-
         # Field names
         raw = XeniumTranscriptFields()
         std = StandardTranscriptFields()
 
-        return (
-            # Read in lazily
+        # Build base query
+        lf = (
             pl.scan_parquet(
                 self.data_dir / raw.filename,
                 parallel='row_groups'
             )
-            # Add numeric index at beginning
             .with_row_index(name=std.row_index)
-            # Filter data
-            .filter(pl.col(raw.quality) >= 20)
-            .filter(pl.col(raw.feature).str.contains(
-                '|'.join(raw.filter_substrings)).not_()
-            )
-            # Standardize compartment labels
-            .with_columns(
-                pl.when(pl.col(raw.compartment) == raw.nucleus_value)
-                .then(std.nucleus_value)
-                .when(
-                    (pl.col(raw.compartment) != raw.nucleus_value) & 
-                    (pl.col(raw.cell_id) != raw.null_cell_id)
-                )
-                .then(std.cytoplasmic_value)
-                .otherwise(std.extracellular_value)
-                .alias(std.compartment)
-            )
-            # Standardize cell IDs
-            .with_columns(
-                pl.col(raw.cell_id)
-                .replace(raw.null_cell_id, None)
-                .alias(std.cell_id)
-            )
-            # Map to standard field names
-            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
-            .collect()
         )
+
+        # Apply quality filtering using quality_filter module
+        qf = XeniumQualityFilter()
+        lf = qf.filter(
+            lf,
+            min_threshold=self.min_qv,
+            feature_column=raw.feature,
+            quality_column=raw.quality,
+        )
+
+        # Standardize compartment labels
+        lf = lf.with_columns(
+            pl.when(pl.col(raw.compartment) == raw.nucleus_value)
+            .then(std.nucleus_value)
+            .when(
+                (pl.col(raw.compartment) != raw.nucleus_value) &
+                (pl.col(raw.cell_id) != raw.null_cell_id)
+            )
+            .then(std.cytoplasmic_value)
+            .otherwise(std.extracellular_value)
+            .alias(std.compartment)
+        )
+
+        # Standardize cell IDs
+        lf = lf.with_columns(
+            pl.col(raw.cell_id)
+            .replace(raw.null_cell_id, None)
+            .alias(std.cell_id)
+        )
+
+        # Map to standard field names
+        rename_map = {raw.x: std.x, raw.y: std.y, raw.feature: std.feature}
+        lf = lf.rename(rename_map)
+
+        # Build select columns list
+        select_cols = [std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment]
+
+        # Include z-coordinate if requested and available
+        if self.include_z:
+            schema = lf.collect_schema()
+            if raw.z in schema.names():
+                lf = lf.rename({raw.z: std.z})
+                select_cols.append(std.z)
+
+        return lf.select(select_cols).collect()
 
     @staticmethod
     def _get_boundaries(
@@ -509,10 +586,75 @@ class XeniumPreprocessor(ISTPreprocessor):
 class MerscopePreprocessor(ISTPreprocessor):
     """
     Preprocessor for Vizgen MERSCOPE datasets.
+
+    MERSCOPE has no per-transcript quality score. Quality control is done via:
+    - Blank barcode removal (BLANK_*)
+    - FDR calculated from blank code ratio (for reporting)
     """
+
+    DEFAULT_MIN_QV: Optional[float] = None  # No per-transcript QV
+
     @staticmethod
     def _validate_directory(data_dir: Path):
-        raise NotImplementedError()
+        # Check required files/directories
+        tx_fields = MerscopeTranscriptFields()
+        bd_fields = MerscopeBoundaryFields()
+
+        # Check for transcripts file
+        tx_path = data_dir / tx_fields.filename
+        if not tx_path.exists():
+            raise IOError(
+                f"MERSCOPE sample directory must contain {tx_fields.filename}"
+            )
+
+    @cached_property
+    def transcripts(self) -> pl.DataFrame:
+        # Field names
+        raw = MerscopeTranscriptFields()
+        std = StandardTranscriptFields()
+
+        # Build base query
+        lf = (
+            pl.scan_csv(self.data_dir / raw.filename)
+            .with_row_index(name=std.row_index)
+        )
+
+        # Apply quality filtering using quality_filter module
+        qf = MerscopeQualityFilter()
+        lf = qf.filter(
+            lf,
+            min_threshold=self.min_qv,  # Will warn if provided
+            feature_column=raw.feature,
+        )
+
+        # Map to standard field names
+        rename_map = {raw.x: std.x, raw.y: std.y, raw.feature: std.feature}
+        if raw.cell_id:
+            rename_map[raw.cell_id] = std.cell_id
+        lf = lf.rename(rename_map)
+
+        # Build select columns list
+        select_cols = [std.row_index, std.x, std.y, std.feature]
+        if raw.cell_id:
+            select_cols.append(std.cell_id)
+
+        # Include z-coordinate if requested and available
+        if self.include_z:
+            schema = lf.collect_schema()
+            if raw.z in schema.names():
+                lf = lf.rename({raw.z: std.z})
+                select_cols.append(std.z)
+
+        return lf.select(select_cols).collect()
+
+    @cached_property
+    def boundaries(self) -> gpd.GeoDataFrame:
+        # MERSCOPE boundaries implementation would go here
+        # For now, raise NotImplementedError
+        raise NotImplementedError(
+            "MERSCOPE boundary loading not yet implemented. "
+            "Use boundaries from cell segmentation pipeline."
+        )
 
 
 def _infer_platform(data_dir: Path) -> str:
@@ -540,15 +682,43 @@ def _infer_platform(data_dir: Path) -> str:
 
 def get_preprocessor(
     data_dir: Path,
-    platform: str | None = None
+    platform: Optional[str] = None,
+    min_qv: Optional[float] = None,
+    include_z: bool = True,
 ) -> ISTPreprocessor:
+    """Get the appropriate preprocessor for a data directory.
+
+    Parameters
+    ----------
+    data_dir
+        Path to the raw data directory.
+    platform
+        Platform name ('10x_xenium', 'nanostring_cosmx', 'vizgen_merscope').
+        If None, attempts to auto-detect from directory contents.
+    min_qv
+        Minimum quality threshold for transcript filtering.
+        - Xenium: Phred-scaled QV (default 20.0)
+        - CosMx/MERSCOPE: Ignored (no per-transcript QV)
+    include_z
+        Whether to include z-coordinates if available. Default True.
+
+    Returns
+    -------
+    ISTPreprocessor
+        Platform-specific preprocessor instance.
+
+    Raises
+    ------
+    ValueError
+        If platform cannot be detected or is unknown.
+    """
     data_dir = Path(data_dir)
     if platform is None:
-        platform = _infer_platform(data_dir) 
+        platform = _infer_platform(data_dir)
     if platform not in PREPROCESSORS:
         raise ValueError(
             f"Unknown platform: '{platform}'. "
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir)
+    return cls(data_dir, min_qv=min_qv, include_z=include_z)
