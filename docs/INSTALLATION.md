@@ -29,3 +29,16 @@ segger segment -i /path/to/data -o /path/to/output \
   --scrna-reference-path segger_experiments/data_raw/scrnaseq/human_crc.h5ad \
   --scrna-celltype-column celltype
 ```
+
+## Optional Dependencies (Lazy-Loaded)
+
+Segger defers imports for several heavy or optional features, so `import segger` works without them. These features become available only when the corresponding dependency is installed.
+
+- Preprocessors: `opencv-python`
+- SpatialData loader/writer: `spatialdata`, `dask`, `zarr` (and `geopandas` for shapes)
+- SOPA helpers: `sopa`
+- Geometry utilities: `geopandas`, `shapely`
+- scRNA utilities: `scanpy`, `scikit-learn`
+- RAPIDS/GPU helpers: `cudf`, `cuml`, `cugraph`, `cupy`, `cupyx`
+
+When importing from top-level modules like `segger.io` or `segger.export`, optional re-exports may be `None` if dependencies are missing. Import from the submodule directly to get a strict `ImportError`.

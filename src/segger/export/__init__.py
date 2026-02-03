@@ -7,43 +7,10 @@ This module provides functionality to export segmentation results to various for
 - SOPA-compatible format for spatial omics workflows
 """
 
-from .boundary import BoundaryIdentification, generate_boundary, generate_boundaries
-from .xenium import seg2explorer, seg2explorer_pqdm
-from .adapter import predictions_to_dataframe
-from .output_formats import (
-    OutputFormat,
-    OutputWriter,
-    get_writer,
-    register_writer,
-    write_all_formats,
-)
-from .merged_writer import (
-    MergedTranscriptsWriter,
-    SeggerRawWriter,
-    merge_predictions_with_transcripts,
-)
+from __future__ import annotations
 
-# SpatialData exports (require optional dependency)
-try:
-    from .spatialdata_writer import SpatialDataWriter, write_spatialdata
-except Exception:
-    # Catch all exceptions: ImportError, NotImplementedError from dask, etc.
-    SpatialDataWriter = None
-    write_spatialdata = None
-
-# SOPA compatibility exports (require optional dependency)
-try:
-    from .sopa_compat import (
-        validate_sopa_compatibility,
-        export_for_sopa,
-        sopa_to_segger_input,
-        check_sopa_installation,
-    )
-except Exception:
-    validate_sopa_compatibility = None
-    export_for_sopa = None
-    sopa_to_segger_input = None
-    check_sopa_installation = None
+from typing import TYPE_CHECKING
+import importlib
 
 __all__ = [
     # Existing exports
@@ -72,3 +39,101 @@ __all__ = [
     "sopa_to_segger_input",
     "check_sopa_installation",
 ]
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .boundary import BoundaryIdentification, generate_boundary, generate_boundaries
+    from .xenium import seg2explorer, seg2explorer_pqdm
+    from .adapter import predictions_to_dataframe
+    from .output_formats import (
+        OutputFormat,
+        OutputWriter,
+        get_writer,
+        register_writer,
+        write_all_formats,
+    )
+    from .merged_writer import (
+        MergedTranscriptsWriter,
+        SeggerRawWriter,
+        merge_predictions_with_transcripts,
+    )
+    from .spatialdata_writer import SpatialDataWriter, write_spatialdata
+    from .sopa_compat import (
+        validate_sopa_compatibility,
+        export_for_sopa,
+        sopa_to_segger_input,
+        check_sopa_installation,
+    )
+
+
+def __getattr__(name: str):
+    if name in {"BoundaryIdentification", "generate_boundary", "generate_boundaries"}:
+        from .boundary import BoundaryIdentification, generate_boundary, generate_boundaries
+        return locals()[name]
+    if name in {"seg2explorer", "seg2explorer_pqdm"}:
+        from .xenium import seg2explorer, seg2explorer_pqdm
+        return locals()[name]
+    if name == "predictions_to_dataframe":
+        from .adapter import predictions_to_dataframe
+        return predictions_to_dataframe
+    if name in {
+        "OutputFormat",
+        "OutputWriter",
+        "get_writer",
+        "register_writer",
+        "write_all_formats",
+    }:
+        from .output_formats import (
+            OutputFormat,
+            OutputWriter,
+            get_writer,
+            register_writer,
+            write_all_formats,
+        )
+        return locals()[name]
+    if name in {
+        "MergedTranscriptsWriter",
+        "SeggerRawWriter",
+        "merge_predictions_with_transcripts",
+    }:
+        from .merged_writer import (
+            MergedTranscriptsWriter,
+            SeggerRawWriter,
+            merge_predictions_with_transcripts,
+        )
+        return locals()[name]
+    if name in {"SpatialDataWriter", "write_spatialdata"}:
+        try:
+            from .spatialdata_writer import SpatialDataWriter, write_spatialdata
+        except Exception:
+            return None
+        return locals()[name]
+    if name in {
+        "validate_sopa_compatibility",
+        "export_for_sopa",
+        "sopa_to_segger_input",
+        "check_sopa_installation",
+    }:
+        try:
+            from .sopa_compat import (
+                validate_sopa_compatibility,
+                export_for_sopa,
+                sopa_to_segger_input,
+                check_sopa_installation,
+            )
+        except Exception:
+            return None
+        return locals()[name]
+    if name in {
+        "boundary",
+        "xenium",
+        "adapter",
+        "output_formats",
+        "merged_writer",
+        "spatialdata_writer",
+        "sopa_compat",
+    }:
+        try:
+            return importlib.import_module(f"{__name__}.{name}")
+        except Exception as exc:
+            raise ImportError(f"Failed to import optional module '{name}'.") from exc
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -16,21 +16,26 @@ Note: 3D support only affects graph construction (neighbor computation).
 The GNN architecture itself remains unchanged.
 """
 
+from __future__ import annotations
+
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 from typing import Any, Literal, Optional
-import geopandas as gpd
 import polars as pl
 import numpy as np
-import cupy as cp
-import cugraph
 import torch
-import cuml
-import cudf
 import gc
 
-from ...io import TrainingTranscriptFields, TrainingBoundaryFields
+from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from ...geometry import points_in_polygons
+
+
+def _lazy_imports():
+    global cp, cugraph, cuml, cudf
+    import cupy as cp
+    import cugraph
+    import cuml
+    import cudf
 
 
 def phenograph_rapids(
@@ -41,6 +46,7 @@ def phenograph_rapids(
 ) -> np.ndarray:
     """TODO: Add description.
     """
+    _lazy_imports()
     X = cp.array(X)
     model = cuml.neighbors.NearestNeighbors(n_neighbors=n_neighbors)
     model.fit(X)

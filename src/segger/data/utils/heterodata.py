@@ -15,22 +15,26 @@ The GNN model architecture itself does not change for 3D data - only the
 input features and graph construction are affected.
 """
 
+from __future__ import annotations
+
 from torch_geometric.data import HeteroData
-from typing import Literal, Optional, List, Tuple
-import geopandas as gpd
+from typing import Literal, Optional, List, Tuple, TYPE_CHECKING
 import polars as pl
-import scanpy as sc
 import numpy as np
 import torch
 import os
 
-from ...io import TrainingBoundaryFields, TrainingTranscriptFields
+from ...io.fields import TrainingBoundaryFields, TrainingTranscriptFields
 from ...models.alignment_loss import compute_me_gene_edges
 from .neighbors import (
     setup_segmentation_graph,
     setup_transcripts_graph,
     setup_prediction_graph,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    import geopandas as gpd
+    import scanpy as sc
 
 
 def setup_heterodata(

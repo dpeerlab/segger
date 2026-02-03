@@ -28,20 +28,9 @@ If pooch is not available, functions will raise ImportError with
 installation instructions.
 """
 
-from ._registry import SEGGER_DATA, get_data_home
-from .toy_xenium import (
-    load_toy_xenium,
-    load_toy_xenium_transcripts,
-    load_toy_xenium_cells,
-    load_toy_xenium_boundaries,
-    create_synthetic_xenium,
-)
-from .sample_outputs import (
-    create_sample_segger_output,
-    create_merged_output,
-    save_sample_outputs,
-    convert_segger_to_spatialdata,
-)
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 __all__ = [
     # Registry
@@ -59,3 +48,54 @@ __all__ = [
     "save_sample_outputs",
     "convert_segger_to_spatialdata",
 ]
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ._registry import SEGGER_DATA, get_data_home
+    from .toy_xenium import (
+        load_toy_xenium,
+        load_toy_xenium_transcripts,
+        load_toy_xenium_cells,
+        load_toy_xenium_boundaries,
+        create_synthetic_xenium,
+    )
+    from .sample_outputs import (
+        create_sample_segger_output,
+        create_merged_output,
+        save_sample_outputs,
+        convert_segger_to_spatialdata,
+    )
+
+
+def __getattr__(name: str):
+    if name in {"SEGGER_DATA", "get_data_home"}:
+        from ._registry import SEGGER_DATA, get_data_home
+        return SEGGER_DATA if name == "SEGGER_DATA" else get_data_home
+    if name in {
+        "load_toy_xenium",
+        "load_toy_xenium_transcripts",
+        "load_toy_xenium_cells",
+        "load_toy_xenium_boundaries",
+        "create_synthetic_xenium",
+    }:
+        from .toy_xenium import (
+            load_toy_xenium,
+            load_toy_xenium_transcripts,
+            load_toy_xenium_cells,
+            load_toy_xenium_boundaries,
+            create_synthetic_xenium,
+        )
+        return locals()[name]
+    if name in {
+        "create_sample_segger_output",
+        "create_merged_output",
+        "save_sample_outputs",
+        "convert_segger_to_spatialdata",
+    }:
+        from .sample_outputs import (
+            create_sample_segger_output,
+            create_merged_output,
+            save_sample_outputs,
+            convert_segger_to_spatialdata,
+        )
+        return locals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

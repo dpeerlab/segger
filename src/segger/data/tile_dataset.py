@@ -1,13 +1,18 @@
+from __future__ import annotations
+
 from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
-import shapely
+from typing import TYPE_CHECKING
 import torch
 
 
 from .partition import PartitionDataset
 from .tiling import Tiling
+
+if TYPE_CHECKING:  # pragma: no cover
+    import shapely
 
 
 class TileFitDataset(PartitionDataset):

@@ -142,6 +142,7 @@ src/segger/
 - **Vectorized operations**: Use `torch.isin()` and hash-based lookups instead of for loops
 - **scatter ops**: Use `torch_scatter` for per-batch reductions
 - **GPU fallback**: All GPU features have CPU fallback (CuPy→SciPy, cuSpatial→GeoPandas)
+- **Lazy imports**: `segger.*.__init__` uses `__getattr__` for on-demand imports; `segger.io`/`segger.export` return `None` for optional features when deps are missing (use submodule imports for strict errors)
 
 ---
 

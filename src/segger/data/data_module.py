@@ -33,12 +33,10 @@ from .tile_dataset import (
     TilePredictDataset,
     DynamicBatchSamplerPatch
 )
-from ..io import (
+from ..io.fields import (
     StandardTranscriptFields,
     StandardBoundaryFields,
-    get_preprocessor
 )
-from .utils import setup_anndata, setup_heterodata
 from .tiling import QuadTreeTiling, SquareTiling
 from .partition import PartitionSampler
 
@@ -236,6 +234,10 @@ class ISTDataModule(LightningDataModule):
         if input_path.suffix == ".zarr" or (input_path / ".zgroup").exists():
             self._load_from_spatialdata(input_path)
             return
+
+        from ..io.preprocessor import get_preprocessor
+        from .utils.anndata import setup_anndata
+        from .utils.heterodata import setup_heterodata
 
         # Load standardized IST data with quality filtering
         pp = get_preprocessor(

@@ -1,18 +1,26 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from torch.nn.functional import normalize
 from scipy import sparse as sp
-import geopandas as gpd
 import polars as pl
 import pandas as pd
-import scanpy as sc
 import numpy as np
-import sklearn
 import torch
-import cupyx
-import cuml
+
+def _lazy_imports():
+    global gpd, sc, sklearn, cupyx, cuml
+    import geopandas as gpd
+    import scanpy as sc
+    import sklearn
+    import cupyx
+    import cuml
+
+if TYPE_CHECKING:  # pragma: no cover
+    import geopandas as gpd
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
-from segger.geometry.morphology import get_polygon_props
 
 def anndata_from_transcripts(
     tx: pl.DataFrame,
@@ -23,6 +31,7 @@ def anndata_from_transcripts(
 ):
     """TODO: Add description.
     """
+    _lazy_imports()
     # Remove non-nuclear transcript
     tx = tx.filter(pl.col(cell_id_column).is_not_null())
     # Get sparse counts from transcripts
@@ -142,6 +151,7 @@ def setup_anndata(
 ):
     """TODO: Add description.
     """
+    _lazy_imports()
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
@@ -240,6 +250,7 @@ def setup_anndata(
     ad.var[tx_fields.gene_encoding] = np.arange(len(ad.var)).astype(int)
 
     if compute_morphology:
+        from segger.geometry.morphology import get_polygon_props
         # # make sure index matches by cell_id
         boundaries = boundaries.set_index(bd_fields.id, verify_integrity=True)
         boundaries = boundaries.loc[ad.obs[bd_fields.id]]

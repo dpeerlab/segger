@@ -7,8 +7,7 @@ import polars as pl
 import numpy as np
 import torch
 
-from ..io import TrainingTranscriptFields, TrainingBoundaryFields
-from ..prediction import apply_fragment_mode
+from ..io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
 
@@ -227,6 +226,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         pl.DataFrame
             Updated segmentation with fragment cell assignments.
         """
+        from ..prediction.fragment import apply_fragment_mode
         tx_fields = TrainingTranscriptFields()
 
         # Get tx-tx edges from the dataset

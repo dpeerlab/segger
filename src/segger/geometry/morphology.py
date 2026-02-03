@@ -1,5 +1,10 @@
-import geopandas as gpd
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 import pandas as pd
+
+if TYPE_CHECKING:  # pragma: no cover
+    import geopandas as gpd
 
 def get_polygon_props(
     polygons: gpd.GeoSeries,

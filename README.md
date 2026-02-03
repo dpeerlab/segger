@@ -40,6 +40,28 @@ pip install -e .
 - NFS cleanup noise (`.nfs*`): set `TMPDIR` to local scratch to avoid exit-time errors.
 - UCX/CUDA segfaults: try `UCX_MEMTYPE_CACHE=n` and `UCX_TLS=sm,self`.
 
+## Optional Dependencies & Lazy Imports
+
+Segger defers imports for several heavy/optional features to keep `import segger` fast and to allow partial installs. If an optional dependency is missing, some top-level re-exports (notably in `segger.io` and `segger.export`) will be `None` rather than raising at import time.
+
+```python
+from segger.io import get_preprocessor
+if get_preprocessor is None:
+    raise ImportError("Install opencv-python for preprocessors.")
+```
+
+For strict import errors, import from submodules directly:
+
+```python
+from segger.io.preprocessor import get_preprocessor
+```
+
+Common optional dependencies:
+- `opencv-python` (preprocessors)
+- `spatialdata` + `dask` (SpatialData loader/writer)
+- `sopa` (SOPA export helpers)
+- `geopandas`/`shapely` (geometry utilities)
+
 # Usage
 
 You can run **segger** from the command line with:
