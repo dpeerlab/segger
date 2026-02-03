@@ -301,5 +301,6 @@ ME genes are discovered from scRNA-seq reference using:
 - `percentage=30`
 - `expr_threshold_in=0.25`
 - `expr_threshold_out=0.03`
+- Cells are subsampled to at most **1000 per cell type** for performance
 
 See `validation/me_genes.py` for implementation details.

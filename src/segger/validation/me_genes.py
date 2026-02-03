@@ -104,6 +104,9 @@ def find_mutually_exclusive_genes(
         Minimum fraction expressing in own cell type (default: 0.25).
     expr_threshold_out : float, optional
         Maximum fraction expressing in other cell types (default: 0.03).
+    Notes
+    -----
+    For performance, cells are subsampled to at most 1000 per cell type.
 
     Returns
     -------
@@ -225,6 +228,9 @@ def load_me_genes_from_scrna(
         Minimum expression in own cell type (default: 0.25).
     expr_threshold_out : float, optional
         Maximum expression in other cell types (default: 0.03).
+    Notes
+    -----
+    For performance, cells are subsampled to at most 1000 per cell type.
 
     Returns
     -------
@@ -274,6 +280,23 @@ def load_me_genes_from_scrna(
 
     # Load scRNA-seq data
     adata = sc.read_h5ad(scrna_path)
+
+    # Subsample cells per cell type to limit runtime
+    if cell_type_column in adata.obs:
+        rng = np.random.default_rng(0)
+        idx = []
+        for ct in adata.obs[cell_type_column].unique():
+            ct_idx = np.where(adata.obs[cell_type_column] == ct)[0]
+            if ct_idx.size > _ME_MAX_CELLS_PER_TYPE:
+                ct_idx = rng.choice(
+                    ct_idx,
+                    size=_ME_MAX_CELLS_PER_TYPE,
+                    replace=False,
+                )
+            idx.append(ct_idx)
+        if idx:
+            idx = np.concatenate(idx)
+            adata = adata[idx].copy()
 
     # Ensure unique var names and log-normalize if needed
     if not adata.var_names.is_unique:
@@ -359,7 +382,8 @@ def me_gene_pairs_to_indices(
             index_pairs.append((gene_to_idx[gene1], gene_to_idx[gene2]))
 
     return index_pairs
-_ME_CACHE_VERSION = 1
+_ME_CACHE_VERSION = 2
+_ME_MAX_CELLS_PER_TYPE = 1000
 
 
 def _me_cache_key(
@@ -386,6 +410,7 @@ def _me_cache_key(
         "percentage": percentage,
         "expr_threshold_in": expr_threshold_in,
         "expr_threshold_out": expr_threshold_out,
+        "max_cells_per_type": _ME_MAX_CELLS_PER_TYPE,
     }
     raw = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
