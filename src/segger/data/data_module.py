@@ -38,7 +38,7 @@ from ..io import (
     StandardBoundaryFields,
     get_preprocessor
 )
-from . import utils as data_utils
+from .utils import setup_anndata, setup_heterodata
 from .tiling import QuadTreeTiling, SquareTiling
 from .partition import PartitionSampler
 
@@ -265,7 +265,7 @@ class ISTDataModule(LightningDataModule):
         bd_mask = bd[bd_fields.boundary_type] == boundary_type
 
         # Generate reference AnnData
-        self.ad = data_utils.setup_anndata(
+        self.ad = setup_anndata(
             transcripts=tx.filter(tx_mask),
             boundaries=bd[bd_mask],
             cell_column=tx_fields.cell_id,
@@ -278,7 +278,7 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
         )
-        self.data = data_utils.setup_heterodata(
+        self.data = setup_heterodata(
             transcripts=tx,
             boundaries=bd,
             adata=self.ad,
@@ -396,7 +396,7 @@ class ISTDataModule(LightningDataModule):
             bd_mask = slice(None)  # Select all
 
         # Generate reference AnnData
-        self.ad = data_utils.setup_anndata(
+        self.ad = setup_anndata(
             transcripts=tx.filter(tx_mask),
             boundaries=bd[bd_mask] if bd is not None else None,
             cell_column=tx_fields.cell_id,
@@ -410,7 +410,7 @@ class ISTDataModule(LightningDataModule):
             compute_morphology=(self.cells_representation_mode == "morphology"),
         )
 
-        self.data = data_utils.setup_heterodata(
+        self.data = setup_heterodata(
             transcripts=tx,
             boundaries=bd,
             adata=self.ad,
