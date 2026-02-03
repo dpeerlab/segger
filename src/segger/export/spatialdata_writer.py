@@ -3,6 +3,7 @@
 This writer creates SpatialData-compatible Zarr stores containing:
 - points["transcripts"]: Transcripts with segger_cell_id column
 - shapes["cells"]: Cell boundaries (optional, can be input or generated)
+- tables["cell_table"]: AnnData table with cell x gene counts (optional)
 
 NO images are included (per requirements).
 
@@ -36,6 +37,7 @@ from segger.utils.optional_deps import (
     require_spatialdata,
 )
 from segger.export.output_formats import OutputFormat, register_writer
+from segger.export.anndata_writer import build_anndata_table
 
 if TYPE_CHECKING:
     import geopandas as gpd
@@ -63,6 +65,12 @@ class SpatialDataWriter:
         Key for transcripts in sdata.points. Default "transcripts".
     shapes_key
         Key for cell shapes in sdata.shapes. Default "cells".
+    include_table
+        Whether to include AnnData table in sdata.tables. Default True.
+    table_key
+        Key for AnnData table in sdata.tables. Default "cell_table".
+    table_region_key
+        Column in shapes that identifies cells. Default "cell_id".
     """
 
     def __init__(
@@ -71,6 +79,9 @@ class SpatialDataWriter:
         boundary_method: Literal["input", "convex_hull", "skip"] = "input",
         points_key: str = "transcripts",
         shapes_key: str = "cells",
+        include_table: bool = True,
+        table_key: str = "cell_table",
+        table_region_key: str = "cell_id",
     ):
         require_spatialdata()
 
@@ -78,6 +89,9 @@ class SpatialDataWriter:
         self.boundary_method = boundary_method
         self.points_key = points_key
         self.shapes_key = shapes_key
+        self.include_table = include_table
+        self.table_key = table_key
+        self.table_region_key = table_region_key
 
     def write(
         self,
@@ -89,6 +103,7 @@ class SpatialDataWriter:
         row_index_column: str = "row_index",
         cell_id_column: str = "segger_cell_id",
         similarity_column: str = "segger_similarity",
+        feature_column: str = "feature_name",
         x_column: str = "x",
         y_column: str = "y",
         z_column: Optional[str] = "z",
@@ -115,6 +130,8 @@ class SpatialDataWriter:
             Column name for cell ID in predictions.
         similarity_column
             Column name for similarity in predictions.
+        feature_column
+            Column name for gene/feature in transcripts.
         x_column
             Column name for x-coordinate.
         y_column
@@ -173,6 +190,7 @@ class SpatialDataWriter:
             y_column=y_column,
             z_column=z_column,
             cell_id_column=cell_id_column,
+            feature_column=feature_column,
         )
 
         # Write to Zarr
@@ -226,6 +244,7 @@ class SpatialDataWriter:
         y_column: str,
         z_column: Optional[str],
         cell_id_column: str,
+        feature_column: str,
     ) -> "SpatialData":
         """Create SpatialData object from transcripts and boundaries."""
         import spatialdata
@@ -283,6 +302,23 @@ class SpatialDataWriter:
 
         # Create SpatialData
         sdata = spatialdata.SpatialData.from_elements_dict(elements)
+
+        # Optional AnnData table
+        if self.include_table:
+            region = self.shapes_key if f"shapes/{self.shapes_key}" in elements else None
+            region_key = self.table_region_key if region is not None else None
+            table = build_anndata_table(
+                transcripts=transcripts,
+                cell_id_column=cell_id_column,
+                feature_column=feature_column,
+                x_column=x_column,
+                y_column=y_column,
+                z_column=z_column,
+                unassigned_value=-1,
+                region=region,
+                region_key=region_key,
+            )
+            sdata.tables[self.table_key] = table
 
         return sdata
 

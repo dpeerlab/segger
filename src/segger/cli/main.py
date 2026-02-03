@@ -389,13 +389,14 @@ def segment(
     )] = None,
 
     output_format: Annotated[
-        Literal["segger_raw", "merged", "spatialdata", "all"],
+        Literal["segger_raw", "merged", "spatialdata", "anndata", "all"],
         Parameter(
             help="Output format for segmentation results. "
                  "'segger_raw' is the default predictions parquet. "
                  "'merged' joins predictions with original transcripts. "
                  "'spatialdata' creates a SpatialData Zarr store. "
-                 "'all' writes all three formats.",
+                 "'anndata' creates an .h5ad AnnData table. "
+                 "'all' writes all available formats.",
             group=group_format,
         )
     ] = "segger_raw",
@@ -616,7 +617,7 @@ def _write_additional_formats(
 
     formats_to_write = []
     if output_format == "all":
-        formats_to_write = ["merged", "spatialdata"]
+        formats_to_write = ["merged", "spatialdata", "anndata"]
     else:
         formats_to_write = [output_format]
 
@@ -675,6 +676,19 @@ def _write_additional_formats(
                     "Warning: spatialdata not installed. "
                     "Install with: pip install segger[spatialdata]"
                 )
+
+        elif fmt == "anndata":
+            from ..export import AnnDataWriter
+
+            print(f"Writing AnnData format...")
+            writer = AnnDataWriter()
+            output_path = writer.write(
+                predictions=predictions,
+                output_dir=output_directory,
+                transcripts=transcripts,
+                output_name="segger_segmentation.h5ad",
+            )
+            print(f"  Written to: {output_path}")
 
 
 # Export parameter group

@@ -29,6 +29,7 @@ __all__ = [
     # Writers
     "MergedTranscriptsWriter",
     "SeggerRawWriter",
+    "AnnDataWriter",
     "merge_predictions_with_transcripts",
     # SpatialData (optional)
     "SpatialDataWriter",
@@ -56,6 +57,7 @@ if TYPE_CHECKING:  # pragma: no cover
         SeggerRawWriter,
         merge_predictions_with_transcripts,
     )
+    from .anndata_writer import AnnDataWriter
     from .spatialdata_writer import SpatialDataWriter, write_spatialdata
     from .sopa_compat import (
         validate_sopa_compatibility,
@@ -93,6 +95,7 @@ def __getattr__(name: str):
     if name in {
         "MergedTranscriptsWriter",
         "SeggerRawWriter",
+        "AnnDataWriter",
         "merge_predictions_with_transcripts",
     }:
         from .merged_writer import (
@@ -100,6 +103,8 @@ def __getattr__(name: str):
             SeggerRawWriter,
             merge_predictions_with_transcripts,
         )
+        if name == "AnnDataWriter":
+            from .anndata_writer import AnnDataWriter
         return locals()[name]
     if name in {"SpatialDataWriter", "write_spatialdata"}:
         try:

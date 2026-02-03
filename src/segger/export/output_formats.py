@@ -9,6 +9,7 @@ Available formats:
 - SEGGER_RAW: Default Segger output (predictions parquet)
 - MERGED_TRANSCRIPTS: Original transcripts merged with assignments
 - SPATIALDATA: SpatialData Zarr format for scverse ecosystem
+- ANNDATA: AnnData (.h5ad) cell x gene matrix
 
 Usage
 -----
@@ -44,11 +45,16 @@ class OutputFormat(str, Enum):
     SPATIALDATA : str
         SpatialData Zarr format. Creates a .zarr store compatible with
         the scverse ecosystem, containing transcripts and optional boundaries.
+
+    ANNDATA : str
+        AnnData format. Creates a .h5ad file with a cell x gene matrix
+        derived from transcript assignments.
     """
 
     SEGGER_RAW = "segger_raw"
     MERGED_TRANSCRIPTS = "merged"
     SPATIALDATA = "spatialdata"
+    ANNDATA = "anndata"
 
     @classmethod
     def from_string(cls, value: str) -> "OutputFormat":
@@ -57,7 +63,7 @@ class OutputFormat(str, Enum):
         Parameters
         ----------
         value
-            Format name ('segger_raw', 'merged', 'spatialdata', or 'all').
+            Format name ('segger_raw', 'merged', 'spatialdata', 'anndata', or 'all').
 
         Returns
         -------
@@ -81,6 +87,9 @@ class OutputFormat(str, Enum):
             "transcripts": cls.MERGED_TRANSCRIPTS,
             "sdata": cls.SPATIALDATA,
             "zarr": cls.SPATIALDATA,
+            "h5ad": cls.ANNDATA,
+            "ann": cls.ANNDATA,
+            "anndata": cls.ANNDATA,
         }
 
         if value_lower in aliases:
@@ -269,6 +278,7 @@ def _register_builtin_writers():
     """
     # Import here to register writers via decorators
     from segger.export import merged_writer  # noqa: F401
+    from segger.export import anndata_writer  # noqa: F401
 
     # SpatialData writer is optional
     try:
