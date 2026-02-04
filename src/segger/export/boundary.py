@@ -5,7 +5,8 @@ with iterative edge refinement and cycle detection. This produces more accurate
 cell boundaries than simple convex hulls.
 """
 
-from typing import Union
+from typing import Iterable, Tuple, Union
+from concurrent.futures import ThreadPoolExecutor
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -56,17 +57,25 @@ def triangle_angles_from_points(
     np.ndarray
         Angles for each triangle vertex, shape (M, 3).
     """
-    angles_list = []
-    for tri in triangles:
-        p1, p2, p3 = points[tri]
-        v1 = p2 - p1
-        v2 = p3 - p1
-        v3 = p3 - p2
-        a = vector_angle(v1, v2)
-        b = vector_angle(-v1, v3)
-        c = vector_angle(-v2, -v3)
-        angles_list.append((a, b, c))
-    return np.array(angles_list)
+    # Vectorized angle computation for all triangles
+    p1 = points[triangles[:, 0]]
+    p2 = points[triangles[:, 1]]
+    p3 = points[triangles[:, 2]]
+
+    v1 = p2 - p1
+    v2 = p3 - p1
+    v3 = p3 - p2
+
+    def _angles(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        dot = (u * v).sum(axis=1)
+        denom = (np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1)) + 1e-8
+        cos = np.clip(dot / denom, -1.0, 1.0)
+        return np.degrees(np.arccos(cos))
+
+    a = _angles(v1, v2)
+    b = _angles(-v1, v3)
+    c = _angles(-v2, -v3)
+    return np.stack([a, b, c], axis=1)
 
 
 def dfs(v: int, graph: dict, path: list, colors: dict) -> None:
@@ -403,6 +412,9 @@ def generate_boundaries(
     x: str = "x",
     y: str = "y",
     cell_id: str = "seg_cell_id",
+    n_jobs: int = 1,
+    chunksize: int = 8,
+    progress: bool = True,
 ) -> gpd.GeoDataFrame:
     """Generate boundaries for all cells in a segmentation result.
 
@@ -422,19 +434,62 @@ def generate_boundaries(
     gpd.GeoDataFrame
         GeoDataFrame with cell_id, length, and geometry columns.
     """
-    # Convert Polars to pandas if needed
-    if isinstance(df, pl.DataFrame):
-        df = df.to_pandas()
+    def iter_groups() -> Tuple[Iterable[Tuple[object, np.ndarray]], int]:
+        if isinstance(df, pl.DataFrame):
+            grouped = df.group_by(cell_id).agg(
+                [
+                    pl.col(x).list().alias("_x"),
+                    pl.col(y).list().alias("_y"),
+                ]
+            )
+            total = grouped.height
 
+            def _gen():
+                for cid, xs, ys in grouped.iter_rows():
+                    yield cid, np.column_stack((xs, ys))
+
+            return _gen(), total
+
+        group_df = df.groupby(cell_id)
+        total = group_df.ngroups
+
+        def _gen():
+            for cid, t in group_df:
+                yield cid, t[[x, y]].to_numpy()
+
+        return _gen(), total
+
+    def _compute_one(item: Tuple[object, np.ndarray]) -> Tuple[object, int, Union[Polygon, MultiPolygon, None]]:
+        cid, points = item
+        n_points = points.shape[0]
+        if n_points < 3:
+            return cid, n_points, None
+        try:
+            bi = BoundaryIdentification(points)
+            bi.calculate_part_1(plot=False)
+            bi.calculate_part_2(plot=False)
+            geom = bi.find_cycles()
+        except Exception:
+            geom = None
+        return cid, n_points, geom
+
+    group_iter, total = iter_groups()
     res = []
-    group_df = df.groupby(cell_id)
 
-    for cid, t in tqdm(group_df, total=group_df.ngroups, desc="Generating boundaries"):
-        res.append({
-            "cell_id": cid,
-            "length": len(t),
-            "geom": generate_boundary(t, x=x, y=y),
-        })
+    if n_jobs and n_jobs > 1:
+        with ThreadPoolExecutor(max_workers=n_jobs) as ex:
+            iterator = ex.map(_compute_one, group_iter, chunksize=chunksize)
+            if progress:
+                iterator = tqdm(iterator, total=total, desc="Generating boundaries")
+            for cid, length, geom in iterator:
+                res.append({"cell_id": cid, "length": length, "geom": geom})
+    else:
+        iterator = group_iter
+        if progress:
+            iterator = tqdm(iterator, total=total, desc="Generating boundaries")
+        for item in iterator:
+            cid, length, geom = _compute_one(item)
+            res.append({"cell_id": cid, "length": length, "geom": geom})
 
     return gpd.GeoDataFrame(
         data=[[b["cell_id"], b["length"]] for b in res],

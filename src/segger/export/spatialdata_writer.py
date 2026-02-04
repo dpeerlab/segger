@@ -60,7 +60,10 @@ class SpatialDataWriter:
         How to generate boundaries if not provided:
         - "input": Use input boundaries if available
         - "convex_hull": Generate convex hull per cell
+        - "delaunay": Delaunay triangulation-based boundary extraction
         - "skip": Don't include shapes
+    boundary_n_jobs
+        Parallel workers for Delaunay boundary generation (threads).
     points_key
         Key for transcripts in sdata.points. Default "transcripts".
     shapes_key
@@ -76,7 +79,8 @@ class SpatialDataWriter:
     def __init__(
         self,
         include_boundaries: bool = True,
-        boundary_method: Literal["input", "convex_hull", "skip"] = "input",
+        boundary_method: Literal["input", "convex_hull", "delaunay", "skip"] = "input",
+        boundary_n_jobs: int = 1,
         points_key: str = "transcripts",
         shapes_key: str = "cells",
         include_table: bool = True,
@@ -87,6 +91,7 @@ class SpatialDataWriter:
 
         self.include_boundaries = include_boundaries
         self.boundary_method = boundary_method
+        self.boundary_n_jobs = boundary_n_jobs
         self.points_key = points_key
         self.shapes_key = shapes_key
         self.include_table = include_table
@@ -374,6 +379,24 @@ class SpatialDataWriter:
                 {"cell_id": cell_ids},
                 geometry=hulls,
             )
+
+        elif self.boundary_method == "delaunay":
+            from segger.export.boundary import generate_boundaries
+
+            assigned = transcripts[transcripts[cell_id_column] != -1].copy()
+            if len(assigned) == 0:
+                return None
+
+            boundaries_gdf = generate_boundaries(
+                assigned,
+                x=x_column,
+                y=y_column,
+                cell_id=cell_id_column,
+                n_jobs=self.boundary_n_jobs,
+            )
+            if boundaries_gdf is None or len(boundaries_gdf) == 0:
+                return None
+            return boundaries_gdf
 
         return None
 

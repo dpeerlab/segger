@@ -408,15 +408,22 @@ def segment(
     )] = False,
 
     boundary_method: Annotated[
-        Literal["input", "convex_hull", "skip"],
+        Literal["input", "convex_hull", "delaunay", "skip"],
         Parameter(
             help="How to generate cell boundaries for spatialdata output. "
                  "'input' uses input boundaries if available. "
                  "'convex_hull' generates convex hull per cell. "
+                 "'delaunay' uses Delaunay-based boundary extraction. "
                  "'skip' omits shapes from output.",
             group=group_format,
         )
     ] = "input",
+
+    boundary_n_jobs: Annotated[int, Parameter(
+        help="Parallel workers for Delaunay boundary generation (threads).",
+        validator=validators.Number(gt=0),
+        group=group_format,
+    )] = 1,
 
     # Quality Filtering
     min_qv: Annotated[float | None, Parameter(
@@ -573,6 +580,7 @@ def segment(
             datamodule=datamodule,
             sopa_compatible=sopa_compatible,
             boundary_method=boundary_method,
+            boundary_n_jobs=boundary_n_jobs,
         )
 
 
@@ -582,6 +590,7 @@ def _write_additional_formats(
     datamodule,
     sopa_compatible: bool,
     boundary_method: str,
+    boundary_n_jobs: int,
 ):
     """Write segmentation results in additional output formats.
 
@@ -597,6 +606,8 @@ def _write_additional_formats(
         Whether to ensure SOPA compatibility.
     boundary_method
         Boundary generation method for SpatialData output.
+    boundary_n_jobs
+        Parallel workers for Delaunay boundary generation.
     """
     import polars as pl
     from pathlib import Path
@@ -643,6 +654,7 @@ def _write_additional_formats(
                 writer = SpatialDataWriter(
                     include_boundaries=(boundary_method != "skip"),
                     boundary_method=boundary_method,
+                    boundary_n_jobs=boundary_n_jobs,
                 )
                 output_path = writer.write(
                     predictions=predictions,
