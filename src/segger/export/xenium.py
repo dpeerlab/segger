@@ -13,44 +13,67 @@ import pandas as pd
 import polars as pl
 import zarr
 from pqdm.processes import pqdm
-from scipy.spatial import ConvexHull
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPoint, MultiPolygon, Polygon
 from tqdm import tqdm
 from zarr.storage import ZipStore
 
-from .boundary import generate_boundary
+from .boundary import extract_largest_polygon, generate_boundary
 
 
-def get_flatten_version(
-    polygon_vertices: List[List[Tuple[float, float]]],
-    max_value: int = 21,
-) -> np.ndarray:
-    """Standardize list of polygon vertices to a fixed shape.
+def _normalize_polygon_vertices(
+    polygon: Polygon,
+    max_vertices: int,
+) -> Tuple[List[Tuple[float, float]], int]:
+    """Normalize polygon vertices to a fixed length with closure.
 
-    Parameters
-    ----------
-    polygon_vertices : List[List[Tuple[float, float]]]
-        List of polygon coordinate lists.
-    max_value : int
-        Max number of coordinates per polygon.
-
-    Returns
-    -------
-    np.ndarray
-        Padded or truncated array of polygon vertices, shape (N, max_value, 2).
+    Returns a list of vertices padded/truncated to ``max_vertices`` and the
+    true number of vertices including the closing vertex.
     """
-    flattened = []
-    for vertices in polygon_vertices:
-        if len(vertices) < 3:
-            continue
-        if isinstance(vertices, np.ndarray):
-            vertices = vertices.tolist()
+    coords = list(polygon.exterior.coords)
+    # Remove duplicate closing vertex
+    if coords[0] == coords[-1]:
+        coords = coords[:-1]
 
-        if len(vertices) > max_value:
-            flattened.append(vertices[:max_value])
-        else:
-            flattened.append(vertices + [vertices[0]] * (max_value - len(vertices)))
-    return np.array(flattened, dtype=np.float32)
+    if len(coords) < 3:
+        return [], 0
+
+    num_vertices = len(coords) + 1  # include closing vertex
+    target = max_vertices - 1
+
+    if len(coords) > target:
+        indices = np.linspace(0, len(coords) - 1, target, dtype=int)
+        coords = [coords[i] for i in indices]
+
+    # Close polygon and pad
+    coords.append(coords[0])
+    if len(coords) < max_vertices:
+        coords += [coords[0]] * (max_vertices - len(coords))
+
+    return coords, num_vertices
+
+
+def _safe_boundary_polygon(
+    seg_cell: pd.DataFrame,
+    x: str,
+    y: str,
+) -> Optional[Polygon]:
+    """Generate a robust polygon boundary for a cell.
+
+    Tries Delaunay-based boundary first, then falls back to convex hull.
+    """
+    cell_poly = generate_boundary(seg_cell, x=x, y=y)
+    if isinstance(cell_poly, MultiPolygon):
+        cell_poly = extract_largest_polygon(cell_poly)
+
+    if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
+        # Fallback: convex hull of points
+        mp = MultiPoint(seg_cell[[x, y]].values)
+        cell_poly = mp.convex_hull if not mp.is_empty else None
+
+    if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
+        return None
+
+    return cell_poly
 
 
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -98,6 +121,11 @@ def generate_experiment_file(
         Name of cells Zarr file (without extension).
     analysis_name : str
         Name of analysis Zarr file (without extension).
+    Notes
+    -----
+    We only replace the cells and analysis Zarr paths, preserving all other
+    entries (including morphology image references). This keeps multi-channel
+    morphology_focus image stacks intact for segmentation kit datasets.
     """
     with open(template_path) as f:
         experiment = json.load(f)
@@ -126,6 +154,7 @@ def seg2explorer(
     nucleus_value: int = 2,
     area_low: float = 10,
     area_high: float = 100,
+    polygon_max_vertices: int = 13,
 ) -> None:
     """Convert segmentation results to Xenium Explorer format.
 
@@ -161,6 +190,8 @@ def seg2explorer(
         Minimum cell area threshold.
     area_high : float
         Maximum cell area threshold.
+    polygon_max_vertices : int
+        Maximum number of vertices per polygon (including closure).
     """
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
@@ -170,12 +201,20 @@ def seg2explorer(
     storage = Path(output_dir)
     storage.mkdir(parents=True, exist_ok=True)
 
+    # Drop unassigned cells if numeric
+    if cell_id_column in seg_df.columns:
+        if pd.api.types.is_numeric_dtype(seg_df[cell_id_column]):
+            seg_df = seg_df[seg_df[cell_id_column] >= 0]
+        else:
+            seg_df = seg_df[seg_df[cell_id_column].notna()]
+
     cell_id2old_id: Dict[int, Any] = {}
     cell_id: List[int] = []
-    cell_summary: List[Dict[str, Any]] = []
-    polygon_num_vertices: List[List[int]] = [[], []]
-    polygon_vertices: List[List[Any]] = [[], []]
-    seg_mask_value: List[int] = []
+    cell_summary_rows: List[List[float]] = []
+    cell_num_vertices: List[int] = []
+    nucleus_num_vertices: List[int] = []
+    cell_vertices: List[List[Tuple[float, float]]] = []
+    nucleus_vertices: List[List[Tuple[float, float]]] = []
 
     grouped_by = seg_df.groupby(cell_id_column)
 
@@ -185,26 +224,33 @@ def seg2explorer(
         if len(seg_cell) < 5:
             continue
 
-        cell_convex_hull = generate_boundary(seg_cell, x=x_column, y=y_column)
-        if cell_convex_hull is None or not isinstance(cell_convex_hull, Polygon):
+        cell_poly = _safe_boundary_polygon(seg_cell, x=x_column, y=y_column)
+        if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
             continue
 
-        if not (area_low <= cell_convex_hull.area <= area_high):
-            continue
-
-        uint_cell_id = cell_incremental_id + 1
-        cell_id2old_id[uint_cell_id] = seg_cell_id
-
-        # Handle nucleus if compartment info available
-        nucleus_convex_hull = None
+        # Nucleus polygon (optional)
+        nucleus_poly = None
         if nucleus_column is not None and nucleus_column in seg_cell.columns:
             seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
             if len(seg_nucleus) >= 3:
-                try:
-                    nucleus_convex_hull = ConvexHull(seg_nucleus[[x_column, y_column]])
-                except Exception:
-                    pass
+                nucleus_poly = MultiPoint(seg_nucleus[[x_column, y_column]].values).convex_hull
+                if isinstance(nucleus_poly, MultiPolygon):
+                    nucleus_poly = extract_largest_polygon(nucleus_poly)
+                if not isinstance(nucleus_poly, Polygon) or nucleus_poly.is_empty:
+                    nucleus_poly = None
 
+        cell_coords, cell_nv = _normalize_polygon_vertices(cell_poly, polygon_max_vertices)
+        if cell_nv == 0:
+            continue
+
+        zero_vertices = [(0.0, 0.0)] * polygon_max_vertices
+        if nucleus_poly is not None:
+            nuc_coords, nuc_nv = _normalize_polygon_vertices(nucleus_poly, polygon_max_vertices)
+        else:
+            nuc_coords, nuc_nv = zero_vertices, 0
+
+        uint_cell_id = cell_incremental_id + 1
+        cell_id2old_id[uint_cell_id] = seg_cell_id
         cell_id.append(uint_cell_id)
 
         # Compute z-level if available
@@ -212,51 +258,80 @@ def seg2explorer(
         if z_column is not None and z_column in seg_cell.columns:
             z_level = (seg_cell[z_column].mean() // 3) * 3
 
-        cell_summary.append({
-            "cell_centroid_x": seg_cell[x_column].mean(),
-            "cell_centroid_y": seg_cell[y_column].mean(),
-            "cell_area": cell_convex_hull.area,
-            "nucleus_centroid_x": seg_cell[x_column].mean(),
-            "nucleus_centroid_y": seg_cell[y_column].mean(),
-            "nucleus_area": cell_convex_hull.area,
-            "z_level": z_level,
-        })
+        cell_centroid = cell_poly.centroid
+        nucleus_centroid = nucleus_poly.centroid if nucleus_poly is not None else None
 
-        polygon_num_vertices[0].append(len(cell_convex_hull.exterior.coords))
-        polygon_num_vertices[1].append(
-            len(nucleus_convex_hull.vertices) if nucleus_convex_hull else 0
-        )
-        polygon_vertices[0].append(list(cell_convex_hull.exterior.coords))
-        polygon_vertices[1].append(
-            seg_nucleus[[x_column, y_column]].values[nucleus_convex_hull.vertices]
-            if nucleus_convex_hull else np.array([[], []]).T
-        )
-        seg_mask_value.append(uint_cell_id)
+        cell_summary_rows.append([
+            float(cell_centroid.x),
+            float(cell_centroid.y),
+            float(cell_poly.area),
+            float(nucleus_centroid.x) if nucleus_centroid is not None else 0.0,
+            float(nucleus_centroid.y) if nucleus_centroid is not None else 0.0,
+            float(nucleus_poly.area) if nucleus_poly is not None else 0.0,
+            float(z_level),
+            float(1 if nucleus_poly is not None else 0),
+        ])
+
+        cell_num_vertices.append(cell_nv)
+        nucleus_num_vertices.append(nuc_nv)
+        cell_vertices.append(cell_coords)
+        nucleus_vertices.append(nuc_coords)
 
     if len(cell_id) == 0:
         raise ValueError("No valid cells found in segmentation data.")
 
-    cell_polygon_vertices = get_flatten_version(polygon_vertices[0], max_value=128)
+    n_cells = len(cell_id)
+    cell_vertices_arr = np.array(cell_vertices, dtype=np.float32)
+    nucleus_vertices_arr = np.array(nucleus_vertices, dtype=np.float32)
+    cell_vertices_flat = cell_vertices_arr.reshape(n_cells, -1)
+    nucleus_vertices_flat = nucleus_vertices_arr.reshape(n_cells, -1)
 
     # Open source store and create new store
     source_zarr_store = ZipStore(source_path / "cells.zarr.zip", mode="r")
     existing_store = zarr.open(source_zarr_store, mode="r")
     new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
 
-    # Create polygon_sets group
-    polygon_group = new_store.create_group("polygon_sets")
-    cell_num_vertices = polygon_num_vertices[1]
-    n_cells = cell_polygon_vertices.shape[0]
-    cell_vertices_flat = cell_polygon_vertices.reshape(n_cells, -1)[:, :257]
+    # Root datasets
+    cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
+    cell_id_arr[:, 1] = np.array(cell_id, dtype=np.uint32)
+    new_store["cell_id"] = cell_id_arr
+    new_store["cell_summary"] = np.array(cell_summary_rows, dtype=np.float64)
 
+    # Polygon sets
+    polygon_group = new_store.create_group("polygon_sets")
+
+    # Nucleus polygons (set 0)
+    set0 = polygon_group.create_group("0")
+    set0["cell_index"] = np.array(cell_id, dtype=np.uint32)
+    set0["method"] = np.zeros(n_cells, dtype=np.uint32)
+    set0["num_vertices"] = np.array(nucleus_num_vertices, dtype=np.int32)
+    set0["vertices"] = nucleus_vertices_flat.astype(np.float32)
+
+    # Cell polygons (set 1)
     set1 = polygon_group.create_group("1")
-    set1["cell_index"] = np.arange(1, n_cells + 1, dtype=np.uint32)
-    set1["method"] = np.ones(n_cells, dtype=np.uint32)
-    set1["num_vertices"] = np.array(polygon_num_vertices[0], dtype=np.int32)
+    set1["cell_index"] = np.array(cell_id, dtype=np.uint32)
+    set1["method"] = np.full(n_cells, 1, dtype=np.uint32)
+    set1["num_vertices"] = np.array(cell_num_vertices, dtype=np.int32)
     set1["vertices"] = cell_vertices_flat.astype(np.float32)
 
-    new_store.attrs.update(existing_store.attrs)
-    new_store.attrs["number_cells"] = len(cell_id)
+    # Update attributes
+    attrs = dict(existing_store.attrs)
+    attrs["number_cells"] = n_cells
+    attrs["polygon_set_names"] = ["nucleus", "cell"]
+    attrs["polygon_set_display_names"] = ["Nucleus", "Cell"]
+    attrs["polygon_set_descriptions"] = [
+        "Segger nucleus boundaries",
+        "Segger cell boundaries",
+    ]
+    attrs["segmentation_methods"] = [
+        "segger_nucleus_convex_hull",
+        "segger_cell_delaunay",
+    ]
+    attrs.setdefault("spatial_units", "microns")
+    attrs.setdefault("major_version", 4)
+    attrs.setdefault("minor_version", 0)
+    new_store.attrs.update(attrs)
+
     new_store.store.close()
     source_zarr_store.close()
 
@@ -312,53 +387,72 @@ def seg2explorer(
 
 
 def _process_one_cell(args: tuple) -> Optional[dict]:
-    """Process a single cell for parallel boundary generation.
-
-    Parameters
-    ----------
-    args : tuple
-        Tuple of (seg_cell_id, seg_cell, x_col, y_col, area_low, area_high).
-
-    Returns
-    -------
-    Optional[dict]
-        Cell data dict or None if invalid.
-    """
-    seg_cell_id, seg_cell, x_col, y_col, area_low, area_high = args
+    """Process a single cell for parallel boundary generation."""
+    (
+        seg_cell_id,
+        seg_cell,
+        x_col,
+        y_col,
+        z_col,
+        nucleus_column,
+        nucleus_value,
+        area_low,
+        area_high,
+        polygon_max_vertices,
+    ) = args
 
     if len(seg_cell) < 5:
         return None
 
-    cell_convex_hull = generate_boundary(seg_cell, x=x_col, y=y_col)
-    if cell_convex_hull is None or not isinstance(cell_convex_hull, Polygon):
+    cell_poly = _safe_boundary_polygon(seg_cell, x=x_col, y=y_col)
+    if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
         return None
 
-    if not (area_low <= cell_convex_hull.area <= area_high):
+    cell_vertices, cell_nv = _normalize_polygon_vertices(cell_poly, polygon_max_vertices)
+    if cell_nv == 0:
         return None
 
-    # Get vertices and remove duplicate closing vertex
-    cell_vertices = list(cell_convex_hull.exterior.coords)
-    if cell_vertices[0] == cell_vertices[-1]:
-        cell_vertices = cell_vertices[:-1]
+    # Nucleus polygon (optional)
+    nucleus_poly = None
+    if nucleus_column is not None and nucleus_column in seg_cell.columns:
+        seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
+        if len(seg_nucleus) >= 3:
+            nucleus_poly = MultiPoint(seg_nucleus[[x_col, y_col]].values).convex_hull
+            if isinstance(nucleus_poly, MultiPolygon):
+                nucleus_poly = extract_largest_polygon(nucleus_poly)
+            if not isinstance(nucleus_poly, Polygon) or nucleus_poly.is_empty:
+                nucleus_poly = None
 
-    n_vertices = len(cell_vertices)
-
-    # Sample up to 16 vertices
-    if n_vertices > 16:
-        indices = np.linspace(0, n_vertices - 1, 16, dtype=int)
-        sampled_vertices = [cell_vertices[i] for i in indices]
+    if nucleus_poly is not None:
+        nucleus_vertices, nucleus_nv = _normalize_polygon_vertices(
+            nucleus_poly, polygon_max_vertices
+        )
     else:
-        sampled_vertices = cell_vertices
+        nucleus_vertices = [(0.0, 0.0)] * polygon_max_vertices
+        nucleus_nv = 0
 
-    # Pad with first vertex if needed
-    if len(sampled_vertices) < 16:
-        sampled_vertices += [sampled_vertices[0]] * (16 - len(sampled_vertices))
+    # Compute z-level if available
+    z_level = 0.0
+    if z_col is not None and z_col in seg_cell.columns:
+        z_level = (seg_cell[z_col].mean() // 3) * 3
+
+    cell_centroid = cell_poly.centroid
+    nucleus_centroid = nucleus_poly.centroid if nucleus_poly is not None else None
 
     return {
         "seg_cell_id": seg_cell_id,
-        "cell_area": float(cell_convex_hull.area),
-        "cell_vertices": sampled_vertices,
-        "cell_num_vertices": len(sampled_vertices),
+        "cell_area": float(cell_poly.area),
+        "cell_vertices": cell_vertices,
+        "cell_num_vertices": cell_nv,
+        "nucleus_vertices": nucleus_vertices,
+        "nucleus_num_vertices": nucleus_nv,
+        "cell_centroid_x": float(cell_centroid.x),
+        "cell_centroid_y": float(cell_centroid.y),
+        "nucleus_centroid_x": float(nucleus_centroid.x) if nucleus_centroid else 0.0,
+        "nucleus_centroid_y": float(nucleus_centroid.y) if nucleus_centroid else 0.0,
+        "nucleus_area": float(nucleus_poly.area) if nucleus_poly is not None else 0.0,
+        "z_level": float(z_level),
+        "nucleus_count": float(1 if nucleus_poly is not None else 0),
     }
 
 
@@ -373,9 +467,13 @@ def seg2explorer_pqdm(
     cell_id_column: str = "seg_cell_id",
     x_column: str = "x",
     y_column: str = "y",
+    z_column: Optional[str] = "z",
+    nucleus_column: Optional[str] = "cell_compartment",
+    nucleus_value: int = 2,
     area_low: float = 10,
     area_high: float = 100,
     n_jobs: int = 1,
+    polygon_max_vertices: int = 13,
 ) -> None:
     """Parallelized version of seg2explorer using pqdm.
 
@@ -401,12 +499,20 @@ def seg2explorer_pqdm(
         X coordinate column name.
     y_column : str
         Y coordinate column name.
+    z_column : Optional[str]
+        Z coordinate column name (if available).
+    nucleus_column : Optional[str]
+        Column name for nucleus/compartment assignment.
+    nucleus_value : int
+        Value indicating nuclear compartment.
     area_low : float
         Minimum cell area.
     area_high : float
         Maximum cell area.
     n_jobs : int
         Number of parallel workers.
+    polygon_max_vertices : int
+        Maximum number of vertices per polygon (including closure).
     """
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
@@ -420,7 +526,18 @@ def seg2explorer_pqdm(
 
     # Build work items
     work_iter = (
-        (seg_cell_id, seg_cell, x_column, y_column, area_low, area_high)
+        (
+            seg_cell_id,
+            seg_cell,
+            x_column,
+            y_column,
+            z_column,
+            nucleus_column,
+            nucleus_value,
+            area_low,
+            area_high,
+            polygon_max_vertices,
+        )
         for seg_cell_id, seg_cell in grouped_by
     )
 
@@ -436,39 +553,84 @@ def seg2explorer_pqdm(
     # Collate results
     cell_id2old_id: Dict[int, Any] = {}
     cell_id: List[int] = []
-    polygon_num_vertices: List[int] = []
-    polygon_vertices: List[List[Any]] = []
+    cell_num_vertices: List[int] = []
+    nucleus_num_vertices: List[int] = []
+    cell_vertices: List[List[Any]] = []
+    nucleus_vertices: List[List[Any]] = []
+    cell_summary_rows: List[List[float]] = []
 
     kept = [r for r in results if r is not None]
     for cell_incremental_id, r in enumerate(kept):
         uint_cell_id = cell_incremental_id + 1
         cell_id2old_id[uint_cell_id] = r["seg_cell_id"]
         cell_id.append(uint_cell_id)
-        polygon_num_vertices.append(r["cell_num_vertices"])
-        polygon_vertices.append(r["cell_vertices"])
+        cell_num_vertices.append(r["cell_num_vertices"])
+        nucleus_num_vertices.append(r["nucleus_num_vertices"])
+        cell_vertices.append(r["cell_vertices"])
+        nucleus_vertices.append(r["nucleus_vertices"])
+        cell_summary_rows.append([
+            r["cell_centroid_x"],
+            r["cell_centroid_y"],
+            r["cell_area"],
+            r["nucleus_centroid_x"],
+            r["nucleus_centroid_y"],
+            r["nucleus_area"],
+            r["z_level"],
+            r["nucleus_count"],
+        ])
 
     if len(cell_id) == 0:
         raise ValueError("No valid cells found in segmentation data.")
 
-    cell_polygon_vertices = get_flatten_version(polygon_vertices)
+    n_cells = len(cell_id)
+    cell_vertices_arr = np.array(cell_vertices, dtype=np.float32)
+    nucleus_vertices_arr = np.array(nucleus_vertices, dtype=np.float32)
+    cell_vertices_flat = cell_vertices_arr.reshape(n_cells, -1)
+    nucleus_vertices_flat = nucleus_vertices_arr.reshape(n_cells, -1)
 
     # Open source and create new store
     source_zarr_store = ZipStore(source_path / "cells.zarr.zip", mode="r")
     existing_store = zarr.open(source_zarr_store, mode="r")
     new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
 
-    polygon_group = new_store.create_group("polygon_sets")
-    n_cells = cell_polygon_vertices.shape[0]
-    cell_vertices_flat = cell_polygon_vertices.reshape(n_cells, -1)[:, :33]
+    # Root datasets
+    cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
+    cell_id_arr[:, 1] = np.array(cell_id, dtype=np.uint32)
+    new_store["cell_id"] = cell_id_arr
+    new_store["cell_summary"] = np.array(cell_summary_rows, dtype=np.float64)
 
+    polygon_group = new_store.create_group("polygon_sets")
+
+    # Nucleus polygons (set 0)
+    set0 = polygon_group.create_group("0")
+    set0["cell_index"] = np.array(cell_id, dtype=np.uint32)
+    set0["method"] = np.zeros(n_cells, dtype=np.uint32)
+    set0["num_vertices"] = np.array(nucleus_num_vertices, dtype=np.int32)
+    set0["vertices"] = nucleus_vertices_flat.astype(np.float32)
+
+    # Cell polygons (set 1)
     set1 = polygon_group.create_group("1")
-    set1["cell_index"] = np.arange(1, n_cells + 1, dtype=np.uint32)
-    set1["method"] = np.ones(n_cells, dtype=np.uint32)
-    set1["num_vertices"] = np.array(polygon_num_vertices, dtype=np.int32)
+    set1["cell_index"] = np.array(cell_id, dtype=np.uint32)
+    set1["method"] = np.full(n_cells, 1, dtype=np.uint32)
+    set1["num_vertices"] = np.array(cell_num_vertices, dtype=np.int32)
     set1["vertices"] = cell_vertices_flat.astype(np.float32)
 
-    new_store.attrs.update(existing_store.attrs)
-    new_store.attrs["number_cells"] = n_cells
+    attrs = dict(existing_store.attrs)
+    attrs["number_cells"] = n_cells
+    attrs["polygon_set_names"] = ["nucleus", "cell"]
+    attrs["polygon_set_display_names"] = ["Nucleus", "Cell"]
+    attrs["polygon_set_descriptions"] = [
+        "Segger nucleus boundaries",
+        "Segger cell boundaries",
+    ]
+    attrs["segmentation_methods"] = [
+        "segger_nucleus_convex_hull",
+        "segger_cell_delaunay",
+    ]
+    attrs.setdefault("spatial_units", "microns")
+    attrs.setdefault("major_version", 4)
+    attrs.setdefault("minor_version", 0)
+    new_store.attrs.update(attrs)
     new_store.store.close()
     source_zarr_store.close()
 

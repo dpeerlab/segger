@@ -760,6 +760,11 @@ def export(
         validator=validators.Number(gt=0),
         group=group_export,
     )] = 1,
+    polygon_max_vertices: Annotated[int, Parameter(
+        help="Maximum number of vertices per polygon (including closure).",
+        validator=validators.Number(gt=3),
+        group=group_export,
+    )] = 13,
 ):
     """Export segmentation results to Xenium Explorer format."""
     import pandas as pd
@@ -786,5 +791,6 @@ def export(
         area_low=area_low,
         area_high=area_high,
         n_jobs=n_jobs,
+        polygon_max_vertices=polygon_max_vertices,
     )
     print("Export complete!")
