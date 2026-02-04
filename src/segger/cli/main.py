@@ -89,6 +89,12 @@ def segment(
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
+
+    num_workers: Annotated[int, registry.get_parameter(
+        "num_workers",
+        validator=validators.Number(gte=0),
+        group=group_io,
+    )] = registry.get_default("num_workers"),
     
 
     # Cell Representation
@@ -420,10 +426,11 @@ def segment(
     ] = "input",
 
     boundary_n_jobs: Annotated[int, Parameter(
-        help="Parallel workers for Delaunay boundary generation (threads).",
-        validator=validators.Number(gt=0),
+        help="Parallel workers for Delaunay boundary generation (threads). "
+             "Set to 0 to use --num-workers.",
+        validator=validators.Number(gte=0),
         group=group_format,
-    )] = 1,
+    )] = 0,
 
     # Quality Filtering
     min_qv: Annotated[float | None, Parameter(
@@ -488,6 +495,7 @@ def segment(
     from ..data import ISTDataModule
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        num_workers=num_workers,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,
@@ -574,13 +582,14 @@ def segment(
 
     # Handle additional output formats
     if output_format != "segger_raw":
+        effective_boundary_n_jobs = boundary_n_jobs or max(num_workers, 1)
         _write_additional_formats(
             output_directory=output_directory,
             output_format=output_format,
             datamodule=datamodule,
             sopa_compatible=sopa_compatible,
             boundary_method=boundary_method,
-            boundary_n_jobs=boundary_n_jobs,
+            boundary_n_jobs=effective_boundary_n_jobs,
         )
 
 
@@ -755,11 +764,16 @@ def export(
         validator=validators.Number(gt=0),
         group=group_export,
     )] = 100.0,
-    n_jobs: Annotated[int, Parameter(
-        help="Number of parallel workers for boundary generation.",
-        validator=validators.Number(gt=0),
+    num_workers: Annotated[int, Parameter(
+        help="Number of parallel workers. Set to 0 to use a single worker.",
+        validator=validators.Number(gte=0),
         group=group_export,
     )] = 1,
+    n_jobs: Annotated[int, Parameter(
+        help="Deprecated. Use --num-workers. Set to 0 to use --num-workers.",
+        validator=validators.Number(gte=0),
+        group=group_export,
+    )] = 0,
     polygon_max_vertices: Annotated[int, Parameter(
         help="Maximum number of vertices per polygon (including closure).",
         validator=validators.Number(gt=3),
@@ -781,6 +795,7 @@ def export(
 
     # Export to Xenium format
     print(f"Exporting to Xenium Explorer format in {output_dir}...")
+    effective_n_jobs = n_jobs or max(num_workers, 1)
     seg2explorer_pqdm(
         seg_df=seg_df,
         source_path=source_path,
@@ -790,7 +805,7 @@ def export(
         y_column=y_column,
         area_low=area_low,
         area_high=area_high,
-        n_jobs=n_jobs,
+        n_jobs=effective_n_jobs,
         polygon_max_vertices=polygon_max_vertices,
     )
     print("Export complete!")
