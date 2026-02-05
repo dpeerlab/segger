@@ -33,12 +33,6 @@ from typing import TYPE_CHECKING, Literal, Optional
 import geopandas as gpd
 import polars as pl
 
-from segger.utils.optional_deps import (
-    SPATIALDATA_AVAILABLE,
-    SPATIALDATA_IO_AVAILABLE,
-    require_spatialdata,
-    warn_spatialdata_io_unavailable,
-)
 from segger.io.fields import StandardTranscriptFields, StandardBoundaryFields
 
 if TYPE_CHECKING:
@@ -122,6 +116,12 @@ class SpatialDataLoader:
         shapes_key: Optional[str] = None,
         coordinate_system: str = "global",
     ):
+        from segger.utils.optional_deps import (
+            SPATIALDATA_IO_AVAILABLE,
+            require_spatialdata,
+            warn_spatialdata_io_unavailable,
+        )
+
         require_spatialdata()
         if not SPATIALDATA_IO_AVAILABLE:
             warn_spatialdata_io_unavailable(
