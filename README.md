@@ -77,6 +77,14 @@ To see all available parameter options:
 segger segment --help
 ```
 
+## Input/Output Summary (Recent Changes)
+
+- Input: raw platform auto-detect (Xenium/CosMx/MERSCOPE) or SpatialData Zarr (`--input-format spatialdata`).
+- Output: `--output-format` supports `segger_raw`, `merged`, `spatialdata`, `anndata`, `all`.
+- SpatialData output: optional boundaries via `--boundary-method` (`input`, `convex_hull`, `delaunay`, `skip`) and SOPA-ready export (`--sopa-compatible`).
+- Export: `segger export --format xenium` writes Xenium Explorer polygons (cell + nucleus) with vertex cap.
+- Extras: install platform readers with `segger[spatialdata-io]`, full SpatialData with `segger[spatialdata]`.
+
 ## CLI Parameters (New/Updated)
 
 - `--input-format` (`auto` | `raw` | `spatialdata`) and `--output-format` (`segger_raw` | `merged` | `spatialdata` | `anndata` | `all`).
@@ -105,4 +113,5 @@ segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/ \
 - Versioning: `docs/VERSIONING.md`
 - Release process: `docs/RELEASE.md`
 - Installation notes: `docs/INSTALLATION.md`
+- Input/Output scenarios: `docs/input_output_scenarios.ipynb`
 - Changelog: `CHANGELOG.md`

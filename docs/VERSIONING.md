@@ -44,3 +44,11 @@ When deciding version bumps, consider:
 - Model checkpoints and training configs
 
 If a change requires user code or data migration, treat it as breaking.
+
+## Input/Output Changes
+
+Guidance for I/O-related versioning:
+
+- **MINOR**: add a new input type, new output format, or new optional export mode.
+- **MAJOR**: change an existing output schema, rename/remove output files, or change defaults that alter downstream pipelines.
+- **PATCH**: bug fixes in import/export logic without schema changes.

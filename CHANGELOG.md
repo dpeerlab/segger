@@ -12,10 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fragment mode for grouping unassigned transcripts.
 - SpatialData Zarr I/O and export utilities.
 - Synthetic dataset generators, optional-deps helpers, and expanded tests.
+- CLI input/output format flags (`--input-format`, `--output-format`) for raw vs SpatialData workflows.
+- AnnData output (`--output-format anndata`) and SpatialData tables for cell x gene matrices.
+- Delaunay boundary generation for SpatialData output with parallel workers.
+- `segger[spatialdata-io]` extra for platform-specific SpatialData readers.
 
 ### Changed
 - Prediction graph uses polygon `prediction_scale_factor` (expands/shrinks boundaries).
 - Dependency guidance and install notes for reproducible GPU setups.
+- Unified CLI worker settings (`--num-workers`), with boundary/export jobs defaulting to it.
+- Xenium Explorer export now writes cell/nucleus polygon sets with a vertex cap.
 
 ### Fixed
 - Edge permutation now skips negative partition labels to avoid bincount crashes.
