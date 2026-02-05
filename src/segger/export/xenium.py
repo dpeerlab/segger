@@ -13,7 +13,8 @@ import pandas as pd
 import polars as pl
 import zarr
 from pqdm.processes import pqdm
-from shapely.geometry import MultiPoint, MultiPolygon, Polygon
+from shapely.geometry import MultiPoint, MultiPolygon, Polygon, Point
+from shapely.affinity import translate
 from tqdm import tqdm
 from zarr.storage import ZipStore
 
@@ -205,6 +206,195 @@ def _open_output_group(path: Path) -> "zarr.Group":
     except TypeError:
         return zarr.open_group(path, mode="w")
 
+
+def _resolve_spatial_to_pixel_transform(
+    existing_store: "zarr.Group",
+    seg_df: pd.DataFrame,
+    x_column: str,
+    y_column: str,
+) -> tuple[np.ndarray, tuple[int, int]]:
+    """Resolve a transform from spatial (micron) coordinates to mask pixel indices."""
+    masks = existing_store.get("masks")
+    if masks is None or "0" not in masks or "homogeneous_transform" not in masks:
+        raise ValueError("Source masks are missing; cannot generate mask output.")
+
+    mask_shape = tuple(masks["0"].shape)
+    height, width = int(mask_shape[0]), int(mask_shape[1])
+
+    transform = np.array(masks["homogeneous_transform"])
+    if transform.shape != (4, 4):
+        raise ValueError("Unexpected homogeneous_transform shape; expected 4x4.")
+
+    # Sample points to infer direction (pixel->spatial vs spatial->pixel)
+    sample = seg_df[[x_column, y_column]].dropna()
+    if len(sample) == 0:
+        raise ValueError("No spatial coordinates available for mask generation.")
+    if len(sample) > 2000:
+        sample = sample.sample(2000, random_state=0)
+    pts = sample.to_numpy(dtype=float)
+
+    def _apply(mat: np.ndarray) -> np.ndarray:
+        ones = np.ones((pts.shape[0], 1), dtype=float)
+        zeros = np.zeros((pts.shape[0], 1), dtype=float)
+        homo = np.concatenate([pts, zeros, ones], axis=1)
+        mapped = (mat @ homo.T).T
+        return mapped[:, :2]
+
+    candidates = []
+    for mat in (transform, np.linalg.inv(transform)):
+        coords = _apply(mat)
+        xs, ys = coords[:, 0], coords[:, 1]
+        in_bounds = ((xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)).mean()
+        candidates.append((in_bounds, mat))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best = candidates[0][1]
+    return best, (height, width)
+
+
+def _rasterize_polygons_to_mask(
+    mask_array: "zarr.core.Array",
+    polygons: list[tuple[int, Polygon]],
+    height: int,
+    width: int,
+) -> None:
+    """Rasterize polygons into a Zarr mask array chunk by chunk."""
+    from rtree import index as rtree_index
+
+    try:
+        from skimage.draw import polygon as draw_polygon
+        use_skimage = True
+    except Exception:
+        use_skimage = False
+
+    try:
+        from shapely import vectorized as shp_vectorized
+        use_vectorized = True
+    except Exception:
+        use_vectorized = False
+
+    chunk_h, chunk_w = mask_array.chunks
+
+    idx = rtree_index.Index()
+    for i, (_, poly) in enumerate(polygons):
+        minx, miny, maxx, maxy = poly.bounds
+        idx.insert(i, (minx, miny, maxx, maxy))
+
+    for row0 in range(0, height, chunk_h):
+        row1 = min(row0 + chunk_h, height)
+        for col0 in range(0, width, chunk_w):
+            col1 = min(col0 + chunk_w, width)
+            hits = list(idx.intersection((col0, row0, col1, row1)))
+            if not hits:
+                continue
+
+            chunk = np.zeros((row1 - row0, col1 - col0), dtype=mask_array.dtype)
+            for hit in hits:
+                cell_id, poly = polygons[hit]
+                local = translate(poly, xoff=-col0, yoff=-row0)
+                if local.is_empty:
+                    continue
+                coords = np.array(local.exterior.coords)
+                if len(coords) < 3:
+                    continue
+
+                if use_skimage:
+                    rr, cc = draw_polygon(coords[:, 1], coords[:, 0], shape=chunk.shape)
+                    chunk[rr, cc] = cell_id
+                else:
+                    minx, miny, maxx, maxy = local.bounds
+                    x0 = max(int(np.floor(minx)), 0)
+                    x1 = min(int(np.ceil(maxx)), chunk.shape[1])
+                    y0 = max(int(np.floor(miny)), 0)
+                    y1 = min(int(np.ceil(maxy)), chunk.shape[0])
+                    if x1 <= x0 or y1 <= y0:
+                        continue
+                    xs = np.arange(x0, x1, dtype=float) + 0.5
+                    ys = np.arange(y0, y1, dtype=float) + 0.5
+                    xx, yy = np.meshgrid(xs, ys)
+                    if use_vectorized:
+                        inside = shp_vectorized.contains(local, xx, yy)
+                    else:
+                        inside = np.zeros_like(xx, dtype=bool)
+                        for iy in range(yy.shape[0]):
+                            for ix in range(xx.shape[1]):
+                                if local.contains(Point(xx[iy, ix], yy[iy, ix])):
+                                    inside[iy, ix] = True
+                    sub = chunk[y0:y1, x0:x1]
+                    sub[inside] = cell_id
+                    chunk[y0:y1, x0:x1] = sub
+
+            mask_array[row0:row1, col0:col1] = chunk
+
+
+def _write_masks_from_polygons(
+    existing_store: "zarr.Group",
+    new_store: "zarr.Group",
+    cell_ids: list[int],
+    cell_vertices: list[list[tuple[float, float]]],
+    cell_num_vertices: list[int],
+    seg_df: pd.DataFrame,
+    x_column: str,
+    y_column: str,
+) -> None:
+    """Create masks group using rasterized polygon boundaries."""
+    masks = existing_store.get("masks")
+    if masks is None or "0" not in masks or "homogeneous_transform" not in masks:
+        raise ValueError("Source masks are missing; cannot generate mask output.")
+
+    transform, (height, width) = _resolve_spatial_to_pixel_transform(
+        existing_store, seg_df, x_column, y_column
+    )
+
+    # Create masks group and copy homogeneous transform
+    masks_group = new_store.create_group("masks")
+    masks_group.attrs.update(getattr(masks, "attrs", {}))
+
+    src_transform = masks["homogeneous_transform"]
+    masks_group.create_dataset(
+        "homogeneous_transform",
+        data=np.array(src_transform),
+        chunks=src_transform.chunks,
+        dtype=src_transform.dtype,
+        compressor=src_transform.compressor,
+        fill_value=src_transform.fill_value,
+    )
+
+    src_mask = masks["0"]
+    mask_array = masks_group.create_dataset(
+        "0",
+        shape=src_mask.shape,
+        chunks=src_mask.chunks,
+        dtype=src_mask.dtype,
+        compressor=src_mask.compressor,
+        fill_value=0,
+    )
+
+    # Build polygons in pixel space
+    polygons: list[tuple[int, Polygon]] = []
+    for cell_id, verts, nv in zip(cell_ids, cell_vertices, cell_num_vertices):
+        if nv < 4:
+            continue
+        coords = np.array(verts[:nv], dtype=float)
+        ones = np.ones((coords.shape[0], 1), dtype=float)
+        zeros = np.zeros((coords.shape[0], 1), dtype=float)
+        homo = np.concatenate([coords, zeros, ones], axis=1)
+        mapped = (transform @ homo.T).T
+        poly = Polygon(mapped[:, :2])
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.is_empty or not isinstance(poly, Polygon):
+            continue
+        minx, miny, maxx, maxy = poly.bounds
+        if maxx < 0 or maxy < 0 or minx >= width or miny >= height:
+            continue
+        polygons.append((cell_id, poly))
+
+    if not polygons:
+        return
+
+    _rasterize_polygons_to_mask(mask_array, polygons, height, width)
+
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Get sparse matrix representation for cluster assignments.
 
@@ -291,6 +481,7 @@ def seg2explorer(
     boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
     boundary_voxel_size: float = 0.0,
+    write_masks: bool = False,
 ) -> None:
     """Convert segmentation results to Xenium Explorer format.
 
@@ -342,6 +533,8 @@ def seg2explorer(
         Maximum number of vertices per polygon (including closure).
     boundary_voxel_size : float
         Voxel size for downsampling (delaunay) or mask generation (voxel).
+    write_masks : bool
+        Whether to generate and write masks in the output cells.zarr.
     """
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
@@ -519,6 +712,18 @@ def seg2explorer(
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)
     new_store.attrs.update(attrs)
+
+    if write_masks:
+        _write_masks_from_polygons(
+            existing_store=existing_store,
+            new_store=new_store,
+            cell_ids=cell_id,
+            cell_vertices=cell_vertices,
+            cell_num_vertices=cell_num_vertices,
+            seg_df=seg_df,
+            x_column=x_column,
+            y_column=y_column,
+        )
 
     new_store.store.close()
     if source_zarr_store is not None:
@@ -704,6 +909,7 @@ def seg2explorer_pqdm(
     boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
     boundary_voxel_size: float = 0.0,
+    write_masks: bool = False,
 ) -> None:
     """Parallelized version of seg2explorer using pqdm.
 
@@ -757,6 +963,8 @@ def seg2explorer_pqdm(
         Maximum number of vertices per polygon (including closure).
     boundary_voxel_size : float
         Voxel size for downsampling (delaunay) or mask generation (voxel).
+    write_masks : bool
+        Whether to generate and write masks in the output cells.zarr.
     """
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
@@ -902,6 +1110,18 @@ def seg2explorer_pqdm(
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)
     new_store.attrs.update(attrs)
+    if write_masks:
+        _write_masks_from_polygons(
+            existing_store=existing_store,
+            new_store=new_store,
+            cell_ids=cell_id,
+            cell_vertices=cell_vertices,
+            cell_num_vertices=cell_num_vertices,
+            seg_df=seg_df,
+            x_column=x_column,
+            y_column=y_column,
+        )
+
     new_store.store.close()
     if source_zarr_store is not None:
         source_zarr_store.close()

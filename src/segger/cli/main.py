@@ -854,6 +854,10 @@ def export(
         validator=validators.Number(gt=3),
         group=group_export,
     )] = 13,
+    xenium_write_masks: Annotated[bool, Parameter(
+        help="Generate Xenium masks from polygons (can be slow).",
+        group=group_export,
+    )] = False,
     export_serial: Annotated[bool, Parameter(
         help="Disable parallel processing for export (no pqdm). Useful for debugging errors.",
         group=group_export,
@@ -968,6 +972,7 @@ def export(
                 boundary_method=boundary_method,
                 boundary_voxel_size=boundary_voxel_size,
                 boundaries=bd,
+                write_masks=xenium_write_masks,
             )
         else:
             seg2explorer_pqdm(
@@ -984,6 +989,7 @@ def export(
                 boundary_method=boundary_method,
                 boundary_voxel_size=boundary_voxel_size,
                 boundaries=bd,
+                write_masks=xenium_write_masks,
             )
         print("Export complete!")
         return
