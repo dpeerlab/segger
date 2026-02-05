@@ -113,5 +113,5 @@ segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/ \
 - Versioning: `docs/VERSIONING.md`
 - Release process: `docs/RELEASE.md`
 - Installation notes: `docs/INSTALLATION.md`
-- Input/Output scenarios: `docs/input_output_scenarios.ipynb`
+- I/O workflows notebook: `examples/segger_io_workflows.ipynb`
 - Changelog: `CHANGELOG.md`
