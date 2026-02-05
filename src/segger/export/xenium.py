@@ -149,6 +149,21 @@ def _prepare_input_boundaries(
 
     return cell_lookup, nucleus_lookup
 
+
+def _open_source_cells_store(source_path: Path) -> tuple["zarr.Group", Optional[ZipStore]]:
+    """Open the source cells zarr store (zip or directory)."""
+    cells_zip = source_path / "cells.zarr.zip"
+    cells_dir = source_path / "cells.zarr"
+    if cells_zip.exists():
+        store = ZipStore(cells_zip, mode="r")
+        return zarr.open(store, mode="r"), store
+    if cells_dir.exists():
+        return zarr.open(cells_dir, mode="r"), None
+    raise FileNotFoundError(
+        "Xenium export requires 'cells.zarr.zip' (or 'cells.zarr') in the source directory. "
+        f"Not found under: {source_path}"
+    )
+
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Get sparse matrix representation for cluster assignments.
 
@@ -412,8 +427,7 @@ def seg2explorer(
     nucleus_vertices_flat = nucleus_vertices_arr.reshape(n_cells, -1)
 
     # Open source store and create new store
-    source_zarr_store = ZipStore(source_path / "cells.zarr.zip", mode="r")
-    existing_store = zarr.open(source_zarr_store, mode="r")
+    existing_store, source_zarr_store = _open_source_cells_store(source_path)
     new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
 
     # Root datasets
@@ -460,7 +474,8 @@ def seg2explorer(
     new_store.attrs.update(attrs)
 
     new_store.store.close()
-    source_zarr_store.close()
+    if source_zarr_store is not None:
+        source_zarr_store.close()
 
     # Create analysis data
     if analysis_df is None:
@@ -505,8 +520,14 @@ def seg2explorer(
     })
     new_zarr.store.close()
 
+    template_path = source_path / "experiment.xenium"
+    if not template_path.exists():
+        raise FileNotFoundError(
+            "Xenium export requires 'experiment.xenium' in the source directory. "
+            f"Not found under: {source_path}"
+        )
     generate_experiment_file(
-        template_path=source_path / "experiment.xenium",
+        template_path=template_path,
         output_path=storage / xenium_filename,
         cells_name=cells_filename,
         analysis_name=analysis_filename,
@@ -783,8 +804,7 @@ def seg2explorer_pqdm(
     nucleus_vertices_flat = nucleus_vertices_arr.reshape(n_cells, -1)
 
     # Open source and create new store
-    source_zarr_store = ZipStore(source_path / "cells.zarr.zip", mode="r")
-    existing_store = zarr.open(source_zarr_store, mode="r")
+    existing_store, source_zarr_store = _open_source_cells_store(source_path)
     new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
 
     # Root datasets
@@ -828,7 +848,8 @@ def seg2explorer_pqdm(
     attrs.setdefault("minor_version", 0)
     new_store.attrs.update(attrs)
     new_store.store.close()
-    source_zarr_store.close()
+    if source_zarr_store is not None:
+        source_zarr_store.close()
 
     # Create analysis data
     if analysis_df is None:
@@ -873,8 +894,14 @@ def seg2explorer_pqdm(
     })
     new_zarr.store.close()
 
+    template_path = source_path / "experiment.xenium"
+    if not template_path.exists():
+        raise FileNotFoundError(
+            "Xenium export requires 'experiment.xenium' in the source directory. "
+            f"Not found under: {source_path}"
+        )
     generate_experiment_file(
-        template_path=source_path / "experiment.xenium",
+        template_path=template_path,
         output_path=storage / xenium_filename,
         cells_name=cells_filename,
         analysis_name=analysis_filename,
