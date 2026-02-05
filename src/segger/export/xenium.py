@@ -481,7 +481,7 @@ def seg2explorer(
     boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
     boundary_voxel_size: float = 0.0,
-    write_masks: bool = False,
+    write_masks: bool = True,
 ) -> None:
     """Convert segmentation results to Xenium Explorer format.
 
@@ -713,17 +713,16 @@ def seg2explorer(
     attrs.setdefault("minor_version", 0)
     new_store.attrs.update(attrs)
 
-    if write_masks:
-        _write_masks_from_polygons(
-            existing_store=existing_store,
-            new_store=new_store,
-            cell_ids=cell_id,
-            cell_vertices=cell_vertices,
-            cell_num_vertices=cell_num_vertices,
-            seg_df=seg_df,
-            x_column=x_column,
-            y_column=y_column,
-        )
+    _write_masks_from_polygons(
+        existing_store=existing_store,
+        new_store=new_store,
+        cell_ids=cell_id,
+        cell_vertices=cell_vertices,
+        cell_num_vertices=cell_num_vertices,
+        seg_df=seg_df,
+        x_column=x_column,
+        y_column=y_column,
+    )
 
     new_store.store.close()
     if source_zarr_store is not None:
@@ -909,7 +908,7 @@ def seg2explorer_pqdm(
     boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
     boundary_voxel_size: float = 0.0,
-    write_masks: bool = False,
+    write_masks: bool = True,
 ) -> None:
     """Parallelized version of seg2explorer using pqdm.
 
@@ -1110,17 +1109,16 @@ def seg2explorer_pqdm(
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)
     new_store.attrs.update(attrs)
-    if write_masks:
-        _write_masks_from_polygons(
-            existing_store=existing_store,
-            new_store=new_store,
-            cell_ids=cell_id,
-            cell_vertices=cell_vertices,
-            cell_num_vertices=cell_num_vertices,
-            seg_df=seg_df,
-            x_column=x_column,
-            y_column=y_column,
-        )
+    _write_masks_from_polygons(
+        existing_store=existing_store,
+        new_store=new_store,
+        cell_ids=cell_id,
+        cell_vertices=cell_vertices,
+        cell_num_vertices=cell_num_vertices,
+        seg_df=seg_df,
+        x_column=x_column,
+        y_column=y_column,
+    )
 
     new_store.store.close()
     if source_zarr_store is not None:
