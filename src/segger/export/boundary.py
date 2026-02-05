@@ -13,7 +13,8 @@ import pandas as pd
 import polars as pl
 import rtree.index
 from scipy.spatial import Delaunay
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.ops import unary_union
 from tqdm import tqdm
 
 
@@ -370,15 +371,78 @@ class BoundaryIdentification:
         return cycles
 
 
+def _voxel_downsample_points(points: np.ndarray, voxel_size: float) -> np.ndarray:
+    """Downsample points by voxel binning (keep one point per voxel)."""
+    if voxel_size <= 0:
+        return points
+    if points.size == 0:
+        return points
+    mins = points.min(axis=0)
+    bins = np.floor((points - mins) / voxel_size).astype(np.int64)
+    _, idx = np.unique(bins, axis=0, return_index=True)
+    return points[idx]
+
+
+def _voxel_mask_polygon(
+    points: np.ndarray,
+    voxel_size: float,
+) -> Union[Polygon, MultiPolygon, None]:
+    """Generate a voxelized mask polygon from points."""
+    if voxel_size <= 0:
+        return None
+    if points.size == 0:
+        return None
+    mins = points.min(axis=0)
+    bins = np.floor((points - mins) / voxel_size).astype(np.int64)
+    if bins.size == 0:
+        return None
+    unique_bins = np.unique(bins, axis=0)
+    xs = mins[0] + unique_bins[:, 0] * voxel_size
+    ys = mins[1] + unique_bins[:, 1] * voxel_size
+    boxes = [box(x, y, x + voxel_size, y + voxel_size) for x, y in zip(xs, ys)]
+    geom = unary_union(boxes)
+    if isinstance(geom, MultiPolygon):
+        geom = extract_largest_polygon(geom)
+    if geom is None or geom.is_empty or not isinstance(geom, Polygon):
+        return None
+    return geom
+
+
+def _boundary_from_points(
+    points: np.ndarray,
+    method: str = "delaunay",
+    voxel_size: float = 0.0,
+) -> Union[Polygon, MultiPolygon, None]:
+    """Generate a boundary from point coordinates."""
+    if points.shape[0] < 3:
+        return None
+    if method == "voxel":
+        return _voxel_mask_polygon(points, voxel_size)
+    if method != "delaunay":
+        return None
+
+    if voxel_size > 0:
+        points = _voxel_downsample_points(points, voxel_size)
+        if points.shape[0] < 3:
+            return None
+
+    bi = BoundaryIdentification(points)
+    bi.calculate_part_1(plot=False)
+    bi.calculate_part_2(plot=False)
+    return bi.find_cycles()
+
+
 def generate_boundary(
     df: Union[pd.DataFrame, pl.DataFrame],
     x: str = "x",
     y: str = "y",
+    method: str = "delaunay",
+    voxel_size: float = 0.0,
 ) -> Union[Polygon, MultiPolygon, None]:
     """Generate boundary polygon for a single cell's transcripts.
 
-    Uses Delaunay triangulation with iterative edge refinement to produce
-    more accurate boundaries than simple convex hulls.
+    Uses Delaunay triangulation with iterative edge refinement, or a voxelized
+    mask if method='voxel'.
 
     Parameters
     ----------
@@ -388,6 +452,10 @@ def generate_boundary(
         Column name for x coordinate.
     y : str
         Column name for y coordinate.
+    method : str
+        Boundary method: 'delaunay' or 'voxel'.
+    voxel_size : float
+        Voxel size for downsampling (delaunay) or mask generation (voxel).
 
     Returns
     -------
@@ -400,11 +468,7 @@ def generate_boundary(
 
     if len(df) < 3:
         return None
-
-    bi = BoundaryIdentification(df[[x, y]].values)
-    bi.calculate_part_1(plot=False)
-    bi.calculate_part_2(plot=False)
-    return bi.find_cycles()
+    return _boundary_from_points(df[[x, y]].values, method=method, voxel_size=voxel_size)
 
 
 def generate_boundaries(
@@ -415,6 +479,8 @@ def generate_boundaries(
     n_jobs: int = 1,
     chunksize: int = 8,
     progress: bool = True,
+    method: str = "delaunay",
+    voxel_size: float = 0.0,
 ) -> gpd.GeoDataFrame:
     """Generate boundaries for all cells in a segmentation result.
 
@@ -428,6 +494,10 @@ def generate_boundaries(
         Column name for y coordinate.
     cell_id : str
         Column name for cell ID.
+    method : str
+        Boundary method: 'delaunay' or 'voxel'.
+    voxel_size : float
+        Voxel size for downsampling (delaunay) or mask generation (voxel).
 
     Returns
     -------
@@ -465,10 +535,7 @@ def generate_boundaries(
         if n_points < 3:
             return cid, n_points, None
         try:
-            bi = BoundaryIdentification(points)
-            bi.calculate_part_1(plot=False)
-            bi.calculate_part_2(plot=False)
-            geom = bi.find_cycles()
+            geom = _boundary_from_points(points, method=method, voxel_size=voxel_size)
         except Exception:
             geom = None
         return cid, n_points, geom

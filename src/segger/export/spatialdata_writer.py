@@ -61,9 +61,12 @@ class SpatialDataWriter:
         - "input": Use input boundaries if available
         - "convex_hull": Generate convex hull per cell
         - "delaunay": Delaunay triangulation-based boundary extraction
+        - "voxel": Voxelized mask boundary (axis-aligned)
         - "skip": Don't include shapes
     boundary_n_jobs
         Parallel workers for Delaunay boundary generation (threads).
+    boundary_voxel_size
+        Voxel size for downsampling (delaunay) or mask generation (voxel).
     points_key
         Key for transcripts in sdata.points. Default "transcripts".
     shapes_key
@@ -79,8 +82,9 @@ class SpatialDataWriter:
     def __init__(
         self,
         include_boundaries: bool = True,
-        boundary_method: Literal["input", "convex_hull", "delaunay", "skip"] = "input",
+        boundary_method: Literal["input", "convex_hull", "delaunay", "voxel", "skip"] = "input",
         boundary_n_jobs: int = 1,
+        boundary_voxel_size: float = 0.0,
         points_key: str = "transcripts",
         shapes_key: str = "cells",
         include_table: bool = True,
@@ -92,6 +96,9 @@ class SpatialDataWriter:
         self.include_boundaries = include_boundaries
         self.boundary_method = boundary_method
         self.boundary_n_jobs = boundary_n_jobs
+        self.boundary_voxel_size = boundary_voxel_size
+        if self.boundary_method == "voxel" and self.boundary_voxel_size <= 0:
+            raise ValueError("boundary_method='voxel' requires boundary_voxel_size > 0.")
         self.points_key = points_key
         self.shapes_key = shapes_key
         self.include_table = include_table
@@ -393,6 +400,28 @@ class SpatialDataWriter:
                 y=y_column,
                 cell_id=cell_id_column,
                 n_jobs=self.boundary_n_jobs,
+                method="delaunay",
+                voxel_size=self.boundary_voxel_size,
+            )
+            if boundaries_gdf is None or len(boundaries_gdf) == 0:
+                return None
+            return boundaries_gdf
+
+        elif self.boundary_method == "voxel":
+            from segger.export.boundary import generate_boundaries
+
+            assigned = transcripts[transcripts[cell_id_column] != -1].copy()
+            if len(assigned) == 0:
+                return None
+
+            boundaries_gdf = generate_boundaries(
+                assigned,
+                x=x_column,
+                y=y_column,
+                cell_id=cell_id_column,
+                n_jobs=self.boundary_n_jobs,
+                method="voxel",
+                voxel_size=self.boundary_voxel_size,
             )
             if boundaries_gdf is None or len(boundaries_gdf) == 0:
                 return None

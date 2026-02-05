@@ -72,13 +72,34 @@ def _safe_boundary_polygon(
     x: str,
     y: str,
     boundary_method: str = "delaunay",
+    boundary_voxel_size: float = 0.0,
 ) -> Optional[Polygon]:
     """Generate a robust polygon boundary for a cell."""
     if boundary_method == "convex_hull":
         return _convex_hull_polygon(seg_cell, x=x, y=y)
 
+    if boundary_method == "voxel":
+        cell_poly = generate_boundary(
+            seg_cell,
+            x=x,
+            y=y,
+            method="voxel",
+            voxel_size=boundary_voxel_size,
+        )
+        if isinstance(cell_poly, MultiPolygon):
+            cell_poly = extract_largest_polygon(cell_poly)
+        if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
+            return None
+        return cell_poly
+
     if boundary_method == "delaunay":
-        cell_poly = generate_boundary(seg_cell, x=x, y=y)
+        cell_poly = generate_boundary(
+            seg_cell,
+            x=x,
+            y=y,
+            method="delaunay",
+            voxel_size=boundary_voxel_size,
+        )
         if isinstance(cell_poly, MultiPolygon):
             cell_poly = extract_largest_polygon(cell_poly)
 
@@ -249,6 +270,7 @@ def seg2explorer(
     boundary_cell_value: str = "cell",
     boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
+    boundary_voxel_size: float = 0.0,
 ) -> None:
     """Convert segmentation results to Xenium Explorer format.
 
@@ -285,7 +307,7 @@ def seg2explorer(
     area_high : float
         Maximum cell area threshold.
     boundary_method : str
-        Boundary method: 'delaunay', 'convex_hull', or 'input'.
+        Boundary method: 'delaunay', 'convex_hull', 'voxel', or 'input'.
     boundaries : Optional[gpd.GeoDataFrame]
         Input boundaries (used when boundary_method='input').
     boundary_id_column : str
@@ -298,6 +320,8 @@ def seg2explorer(
         Value for nucleus boundaries in boundary_type_column.
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
+    boundary_voxel_size : float
+        Voxel size for downsampling (delaunay) or mask generation (voxel).
     """
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
@@ -309,6 +333,8 @@ def seg2explorer(
 
     if boundary_method == "skip":
         raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+    if boundary_method == "voxel" and boundary_voxel_size <= 0:
+        raise ValueError("boundary_method='voxel' requires boundary_voxel_size > 0.")
 
     cell_boundaries = {}
     nucleus_boundaries = {}
@@ -360,6 +386,7 @@ def seg2explorer(
                 x=x_column,
                 y=y_column,
                 boundary_method=fallback_method,
+                boundary_voxel_size=boundary_voxel_size,
             )
         if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
             continue
@@ -549,6 +576,7 @@ def _process_one_cell(args: tuple) -> Optional[dict]:
             area_high,
             polygon_max_vertices,
             boundary_method,
+            boundary_voxel_size,
             cell_boundaries,
             nucleus_boundaries,
         ) = args
@@ -569,6 +597,7 @@ def _process_one_cell(args: tuple) -> Optional[dict]:
                 x=x_col,
                 y=y_col,
                 boundary_method=fallback_method,
+                boundary_voxel_size=boundary_voxel_size,
             )
         if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
             return None
@@ -654,6 +683,7 @@ def seg2explorer_pqdm(
     boundary_cell_value: str = "cell",
     boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
+    boundary_voxel_size: float = 0.0,
 ) -> None:
     """Parallelized version of seg2explorer using pqdm.
 
@@ -692,7 +722,7 @@ def seg2explorer_pqdm(
     n_jobs : int
         Number of parallel workers.
     boundary_method : str
-        Boundary method: 'delaunay', 'convex_hull', or 'input'.
+        Boundary method: 'delaunay', 'convex_hull', 'voxel', or 'input'.
     boundaries : Optional[gpd.GeoDataFrame]
         Input boundaries (used when boundary_method='input').
     boundary_id_column : str
@@ -705,6 +735,8 @@ def seg2explorer_pqdm(
         Value for nucleus boundaries in boundary_type_column.
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
+    boundary_voxel_size : float
+        Voxel size for downsampling (delaunay) or mask generation (voxel).
     """
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
@@ -716,6 +748,8 @@ def seg2explorer_pqdm(
 
     if boundary_method == "skip":
         raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+    if boundary_method == "voxel" and boundary_voxel_size <= 0:
+        raise ValueError("boundary_method='voxel' requires boundary_voxel_size > 0.")
 
     cell_boundaries = {}
     nucleus_boundaries = {}
@@ -746,6 +780,7 @@ def seg2explorer_pqdm(
             area_high,
             polygon_max_vertices,
             boundary_method,
+            boundary_voxel_size,
             cell_boundaries,
             nucleus_boundaries,
         )

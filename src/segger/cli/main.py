@@ -414,12 +414,13 @@ def segment(
     )] = False,
 
     boundary_method: Annotated[
-        Literal["input", "convex_hull", "delaunay", "skip"],
+        Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
         Parameter(
             help="How to generate cell boundaries for spatialdata output. "
                  "'input' uses input boundaries if available. "
                  "'convex_hull' generates convex hull per cell. "
                  "'delaunay' uses Delaunay-based boundary extraction. "
+                 "'voxel' uses voxelized masks from transcript bins. "
                  "'skip' omits shapes from output.",
             group=group_format,
         )
@@ -432,6 +433,13 @@ def segment(
         validator=validators.Number(gte=0),
         group=group_format,
     )] = 0,
+
+    boundary_voxel_size: Annotated[float, Parameter(
+        help="Voxel size for boundary downsampling (delaunay) or voxel masks. "
+             "Same units as x/y; set to 0 to disable.",
+        validator=validators.Number(gte=0),
+        group=group_format,
+    )] = 0.0,
 
     # Quality Filtering
     min_qv: Annotated[float | None, Parameter(
@@ -594,6 +602,7 @@ def segment(
             sopa_compatible=sopa_compatible,
             boundary_method=boundary_method,
             boundary_n_jobs=effective_boundary_n_jobs,
+            boundary_voxel_size=boundary_voxel_size,
         )
 
 
@@ -604,6 +613,7 @@ def _write_additional_formats(
     sopa_compatible: bool,
     boundary_method: str,
     boundary_n_jobs: int,
+    boundary_voxel_size: float,
 ):
     """Write segmentation results in additional output formats.
 
@@ -621,6 +631,8 @@ def _write_additional_formats(
         Boundary generation method for SpatialData output.
     boundary_n_jobs
         Parallel workers for Delaunay boundary generation (0 uses --num-workers).
+    boundary_voxel_size
+        Voxel size for boundary downsampling or voxel masks.
     """
     import polars as pl
     from pathlib import Path
@@ -668,6 +680,7 @@ def _write_additional_formats(
                     include_boundaries=(boundary_method != "skip"),
                     boundary_method=boundary_method,
                     boundary_n_jobs=boundary_n_jobs,
+                    boundary_voxel_size=boundary_voxel_size,
                 )
                 output_path = writer.write(
                     predictions=predictions,
@@ -774,12 +787,13 @@ def export(
         group=group_format,
     )] = False,
     boundary_method: Annotated[
-        Literal["input", "convex_hull", "delaunay", "skip"],
+        Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
         Parameter(
             help="How to generate cell boundaries for SpatialData and Xenium exports. "
                  "'input' uses input boundaries if available. "
                  "'convex_hull' generates convex hull per cell. "
                  "'delaunay' uses Delaunay-based boundary extraction. "
+                 "'voxel' uses voxelized masks from transcript bins. "
                  "'skip' omits shapes from output.",
             group=group_format,
         )
@@ -791,6 +805,13 @@ def export(
         validator=validators.Number(gte=0),
         group=group_format,
     )] = 0,
+
+    boundary_voxel_size: Annotated[float, Parameter(
+        help="Voxel size for boundary downsampling (delaunay) or voxel masks. "
+             "Same units as x/y; set to 0 to disable.",
+        validator=validators.Number(gte=0),
+        group=group_format,
+    )] = 0.0,
     cell_id_column: Annotated[str, Parameter(
         help="Column name for cell IDs in segmentation data. "
              "Common aliases (auto-detected if missing): "
@@ -941,6 +962,7 @@ def export(
             n_jobs=effective_n_jobs,
             polygon_max_vertices=polygon_max_vertices,
             boundary_method=boundary_method,
+            boundary_voxel_size=boundary_voxel_size,
             boundaries=bd,
         )
         print("Export complete!")
@@ -987,6 +1009,7 @@ def export(
                 include_boundaries=(boundary_method != "skip"),
                 boundary_method=boundary_method,
                 boundary_n_jobs=effective_boundary_n_jobs,
+                boundary_voxel_size=boundary_voxel_size,
             )
             output_path = writer.write(
                 predictions=seg_df,
