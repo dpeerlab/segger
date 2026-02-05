@@ -185,6 +185,14 @@ def _open_source_cells_store(source_path: Path) -> tuple["zarr.Group", Optional[
         f"Not found under: {source_path}"
     )
 
+
+def _open_output_group(path: Path) -> "zarr.Group":
+    """Open a Zarr group for output, preferring v2 format for Xenium compatibility."""
+    try:
+        return zarr.open(path, mode="w", zarr_format=2)
+    except TypeError:
+        return zarr.open(path, mode="w")
+
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Get sparse matrix representation for cluster assignments.
 
@@ -455,7 +463,7 @@ def seg2explorer(
 
     # Open source store and create new store
     existing_store, source_zarr_store = _open_source_cells_store(source_path)
-    new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
+    new_store = _open_output_group(storage / f"{cells_filename}.zarr.zip")
 
     # Root datasets
     cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
@@ -525,7 +533,7 @@ def seg2explorer(
         for cluster in clusters_names
     }
 
-    new_zarr = zarr.open(storage / f"{analysis_filename}.zarr.zip", mode="w")
+    new_zarr = _open_output_group(storage / f"{analysis_filename}.zarr.zip")
     new_zarr.create_group("/cell_groups")
 
     for i, cluster in enumerate(clusters_names):
@@ -840,7 +848,7 @@ def seg2explorer_pqdm(
 
     # Open source and create new store
     existing_store, source_zarr_store = _open_source_cells_store(source_path)
-    new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
+    new_store = _open_output_group(storage / f"{cells_filename}.zarr.zip")
 
     # Root datasets
     cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
@@ -907,7 +915,7 @@ def seg2explorer_pqdm(
         for cluster in clusters_names
     }
 
-    new_zarr = zarr.open(storage / f"{analysis_filename}.zarr.zip", mode="w")
+    new_zarr = _open_output_group(storage / f"{analysis_filename}.zarr.zip")
     new_zarr.create_group("/cell_groups")
 
     for i, cluster in enumerate(clusters_names):
