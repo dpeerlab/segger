@@ -188,10 +188,22 @@ def _open_source_cells_store(source_path: Path) -> tuple["zarr.Group", Optional[
 
 def _open_output_group(path: Path) -> "zarr.Group":
     """Open a Zarr group for output, preferring v2 format for Xenium compatibility."""
+    use_zip = path.suffix == ".zip" or path.name.endswith(".zarr.zip")
+    if use_zip:
+        if path.exists() and path.is_dir():
+            raise FileExistsError(
+                f"Expected a zip file but found a directory at {path}. "
+                "Please remove or rename this directory and re-run export."
+            )
+        store = ZipStore(path, mode="w")
+        try:
+            return zarr.open_group(store, mode="w", zarr_format=2)
+        except TypeError:
+            return zarr.open_group(store, mode="w")
     try:
-        return zarr.open(path, mode="w", zarr_format=2)
+        return zarr.open_group(path, mode="w", zarr_format=2)
     except TypeError:
-        return zarr.open(path, mode="w")
+        return zarr.open_group(path, mode="w")
 
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Get sparse matrix representation for cluster assignments.
