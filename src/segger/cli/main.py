@@ -792,7 +792,9 @@ def export(
         group=group_format,
     )] = 0,
     cell_id_column: Annotated[str, Parameter(
-        help="Column name for cell IDs in segmentation data.",
+        help="Column name for cell IDs in segmentation data. "
+             "Common aliases (auto-detected if missing): "
+             "segger_cell_id, seg_cell_id, cell_id, segmentation_cell_id.",
         group=group_export,
     )] = "segger_cell_id",
     x_column: Annotated[str, Parameter(
@@ -846,8 +848,33 @@ def export(
     else:
         raise ValueError(f"Unsupported file format: {segmentation_path.suffix}")
 
-    if format != "xenium" and cell_id_column != "segger_cell_id" and cell_id_column in seg_df.columns:
-        seg_df = seg_df.rename({cell_id_column: "segger_cell_id"})
+    def _resolve_cell_id_column():
+        if cell_id_column in seg_df.columns:
+            return cell_id_column
+        aliases = [
+            "segger_cell_id",
+            "seg_cell_id",
+            "cell_id",
+            "segmentation_cell_id",
+        ]
+        for alias in aliases:
+            if alias in seg_df.columns:
+                print(
+                    f"Warning: '{cell_id_column}' not found in segmentation data. "
+                    f"Using '{alias}' instead."
+                )
+                return alias
+        raise ValueError(
+            "Segmentation file is missing a cell ID column. "
+            "Provide --cell-id-column or include one of: "
+            "segger_cell_id, seg_cell_id, cell_id, segmentation_cell_id."
+        )
+
+    effective_cell_id_column = _resolve_cell_id_column()
+
+    if format != "xenium" and effective_cell_id_column != "segger_cell_id":
+        seg_df = seg_df.rename({effective_cell_id_column: "segger_cell_id"})
+        effective_cell_id_column = "segger_cell_id"
 
     def _resolve_transcripts():
         from ..io.spatialdata_loader import is_spatialdata_path, load_from_spatialdata
@@ -888,7 +915,7 @@ def export(
             seg_df = merge_predictions_with_transcripts(
                 predictions=seg_df,
                 transcripts=tx,
-                cell_id_column=cell_id_column,
+                cell_id_column=effective_cell_id_column,
             )
 
         print(f"Exporting to Xenium Explorer format in {output_dir}...")
@@ -897,7 +924,7 @@ def export(
             seg_df=seg_df,
             source_path=source_path,
             output_dir=output_dir,
-            cell_id_column=cell_id_column,
+            cell_id_column=effective_cell_id_column,
             x_column=x_column,
             y_column=y_column,
             area_low=area_low,
