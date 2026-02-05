@@ -515,95 +515,98 @@ def seg2explorer(
 
 def _process_one_cell(args: tuple) -> Optional[dict]:
     """Process a single cell for parallel boundary generation."""
-    (
-        seg_cell_id,
-        seg_cell,
-        x_col,
-        y_col,
-        z_col,
-        nucleus_column,
-        nucleus_value,
-        area_low,
-        area_high,
-        polygon_max_vertices,
-        boundary_method,
-        cell_boundaries,
-        nucleus_boundaries,
-    ) = args
-
-    if len(seg_cell) < 5:
-        return None
-
-    cell_poly = None
-    cell_from_input = False
-    if boundary_method == "input" and cell_boundaries:
-        cell_poly = cell_boundaries.get(seg_cell_id)
-        if cell_poly is not None:
-            cell_from_input = True
-    if cell_poly is None:
-        fallback_method = "delaunay" if boundary_method == "input" else boundary_method
-        cell_poly = _safe_boundary_polygon(
+    try:
+        (
+            seg_cell_id,
             seg_cell,
-            x=x_col,
-            y=y_col,
-            boundary_method=fallback_method,
-        )
-    if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
-        return None
+            x_col,
+            y_col,
+            z_col,
+            nucleus_column,
+            nucleus_value,
+            area_low,
+            area_high,
+            polygon_max_vertices,
+            boundary_method,
+            cell_boundaries,
+            nucleus_boundaries,
+        ) = args
 
-    cell_vertices, cell_nv = _normalize_polygon_vertices(cell_poly, polygon_max_vertices)
-    if cell_nv == 0:
-        return None
+        if len(seg_cell) < 5:
+            return None
 
-    # Nucleus polygon (optional)
-    nucleus_poly = None
-    nucleus_from_input = False
-    if boundary_method == "input" and nucleus_boundaries:
-        nucleus_poly = nucleus_boundaries.get(seg_cell_id)
+        cell_poly = None
+        cell_from_input = False
+        if boundary_method == "input" and cell_boundaries:
+            cell_poly = cell_boundaries.get(seg_cell_id)
+            if cell_poly is not None:
+                cell_from_input = True
+        if cell_poly is None:
+            fallback_method = "delaunay" if boundary_method == "input" else boundary_method
+            cell_poly = _safe_boundary_polygon(
+                seg_cell,
+                x=x_col,
+                y=y_col,
+                boundary_method=fallback_method,
+            )
+        if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
+            return None
+
+        cell_vertices, cell_nv = _normalize_polygon_vertices(cell_poly, polygon_max_vertices)
+        if cell_nv == 0:
+            return None
+
+        # Nucleus polygon (optional)
+        nucleus_poly = None
+        nucleus_from_input = False
+        if boundary_method == "input" and nucleus_boundaries:
+            nucleus_poly = nucleus_boundaries.get(seg_cell_id)
+            if nucleus_poly is not None:
+                nucleus_from_input = True
+        if nucleus_poly is None and nucleus_column is not None and nucleus_column in seg_cell.columns:
+            seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
+            if len(seg_nucleus) >= 3:
+                nucleus_poly = MultiPoint(seg_nucleus[[x_col, y_col]].values).convex_hull
+                if isinstance(nucleus_poly, MultiPolygon):
+                    nucleus_poly = extract_largest_polygon(nucleus_poly)
+                if not isinstance(nucleus_poly, Polygon) or nucleus_poly.is_empty:
+                    nucleus_poly = None
+
         if nucleus_poly is not None:
-            nucleus_from_input = True
-    if nucleus_poly is None and nucleus_column is not None and nucleus_column in seg_cell.columns:
-        seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
-        if len(seg_nucleus) >= 3:
-            nucleus_poly = MultiPoint(seg_nucleus[[x_col, y_col]].values).convex_hull
-            if isinstance(nucleus_poly, MultiPolygon):
-                nucleus_poly = extract_largest_polygon(nucleus_poly)
-            if not isinstance(nucleus_poly, Polygon) or nucleus_poly.is_empty:
-                nucleus_poly = None
+            nucleus_vertices, nucleus_nv = _normalize_polygon_vertices(
+                nucleus_poly, polygon_max_vertices
+            )
+        else:
+            nucleus_vertices = [(0.0, 0.0)] * polygon_max_vertices
+            nucleus_nv = 0
 
-    if nucleus_poly is not None:
-        nucleus_vertices, nucleus_nv = _normalize_polygon_vertices(
-            nucleus_poly, polygon_max_vertices
-        )
-    else:
-        nucleus_vertices = [(0.0, 0.0)] * polygon_max_vertices
-        nucleus_nv = 0
+        # Compute z-level if available
+        z_level = 0.0
+        if z_col is not None and z_col in seg_cell.columns:
+            z_level = (seg_cell[z_col].mean() // 3) * 3
 
-    # Compute z-level if available
-    z_level = 0.0
-    if z_col is not None and z_col in seg_cell.columns:
-        z_level = (seg_cell[z_col].mean() // 3) * 3
+        cell_centroid = cell_poly.centroid
+        nucleus_centroid = nucleus_poly.centroid if nucleus_poly is not None else None
 
-    cell_centroid = cell_poly.centroid
-    nucleus_centroid = nucleus_poly.centroid if nucleus_poly is not None else None
-
-    return {
-        "seg_cell_id": seg_cell_id,
-        "cell_area": float(cell_poly.area),
-        "cell_vertices": cell_vertices,
-        "cell_num_vertices": cell_nv,
-        "nucleus_vertices": nucleus_vertices,
-        "nucleus_num_vertices": nucleus_nv,
-        "cell_from_input": cell_from_input,
-        "nucleus_from_input": nucleus_from_input,
-        "cell_centroid_x": float(cell_centroid.x),
-        "cell_centroid_y": float(cell_centroid.y),
-        "nucleus_centroid_x": float(nucleus_centroid.x) if nucleus_centroid else 0.0,
-        "nucleus_centroid_y": float(nucleus_centroid.y) if nucleus_centroid else 0.0,
-        "nucleus_area": float(nucleus_poly.area) if nucleus_poly is not None else 0.0,
-        "z_level": float(z_level),
-        "nucleus_count": float(1 if nucleus_poly is not None else 0),
-    }
+        return {
+            "seg_cell_id": seg_cell_id,
+            "cell_area": float(cell_poly.area),
+            "cell_vertices": cell_vertices,
+            "cell_num_vertices": cell_nv,
+            "nucleus_vertices": nucleus_vertices,
+            "nucleus_num_vertices": nucleus_nv,
+            "cell_from_input": cell_from_input,
+            "nucleus_from_input": nucleus_from_input,
+            "cell_centroid_x": float(cell_centroid.x),
+            "cell_centroid_y": float(cell_centroid.y),
+            "nucleus_centroid_x": float(nucleus_centroid.x) if nucleus_centroid else 0.0,
+            "nucleus_centroid_y": float(nucleus_centroid.y) if nucleus_centroid else 0.0,
+            "nucleus_area": float(nucleus_poly.area) if nucleus_poly is not None else 0.0,
+            "z_level": float(z_level),
+            "nucleus_count": float(1 if nucleus_poly is not None else 0),
+        }
+    except Exception:
+        return None
 
 
 def seg2explorer_pqdm(
