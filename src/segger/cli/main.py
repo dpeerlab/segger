@@ -743,14 +743,14 @@ def export(
         alias="-o",
         group=group_io,
     )],
-    format: Annotated[Literal["xenium", "merged", "spatialdata", "anndata"], Parameter(
+    format: Annotated[Literal["xenium_explorer", "xenium", "merged", "spatialdata", "anndata"], Parameter(
         help="Export format. "
-             "'xenium' writes Xenium Explorer output. "
+             "'xenium_explorer' writes Xenium Explorer output (alias: 'xenium'). "
              "'merged' joins segmentation with transcripts. "
              "'spatialdata' writes SpatialData Zarr. "
              "'anndata' writes a cell x gene matrix.",
         group=group_export,
-    )] = "xenium",
+    )] = "xenium_explorer",
     input_format: Annotated[
         Literal["auto", "raw", "spatialdata"],
         Parameter(
@@ -776,7 +776,7 @@ def export(
     boundary_method: Annotated[
         Literal["input", "convex_hull", "delaunay", "skip"],
         Parameter(
-            help="How to generate cell boundaries for SpatialData export. "
+            help="How to generate cell boundaries for SpatialData and Xenium exports. "
                  "'input' uses input boundaries if available. "
                  "'convex_hull' generates convex hull per cell. "
                  "'delaunay' uses Delaunay-based boundary extraction. "
@@ -872,7 +872,7 @@ def export(
 
     effective_cell_id_column = _resolve_cell_id_column()
 
-    if format != "xenium" and effective_cell_id_column != "segger_cell_id":
+    if format not in {"xenium", "xenium_explorer"} and effective_cell_id_column != "segger_cell_id":
         seg_df = seg_df.rename({effective_cell_id_column: "segger_cell_id"})
         effective_cell_id_column = "segger_cell_id"
 
@@ -909,9 +909,18 @@ def export(
         return tx, bd
 
     if format == "xenium":
+        print("Warning: '--format xenium' is deprecated. Use '--format xenium_explorer'.")
+        format = "xenium_explorer"
+
+    if format == "xenium_explorer":
         # Ensure coordinates are present; merge with transcripts if needed
-        if x_column not in seg_df.columns or y_column not in seg_df.columns:
-            tx, _ = _resolve_transcripts()
+        needs_tx = x_column not in seg_df.columns or y_column not in seg_df.columns
+        needs_bd = boundary_method == "input"
+        tx = None
+        bd = None
+        if needs_tx or needs_bd:
+            tx, bd = _resolve_transcripts()
+        if needs_tx and tx is not None:
             seg_df = merge_predictions_with_transcripts(
                 predictions=seg_df,
                 transcripts=tx,
@@ -931,6 +940,8 @@ def export(
             area_high=area_high,
             n_jobs=effective_n_jobs,
             polygon_max_vertices=polygon_max_vertices,
+            boundary_method=boundary_method,
+            boundaries=bd,
         )
         print("Export complete!")
         return

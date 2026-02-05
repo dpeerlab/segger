@@ -52,29 +52,102 @@ def _normalize_polygon_vertices(
     return coords, num_vertices
 
 
-def _safe_boundary_polygon(
+def _convex_hull_polygon(
     seg_cell: pd.DataFrame,
     x: str,
     y: str,
 ) -> Optional[Polygon]:
-    """Generate a robust polygon boundary for a cell.
-
-    Tries Delaunay-based boundary first, then falls back to convex hull.
-    """
-    cell_poly = generate_boundary(seg_cell, x=x, y=y)
+    """Generate a convex hull polygon for a cell."""
+    mp = MultiPoint(seg_cell[[x, y]].values)
+    cell_poly = mp.convex_hull if not mp.is_empty else None
     if isinstance(cell_poly, MultiPolygon):
         cell_poly = extract_largest_polygon(cell_poly)
-
-    if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
-        # Fallback: convex hull of points
-        mp = MultiPoint(seg_cell[[x, y]].values)
-        cell_poly = mp.convex_hull if not mp.is_empty else None
-
     if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
         return None
-
     return cell_poly
 
+
+def _safe_boundary_polygon(
+    seg_cell: pd.DataFrame,
+    x: str,
+    y: str,
+    boundary_method: str = "delaunay",
+) -> Optional[Polygon]:
+    """Generate a robust polygon boundary for a cell."""
+    if boundary_method == "convex_hull":
+        return _convex_hull_polygon(seg_cell, x=x, y=y)
+
+    if boundary_method == "delaunay":
+        cell_poly = generate_boundary(seg_cell, x=x, y=y)
+        if isinstance(cell_poly, MultiPolygon):
+            cell_poly = extract_largest_polygon(cell_poly)
+
+        if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
+            # Fallback: convex hull of points
+            cell_poly = _convex_hull_polygon(seg_cell, x=x, y=y)
+
+        if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
+            return None
+
+        return cell_poly
+
+    return None
+
+
+def _prepare_input_boundaries(
+    boundaries: Optional["gpd.GeoDataFrame"],
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
+) -> tuple[dict[Any, Polygon], dict[Any, Polygon]]:
+    """Prepare lookup dictionaries for cell/nucleus polygons from input boundaries."""
+    if boundaries is None:
+        return {}, {}
+
+    gdf = boundaries
+    if boundary_id_column not in gdf.columns:
+        if gdf.index.name == boundary_id_column:
+            gdf = gdf.reset_index()
+        else:
+            return {}, {}
+
+    def _pick_largest(group):
+        largest = None
+        max_area = -1.0
+        for geom in group.geometry:
+            if geom is None or getattr(geom, "is_empty", True):
+                continue
+            if isinstance(geom, MultiPolygon):
+                geom = extract_largest_polygon(geom)
+            if not isinstance(geom, Polygon) or geom.is_empty:
+                continue
+            area = geom.area
+            if area > max_area:
+                max_area = area
+                largest = geom
+        return largest
+
+    if boundary_type_column in gdf.columns:
+        cells = gdf[gdf[boundary_type_column] == boundary_cell_value]
+        nuclei = gdf[gdf[boundary_type_column] == boundary_nucleus_value]
+    else:
+        cells = gdf
+        nuclei = gdf.iloc[0:0]
+
+    cell_lookup: dict[Any, Polygon] = {}
+    for cell_id, group in cells.groupby(boundary_id_column):
+        poly = _pick_largest(group)
+        if poly is not None:
+            cell_lookup[cell_id] = poly
+
+    nucleus_lookup: dict[Any, Polygon] = {}
+    for cell_id, group in nuclei.groupby(boundary_id_column):
+        poly = _pick_largest(group)
+        if poly is not None:
+            nucleus_lookup[cell_id] = poly
+
+    return cell_lookup, nucleus_lookup
 
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Get sparse matrix representation for cluster assignments.
@@ -154,6 +227,12 @@ def seg2explorer(
     nucleus_value: int = 2,
     area_low: float = 10,
     area_high: float = 100,
+    boundary_method: str = "delaunay",
+    boundaries: Optional["gpd.GeoDataFrame"] = None,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
 ) -> None:
     """Convert segmentation results to Xenium Explorer format.
@@ -190,6 +269,18 @@ def seg2explorer(
         Minimum cell area threshold.
     area_high : float
         Maximum cell area threshold.
+    boundary_method : str
+        Boundary method: 'delaunay', 'convex_hull', or 'input'.
+    boundaries : Optional[gpd.GeoDataFrame]
+        Input boundaries (used when boundary_method='input').
+    boundary_id_column : str
+        Cell ID column in boundaries.
+    boundary_type_column : str
+        Boundary type column in boundaries.
+    boundary_cell_value : str
+        Value for cell boundaries in boundary_type_column.
+    boundary_nucleus_value : str
+        Value for nucleus boundaries in boundary_type_column.
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
     """
@@ -200,6 +291,22 @@ def seg2explorer(
     source_path = Path(source_path)
     storage = Path(output_dir)
     storage.mkdir(parents=True, exist_ok=True)
+
+    if boundary_method == "skip":
+        raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+
+    cell_boundaries = {}
+    nucleus_boundaries = {}
+    if boundary_method == "input":
+        cell_boundaries, nucleus_boundaries = _prepare_input_boundaries(
+            boundaries,
+            boundary_id_column=boundary_id_column,
+            boundary_type_column=boundary_type_column,
+            boundary_cell_value=boundary_cell_value,
+            boundary_nucleus_value=boundary_nucleus_value,
+        )
+        if not cell_boundaries:
+            boundary_method = "delaunay"
 
     # Drop unassigned cells if numeric
     if cell_id_column in seg_df.columns:
@@ -215,6 +322,8 @@ def seg2explorer(
     nucleus_num_vertices: List[int] = []
     cell_vertices: List[List[Tuple[float, float]]] = []
     nucleus_vertices: List[List[Tuple[float, float]]] = []
+    used_input_cell = False
+    used_input_nucleus = False
 
     grouped_by = seg_df.groupby(cell_id_column)
 
@@ -224,13 +333,29 @@ def seg2explorer(
         if len(seg_cell) < 5:
             continue
 
-        cell_poly = _safe_boundary_polygon(seg_cell, x=x_column, y=y_column)
+        cell_poly = None
+        if boundary_method == "input" and cell_boundaries:
+            cell_poly = cell_boundaries.get(seg_cell_id)
+            if cell_poly is not None:
+                used_input_cell = True
+        if cell_poly is None:
+            fallback_method = "delaunay" if boundary_method == "input" else boundary_method
+            cell_poly = _safe_boundary_polygon(
+                seg_cell,
+                x=x_column,
+                y=y_column,
+                boundary_method=fallback_method,
+            )
         if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
             continue
 
         # Nucleus polygon (optional)
         nucleus_poly = None
-        if nucleus_column is not None and nucleus_column in seg_cell.columns:
+        if boundary_method == "input" and nucleus_boundaries:
+            nucleus_poly = nucleus_boundaries.get(seg_cell_id)
+            if nucleus_poly is not None:
+                used_input_nucleus = True
+        if nucleus_poly is None and nucleus_column is not None and nucleus_column in seg_cell.columns:
             seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
             if len(seg_nucleus) >= 3:
                 nucleus_poly = MultiPoint(seg_nucleus[[x_column, y_column]].values).convex_hull
@@ -323,10 +448,12 @@ def seg2explorer(
         "Segger nucleus boundaries",
         "Segger cell boundaries",
     ]
-    attrs["segmentation_methods"] = [
-        "segger_nucleus_convex_hull",
-        "segger_cell_delaunay",
-    ]
+    if boundary_method == "input" and not used_input_cell:
+        cell_method = "segger_cell_delaunay"
+    else:
+        cell_method = f"segger_cell_{boundary_method}"
+    nucleus_method = "segger_nucleus_input" if used_input_nucleus else "segger_nucleus_convex_hull"
+    attrs["segmentation_methods"] = [nucleus_method, cell_method]
     attrs.setdefault("spatial_units", "microns")
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)
@@ -399,12 +526,28 @@ def _process_one_cell(args: tuple) -> Optional[dict]:
         area_low,
         area_high,
         polygon_max_vertices,
+        boundary_method,
+        cell_boundaries,
+        nucleus_boundaries,
     ) = args
 
     if len(seg_cell) < 5:
         return None
 
-    cell_poly = _safe_boundary_polygon(seg_cell, x=x_col, y=y_col)
+    cell_poly = None
+    cell_from_input = False
+    if boundary_method == "input" and cell_boundaries:
+        cell_poly = cell_boundaries.get(seg_cell_id)
+        if cell_poly is not None:
+            cell_from_input = True
+    if cell_poly is None:
+        fallback_method = "delaunay" if boundary_method == "input" else boundary_method
+        cell_poly = _safe_boundary_polygon(
+            seg_cell,
+            x=x_col,
+            y=y_col,
+            boundary_method=fallback_method,
+        )
     if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
         return None
 
@@ -414,7 +557,12 @@ def _process_one_cell(args: tuple) -> Optional[dict]:
 
     # Nucleus polygon (optional)
     nucleus_poly = None
-    if nucleus_column is not None and nucleus_column in seg_cell.columns:
+    nucleus_from_input = False
+    if boundary_method == "input" and nucleus_boundaries:
+        nucleus_poly = nucleus_boundaries.get(seg_cell_id)
+        if nucleus_poly is not None:
+            nucleus_from_input = True
+    if nucleus_poly is None and nucleus_column is not None and nucleus_column in seg_cell.columns:
         seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
         if len(seg_nucleus) >= 3:
             nucleus_poly = MultiPoint(seg_nucleus[[x_col, y_col]].values).convex_hull
@@ -446,6 +594,8 @@ def _process_one_cell(args: tuple) -> Optional[dict]:
         "cell_num_vertices": cell_nv,
         "nucleus_vertices": nucleus_vertices,
         "nucleus_num_vertices": nucleus_nv,
+        "cell_from_input": cell_from_input,
+        "nucleus_from_input": nucleus_from_input,
         "cell_centroid_x": float(cell_centroid.x),
         "cell_centroid_y": float(cell_centroid.y),
         "nucleus_centroid_x": float(nucleus_centroid.x) if nucleus_centroid else 0.0,
@@ -473,6 +623,12 @@ def seg2explorer_pqdm(
     area_low: float = 10,
     area_high: float = 100,
     n_jobs: int = 1,
+    boundary_method: str = "delaunay",
+    boundaries: Optional["gpd.GeoDataFrame"] = None,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
     polygon_max_vertices: int = 13,
 ) -> None:
     """Parallelized version of seg2explorer using pqdm.
@@ -511,6 +667,18 @@ def seg2explorer_pqdm(
         Maximum cell area.
     n_jobs : int
         Number of parallel workers.
+    boundary_method : str
+        Boundary method: 'delaunay', 'convex_hull', or 'input'.
+    boundaries : Optional[gpd.GeoDataFrame]
+        Input boundaries (used when boundary_method='input').
+    boundary_id_column : str
+        Cell ID column in boundaries.
+    boundary_type_column : str
+        Boundary type column in boundaries.
+    boundary_cell_value : str
+        Value for cell boundaries in boundary_type_column.
+    boundary_nucleus_value : str
+        Value for nucleus boundaries in boundary_type_column.
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
     """
@@ -521,6 +689,22 @@ def seg2explorer_pqdm(
     source_path = Path(source_path)
     storage = Path(output_dir)
     storage.mkdir(parents=True, exist_ok=True)
+
+    if boundary_method == "skip":
+        raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+
+    cell_boundaries = {}
+    nucleus_boundaries = {}
+    if boundary_method == "input":
+        cell_boundaries, nucleus_boundaries = _prepare_input_boundaries(
+            boundaries,
+            boundary_id_column=boundary_id_column,
+            boundary_type_column=boundary_type_column,
+            boundary_cell_value=boundary_cell_value,
+            boundary_nucleus_value=boundary_nucleus_value,
+        )
+        if not cell_boundaries:
+            boundary_method = "delaunay"
 
     grouped_by = seg_df.groupby(cell_id_column)
 
@@ -537,6 +721,9 @@ def seg2explorer_pqdm(
             area_low,
             area_high,
             polygon_max_vertices,
+            boundary_method,
+            cell_boundaries,
+            nucleus_boundaries,
         )
         for seg_cell_id, seg_cell in grouped_by
     )
@@ -558,6 +745,8 @@ def seg2explorer_pqdm(
     cell_vertices: List[List[Any]] = []
     nucleus_vertices: List[List[Any]] = []
     cell_summary_rows: List[List[float]] = []
+    used_input_cell = False
+    used_input_nucleus = False
 
     kept = [r for r in results if r is not None]
     for cell_incremental_id, r in enumerate(kept):
@@ -568,6 +757,8 @@ def seg2explorer_pqdm(
         nucleus_num_vertices.append(r["nucleus_num_vertices"])
         cell_vertices.append(r["cell_vertices"])
         nucleus_vertices.append(r["nucleus_vertices"])
+        used_input_cell = used_input_cell or r.get("cell_from_input", False)
+        used_input_nucleus = used_input_nucleus or r.get("nucleus_from_input", False)
         cell_summary_rows.append([
             r["cell_centroid_x"],
             r["cell_centroid_y"],
@@ -623,10 +814,12 @@ def seg2explorer_pqdm(
         "Segger nucleus boundaries",
         "Segger cell boundaries",
     ]
-    attrs["segmentation_methods"] = [
-        "segger_nucleus_convex_hull",
-        "segger_cell_delaunay",
-    ]
+    if boundary_method == "input" and not used_input_cell:
+        cell_method = "segger_cell_delaunay"
+    else:
+        cell_method = f"segger_cell_{boundary_method}"
+    nucleus_method = "segger_nucleus_input" if used_input_nucleus else "segger_nucleus_convex_hull"
+    attrs["segmentation_methods"] = [nucleus_method, cell_method]
     attrs.setdefault("spatial_units", "microns")
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)

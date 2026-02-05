@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Delaunay boundary generation for SpatialData output with parallel workers.
 - `segger[spatialdata-io]` extra for platform-specific SpatialData readers.
 - `segger export` now supports `merged`, `spatialdata`, and `anndata` outputs from segmentation parquet.
+- Xenium export format renamed to `xenium_explorer` (with `xenium` as a deprecated alias).
+- Xenium export now honors `--boundary-method` (e.g., `convex_hull` vs `delaunay`).
 
 ### Changed
 - Prediction graph uses polygon `prediction_scale_factor` (expands/shrinks boundaries).

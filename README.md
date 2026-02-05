@@ -82,7 +82,7 @@ segger segment --help
 - Input: raw platform auto-detect (Xenium/CosMx/MERSCOPE) or SpatialData Zarr (`--input-format spatialdata`).
 - Output: `--output-format` supports `segger_raw`, `merged`, `spatialdata`, `anndata`, `all`.
 - SpatialData output: optional boundaries via `--boundary-method` (`input`, `convex_hull`, `delaunay`, `skip`) and SOPA-ready export (`--sopa-compatible`).
-- Export: `segger export` supports `xenium`, `merged`, `spatialdata`, and `anndata` from segmentation parquet.
+- Export: `segger export` supports `xenium_explorer`, `merged`, `spatialdata`, and `anndata` from segmentation parquet (boundary methods apply to Xenium too).
 - Extras: install platform readers with `segger[spatialdata-io]`, full SpatialData with `segger[spatialdata]`.
 
 ## CLI Parameters (New/Updated)
