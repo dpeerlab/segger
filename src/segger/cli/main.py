@@ -854,10 +854,14 @@ def export(
         validator=validators.Number(gt=3),
         group=group_export,
     )] = 13,
+    export_serial: Annotated[bool, Parameter(
+        help="Disable parallel processing for export (no pqdm). Useful for debugging errors.",
+        group=group_export,
+    )] = False,
 ):
     """Export segmentation results to multiple formats."""
     import polars as pl
-    from ..export import seg2explorer_pqdm
+    from ..export import seg2explorer, seg2explorer_pqdm
     from ..export.merged_writer import merge_predictions_with_transcripts
 
     # Load segmentation data
@@ -950,21 +954,37 @@ def export(
 
         print(f"Exporting to Xenium Explorer format in {output_dir}...")
         effective_n_jobs = n_jobs or max(num_workers, 1)
-        seg2explorer_pqdm(
-            seg_df=seg_df,
-            source_path=source_path,
-            output_dir=output_dir,
-            cell_id_column=effective_cell_id_column,
-            x_column=x_column,
-            y_column=y_column,
-            area_low=area_low,
-            area_high=area_high,
-            n_jobs=effective_n_jobs,
-            polygon_max_vertices=polygon_max_vertices,
-            boundary_method=boundary_method,
-            boundary_voxel_size=boundary_voxel_size,
-            boundaries=bd,
-        )
+        if export_serial or effective_n_jobs <= 1:
+            seg2explorer(
+                seg_df=seg_df,
+                source_path=source_path,
+                output_dir=output_dir,
+                cell_id_column=effective_cell_id_column,
+                x_column=x_column,
+                y_column=y_column,
+                area_low=area_low,
+                area_high=area_high,
+                polygon_max_vertices=polygon_max_vertices,
+                boundary_method=boundary_method,
+                boundary_voxel_size=boundary_voxel_size,
+                boundaries=bd,
+            )
+        else:
+            seg2explorer_pqdm(
+                seg_df=seg_df,
+                source_path=source_path,
+                output_dir=output_dir,
+                cell_id_column=effective_cell_id_column,
+                x_column=x_column,
+                y_column=y_column,
+                area_low=area_low,
+                area_high=area_high,
+                n_jobs=effective_n_jobs,
+                polygon_max_vertices=polygon_max_vertices,
+                boundary_method=boundary_method,
+                boundary_voxel_size=boundary_voxel_size,
+                boundaries=bd,
+            )
         print("Export complete!")
         return
 
