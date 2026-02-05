@@ -732,7 +732,8 @@ def export(
         group=group_io,
     )],
     source_path: Annotated[Path, Parameter(
-        help="Path to original Xenium experiment directory (contains experiment.xenium).",
+        help="Path to input data (raw platform directory or SpatialData .zarr). "
+             "For Xenium export, this should be the original experiment directory.",
         alias="-i",
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
@@ -742,14 +743,58 @@ def export(
         alias="-o",
         group=group_io,
     )],
-    format: Annotated[Literal["xenium"], Parameter(
-        help="Export format (currently Xenium Explorer).",
+    format: Annotated[Literal["xenium", "merged", "spatialdata", "anndata"], Parameter(
+        help="Export format. "
+             "'xenium' writes Xenium Explorer output. "
+             "'merged' joins segmentation with transcripts. "
+             "'spatialdata' writes SpatialData Zarr. "
+             "'anndata' writes a cell x gene matrix.",
         group=group_export,
     )] = "xenium",
+    input_format: Annotated[
+        Literal["auto", "raw", "spatialdata"],
+        Parameter(
+            help="Input data format for resolving transcripts when needed. "
+                 "'auto' detects .zarr as SpatialData, else raw platform.",
+            group=group_format,
+        )
+    ] = "auto",
+    spatialdata_points_key: Annotated[str | None, Parameter(
+        help="Key in sdata.points for transcripts when using SpatialData input. "
+             "Auto-detected if None.",
+        group=group_format,
+    )] = None,
+    spatialdata_shapes_key: Annotated[str | None, Parameter(
+        help="Key in sdata.shapes for boundaries when using SpatialData input. "
+             "Auto-detected if None.",
+        group=group_format,
+    )] = None,
+    sopa_compatible: Annotated[bool, Parameter(
+        help="Ensure output follows SOPA conventions (SpatialData export only).",
+        group=group_format,
+    )] = False,
+    boundary_method: Annotated[
+        Literal["input", "convex_hull", "delaunay", "skip"],
+        Parameter(
+            help="How to generate cell boundaries for SpatialData export. "
+                 "'input' uses input boundaries if available. "
+                 "'convex_hull' generates convex hull per cell. "
+                 "'delaunay' uses Delaunay-based boundary extraction. "
+                 "'skip' omits shapes from output.",
+            group=group_format,
+        )
+    ] = "input",
+    boundary_n_jobs: Annotated[int, Parameter(
+        help="Parallel workers for Delaunay boundary generation (threads). "
+             "Only used with --boundary-method=delaunay. "
+             "Set to 0 to use --num-workers.",
+        validator=validators.Number(gte=0),
+        group=group_format,
+    )] = 0,
     cell_id_column: Annotated[str, Parameter(
         help="Column name for cell IDs in segmentation data.",
         group=group_export,
-    )] = "seg_cell_id",
+    )] = "segger_cell_id",
     x_column: Annotated[str, Parameter(
         help="Column name for x coordinates.",
         group=group_export,
@@ -787,32 +832,151 @@ def export(
         group=group_export,
     )] = 13,
 ):
-    """Export segmentation results to Xenium Explorer format."""
-    import pandas as pd
+    """Export segmentation results to multiple formats."""
+    import polars as pl
     from ..export import seg2explorer_pqdm
+    from ..export.merged_writer import merge_predictions_with_transcripts
 
     # Load segmentation data
     print(f"Loading segmentation data from {segmentation_path}...")
     if segmentation_path.suffix == ".parquet":
-        seg_df = pd.read_parquet(segmentation_path)
+        seg_df = pl.read_parquet(segmentation_path)
     elif segmentation_path.suffix == ".csv":
-        seg_df = pd.read_csv(segmentation_path)
+        seg_df = pl.read_csv(segmentation_path)
     else:
         raise ValueError(f"Unsupported file format: {segmentation_path.suffix}")
 
-    # Export to Xenium format
-    print(f"Exporting to Xenium Explorer format in {output_dir}...")
-    effective_n_jobs = n_jobs or max(num_workers, 1)
-    seg2explorer_pqdm(
-        seg_df=seg_df,
-        source_path=source_path,
-        output_dir=output_dir,
-        cell_id_column=cell_id_column,
-        x_column=x_column,
-        y_column=y_column,
-        area_low=area_low,
-        area_high=area_high,
-        n_jobs=effective_n_jobs,
-        polygon_max_vertices=polygon_max_vertices,
-    )
-    print("Export complete!")
+    if format != "xenium" and cell_id_column != "segger_cell_id" and cell_id_column in seg_df.columns:
+        seg_df = seg_df.rename({cell_id_column: "segger_cell_id"})
+
+    def _resolve_transcripts():
+        from ..io.spatialdata_loader import is_spatialdata_path, load_from_spatialdata
+        from ..io.preprocessor import get_preprocessor
+
+        resolved_format = input_format
+        if resolved_format == "auto":
+            resolved_format = "spatialdata" if is_spatialdata_path(source_path) else "raw"
+
+        if resolved_format == "spatialdata":
+            tx, bd = load_from_spatialdata(
+                source_path,
+                points_key=spatialdata_points_key,
+                shapes_key=spatialdata_shapes_key,
+            )
+            return tx, bd
+
+        pp = get_preprocessor(
+            source_path,
+            min_qv=None,
+            include_z=True,
+        )
+        tx = pp.transcripts
+        try:
+            bd = pp.boundaries
+        except NotImplementedError:
+            print(
+                "Warning: boundaries not available for this input. "
+                "SpatialData export may need generated boundaries."
+            )
+            bd = None
+        return tx, bd
+
+    if format == "xenium":
+        # Ensure coordinates are present; merge with transcripts if needed
+        if x_column not in seg_df.columns or y_column not in seg_df.columns:
+            tx, _ = _resolve_transcripts()
+            seg_df = merge_predictions_with_transcripts(
+                predictions=seg_df,
+                transcripts=tx,
+                cell_id_column=cell_id_column,
+            )
+
+        print(f"Exporting to Xenium Explorer format in {output_dir}...")
+        effective_n_jobs = n_jobs or max(num_workers, 1)
+        seg2explorer_pqdm(
+            seg_df=seg_df,
+            source_path=source_path,
+            output_dir=output_dir,
+            cell_id_column=cell_id_column,
+            x_column=x_column,
+            y_column=y_column,
+            area_low=area_low,
+            area_high=area_high,
+            n_jobs=effective_n_jobs,
+            polygon_max_vertices=polygon_max_vertices,
+        )
+        print("Export complete!")
+        return
+
+    tx, bd = _resolve_transcripts()
+
+    if format == "merged":
+        from ..export import MergedTranscriptsWriter
+
+        print("Writing merged transcripts format...")
+        writer = MergedTranscriptsWriter()
+        output_path = writer.write(
+            predictions=seg_df,
+            output_dir=output_dir,
+            transcripts=tx,
+            output_name="transcripts_segmented.parquet",
+        )
+        print(f"  Written to: {output_path}")
+        return
+
+    if format == "anndata":
+        from ..export import AnnDataWriter
+
+        print("Writing AnnData format...")
+        writer = AnnDataWriter()
+        output_path = writer.write(
+            predictions=seg_df,
+            output_dir=output_dir,
+            transcripts=tx,
+            output_name="segger_segmentation.h5ad",
+        )
+        print(f"  Written to: {output_path}")
+        return
+
+    if format == "spatialdata":
+        try:
+            from ..export import SpatialDataWriter, validate_sopa_compatibility, export_for_sopa
+            import spatialdata
+
+            print("Writing SpatialData format...")
+            effective_boundary_n_jobs = boundary_n_jobs or max(num_workers, 1)
+            writer = SpatialDataWriter(
+                include_boundaries=(boundary_method != "skip"),
+                boundary_method=boundary_method,
+                boundary_n_jobs=effective_boundary_n_jobs,
+            )
+            output_path = writer.write(
+                predictions=seg_df,
+                output_dir=output_dir,
+                transcripts=tx,
+                boundaries=bd,
+                output_name="segmentation.zarr",
+            )
+            print(f"  Written to: {output_path}")
+
+            if sopa_compatible:
+                sdata = spatialdata.read_zarr(output_path)
+                issues = validate_sopa_compatibility(sdata)
+                if issues:
+                    print("  SOPA compatibility issues found:")
+                    for issue in issues:
+                        print(f"    - {issue}")
+                    print("  Attempting to fix...")
+                    sopa_path = output_dir / "segmentation_sopa.zarr"
+                    export_for_sopa(sdata, sopa_path, overwrite=True)
+                    print(f"  SOPA-compatible output: {sopa_path}")
+                else:
+                    print("  Output is SOPA-compatible.")
+        except ImportError:
+            print(
+                "Warning: spatialdata not installed. "
+                "Install with: pip install segger[spatialdata]"
+            )
+        return
+
+    raise ValueError(f"Unsupported export format: {format}")
