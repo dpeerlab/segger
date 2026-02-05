@@ -59,7 +59,7 @@ group_loss = Group(
 )
 group_format = Group(
     name="Input/Output Format",
-    help="Related to input/output formats including SpatialData and SOPA compatibility.",
+    help="Related to input/output formats (SpatialData, AnnData) and SOPA compatibility.",
     sort_key=1,
 )
 group_quality = Group(
@@ -376,8 +376,8 @@ def segment(
     input_format: Annotated[
         Literal["auto", "raw", "spatialdata"],
         Parameter(
-            help="Input data format. 'auto' detects .zarr as spatialdata, else raw platform. "
-                 "'raw' forces raw technology format. 'spatialdata' forces SpatialData Zarr.",
+            help="Input data format. 'auto' detects .zarr as SpatialData, else raw platform. "
+                 "'raw' forces platform-specific raw input. 'spatialdata' forces SpatialData Zarr.",
             group=group_format,
         )
     ] = "auto",
@@ -400,7 +400,7 @@ def segment(
             help="Output format for segmentation results. "
                  "'segger_raw' is the default predictions parquet. "
                  "'merged' joins predictions with original transcripts. "
-                 "'spatialdata' creates a SpatialData Zarr store. "
+                 "'spatialdata' creates a SpatialData Zarr store (requires segger[spatialdata]). "
                  "'anndata' creates an .h5ad AnnData table. "
                  "'all' writes all available formats.",
             group=group_format,
@@ -427,6 +427,7 @@ def segment(
 
     boundary_n_jobs: Annotated[int, Parameter(
         help="Parallel workers for Delaunay boundary generation (threads). "
+             "Only used with --boundary-method=delaunay. "
              "Set to 0 to use --num-workers.",
         validator=validators.Number(gte=0),
         group=group_format,
@@ -608,7 +609,7 @@ def _write_additional_formats(
     output_directory
         Output directory containing predictions.parquet.
     output_format
-        Output format ('merged', 'spatialdata', or 'all').
+        Output format ('merged', 'spatialdata', 'anndata', or 'all').
     datamodule
         ISTDataModule with transcript data.
     sopa_compatible
@@ -616,7 +617,7 @@ def _write_additional_formats(
     boundary_method
         Boundary generation method for SpatialData output.
     boundary_n_jobs
-        Parallel workers for Delaunay boundary generation.
+        Parallel workers for Delaunay boundary generation (0 uses --num-workers).
     """
     import polars as pl
     from pathlib import Path
@@ -723,12 +724,12 @@ group_export = Group(
 @app.command
 def export(
     segmentation_path: Annotated[Path, Parameter(
-        help="Path to segmentation result parquet file.",
+        help="Path to segmentation result (.parquet or .csv) file.",
         alias="-s",
         group=group_io,
     )],
     source_path: Annotated[Path, Parameter(
-        help="Path to original Xenium data directory.",
+        help="Path to original Xenium experiment directory (contains experiment.xenium).",
         alias="-i",
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
@@ -739,7 +740,7 @@ def export(
         group=group_io,
     )],
     format: Annotated[Literal["xenium"], Parameter(
-        help="Export format.",
+        help="Export format (currently Xenium Explorer).",
         group=group_export,
     )] = "xenium",
     cell_id_column: Annotated[str, Parameter(
@@ -765,17 +766,20 @@ def export(
         group=group_export,
     )] = 100.0,
     num_workers: Annotated[int, Parameter(
-        help="Number of parallel workers. Set to 0 to use a single worker.",
+        help="Number of parallel workers for polygon generation. "
+             "Set to 0 to use a single worker.",
         validator=validators.Number(gte=0),
         group=group_export,
     )] = 1,
     n_jobs: Annotated[int, Parameter(
-        help="Deprecated. Use --num-workers. Set to 0 to use --num-workers.",
+        help="Deprecated. Use --num-workers. If set, overrides --num-workers. "
+             "Set to 0 to use --num-workers.",
         validator=validators.Number(gte=0),
         group=group_export,
     )] = 0,
     polygon_max_vertices: Annotated[int, Parameter(
-        help="Maximum number of vertices per polygon (including closure).",
+        help="Maximum number of vertices per polygon (including closure). "
+             "Xenium Explorer expects <= 13.",
         validator=validators.Number(gt=3),
         group=group_export,
     )] = 13,

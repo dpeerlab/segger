@@ -76,6 +76,10 @@ segger segment --help
 
 ## CLI Parameters (New/Updated)
 
+- `--input-format` (`auto` | `raw` | `spatialdata`) and `--output-format` (`segger_raw` | `merged` | `spatialdata` | `anndata` | `all`).
+- `--boundary-method` (`input` | `convex_hull` | `delaunay` | `skip`) and `--boundary-n-jobs` (0 uses `--num-workers`).
+- `--sopa-compatible` for SOPA-ready SpatialData output.
+- `--num-workers` for data loading (and as the default for boundary generation).
 - `--prediction-scale-factor`: polygon scaling for tx→bd candidate edges (default 1.2).
 - `--min-similarity`: fixed similarity threshold; if unset, per-gene auto-thresholding.
 - `--fragment-mode`, `--fragment-min-transcripts`, `--fragment-similarity-threshold`.
