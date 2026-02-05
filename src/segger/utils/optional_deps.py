@@ -26,6 +26,7 @@ Decorator for functions requiring optional deps:
 from __future__ import annotations
 
 import functools
+import importlib
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
@@ -93,6 +94,9 @@ spatialdata-io is not installed. This package is required for reading platform-s
 SpatialData formats (Xenium, MERSCOPE, CosMX).
 
 To install spatialdata-io support:
+    pip install segger[spatialdata-io]
+
+For full SpatialData support:
     pip install segger[spatialdata]
 
 Or install spatialdata-io directly:
@@ -110,6 +114,12 @@ Or install sopa directly:
 
 For all SpatialData features including SOPA:
     pip install segger[spatialdata-all]
+"""
+
+RAPIDS_INSTALL_MSG = """
+RAPIDS GPU packages are not installed. Segger requires CuPy/cuDF/cuML/cuGraph/cuSpatial and a CUDA-enabled GPU.
+
+See docs/INSTALLATION.md for RAPIDS/CUDA setup.
 """
 
 
@@ -275,7 +285,7 @@ def warn_spatialdata_io_unavailable(feature: str = "Platform-specific SpatialDat
     """
     warnings.warn(
         f"{feature} requires spatialdata-io. "
-        "Install with: pip install segger[spatialdata]",
+        "Install with: pip install segger[spatialdata-io]",
         UserWarning,
         stacklevel=2,
     )
@@ -295,6 +305,53 @@ def warn_sopa_unavailable(feature: str = "SOPA compatibility") -> None:
         UserWarning,
         stacklevel=2,
     )
+
+
+def _import_optional_packages(packages: list[str]) -> tuple[dict[str, "types.ModuleType"], list[str]]:
+    """Import optional packages and return (modules, missing)."""
+    modules: dict[str, "types.ModuleType"] = {}
+    missing: list[str] = []
+    for package in packages:
+        try:
+            modules[package] = importlib.import_module(package)
+        except Exception:
+            missing.append(package)
+    return modules, missing
+
+
+def require_rapids(
+    packages: list[str] | None = None,
+    feature: str = "Segger",
+) -> dict[str, "types.ModuleType"]:
+    """Import RAPIDS-related packages or raise with installation instructions."""
+    package_list = packages or ["cupy", "cudf", "cuml", "cugraph", "cuspatial"]
+    modules, missing = _import_optional_packages(package_list)
+    if missing:
+        missing_list = ", ".join(missing)
+        raise ImportError(
+            f"{feature} requires RAPIDS GPU packages: {missing_list}. "
+            + RAPIDS_INSTALL_MSG.strip()
+        )
+    return modules
+
+
+def warn_rapids_unavailable(
+    feature: str = "Segger",
+    packages: list[str] | None = None,
+) -> bool:
+    """Warn if RAPIDS-related packages are unavailable. Returns True if present."""
+    package_list = packages or ["cupy", "cudf", "cuml", "cugraph", "cuspatial"]
+    _, missing = _import_optional_packages(package_list)
+    if not missing:
+        return True
+    missing_list = ", ".join(missing)
+    warnings.warn(
+        f"{feature} requires RAPIDS GPU packages ({missing_list}). "
+        + RAPIDS_INSTALL_MSG.strip(),
+        UserWarning,
+        stacklevel=2,
+    )
+    return False
 
 
 # -----------------------------------------------------------------------------

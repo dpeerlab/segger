@@ -456,6 +456,9 @@ def segment(
     ] = "auto",
 ):
     """Run cell segmentation on spatial transcriptomics data."""
+    from ..utils.optional_deps import require_rapids
+
+    require_rapids(feature="Segger segmentation")
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False

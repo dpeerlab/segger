@@ -4,6 +4,8 @@
 
 Before installing **segger**, please install GPU-accelerated versions of PyTorch, RAPIDS, and related packages compatible with your system. *Please ensure all CUDA-enabled packages are compiled for the same CUDA version.*
 
+- Segger is GPU-only and requires the RAPIDS stack (no CPU-only mode).
+
 - **PyTorch & torchvision:** [Installation guide](https://pytorch.org/get-started/locally/)
 - **torch_scatter:** [Installation guide](https://github.com/rusty1s/pytorch_scatter#installation)
 - **RAPIDS (cuDF, cuML, cuGraph):** [Installation guide](https://docs.rapids.ai/install)
@@ -59,6 +61,7 @@ from segger.io.preprocessor import get_preprocessor
 Common optional dependencies:
 - `opencv-python` (preprocessors)
 - `spatialdata` + `dask` (SpatialData loader/writer)
+- `spatialdata-io` (platform-specific SpatialData readers)
 - `sopa` (SOPA export helpers)
 - `geopandas`/`shapely` (geometry utilities)
 

@@ -28,14 +28,19 @@ import gc
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from ...geometry import points_in_polygons
+from ...utils.optional_deps import require_rapids
 
 
 def _lazy_imports():
     global cp, cugraph, cuml, cudf
-    import cupy as cp
-    import cugraph
-    import cuml
-    import cudf
+    modules = require_rapids(
+        packages=["cupy", "cugraph", "cuml", "cudf"],
+        feature="phenograph_rapids",
+    )
+    cp = modules["cupy"]
+    cugraph = modules["cugraph"]
+    cuml = modules["cuml"]
+    cudf = modules["cudf"]
 
 
 def phenograph_rapids(

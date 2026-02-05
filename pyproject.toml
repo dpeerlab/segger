@@ -46,6 +46,11 @@ spatialdata = [
     "spatialdata-io>=0.1.0",
 ]
 
+# SpatialData-IO only (platform-specific readers/writers)
+spatialdata-io = [
+    "spatialdata-io>=0.1.0",
+]
+
 # SOPA compatibility for segmentation workflows
 sopa = [
     "sopa>=1.0.0",

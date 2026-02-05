@@ -35,7 +35,9 @@ import polars as pl
 
 from segger.utils.optional_deps import (
     SPATIALDATA_AVAILABLE,
+    SPATIALDATA_IO_AVAILABLE,
     require_spatialdata,
+    warn_spatialdata_io_unavailable,
 )
 from segger.io.fields import StandardTranscriptFields, StandardBoundaryFields
 
@@ -121,6 +123,10 @@ class SpatialDataLoader:
         coordinate_system: str = "global",
     ):
         require_spatialdata()
+        if not SPATIALDATA_IO_AVAILABLE:
+            warn_spatialdata_io_unavailable(
+                "Platform-specific SpatialData readers (Xenium/MERSCOPE/CosMx)"
+            )
 
         self._path = Path(path)
         self._points_key = points_key

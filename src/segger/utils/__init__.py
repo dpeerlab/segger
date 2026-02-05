@@ -17,6 +17,9 @@ from segger.utils.optional_deps import (
     warn_spatialdata_unavailable,
     warn_spatialdata_io_unavailable,
     warn_sopa_unavailable,
+    warn_rapids_unavailable,
+    # RAPIDS helpers
+    require_rapids,
     # Version utilities
     get_spatialdata_version,
     get_sopa_version,
@@ -40,6 +43,8 @@ __all__ = [
     "warn_spatialdata_unavailable",
     "warn_spatialdata_io_unavailable",
     "warn_sopa_unavailable",
+    "warn_rapids_unavailable",
+    "require_rapids",
     # Version utilities
     "get_spatialdata_version",
     "get_sopa_version",

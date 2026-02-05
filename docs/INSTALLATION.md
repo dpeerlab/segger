@@ -2,6 +2,8 @@
 
 This project relies on GPU-accelerated packages (PyTorch, RAPIDS, cuSpatial). A clean, consistent environment avoids most runtime errors.
 
+- Segger is GPU-only and requires the RAPIDS stack (no CPU-only mode).
+
 ## Clean Install Checklist
 
 - Use a fresh env; avoid mixing pip/conda for RAPIDS packages.
@@ -36,6 +38,7 @@ Segger defers imports for several heavy or optional features, so `import segger`
 
 - Preprocessors: `opencv-python`
 - SpatialData loader/writer: `spatialdata`, `dask`, `zarr` (and `geopandas` for shapes)
+- SpatialData platform readers: `spatialdata-io` (install with `segger[spatialdata-io]`)
 - SOPA helpers: `sopa`
 - Geometry utilities: `geopandas`, `shapely`
 - scRNA utilities: `scanpy`, `scikit-learn`
