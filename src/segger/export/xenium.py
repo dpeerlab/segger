@@ -284,7 +284,6 @@ def seg2explorer(
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
     """
-    import time
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
         seg_df = seg_df.to_pandas()
@@ -327,7 +326,6 @@ def seg2explorer(
     used_input_nucleus = False
 
     grouped_by = seg_df.groupby(cell_id_column)
-    t0 = time.perf_counter()
 
     for cell_incremental_id, (seg_cell_id, seg_cell) in tqdm(
         enumerate(grouped_by), total=len(grouped_by), desc="Processing cells"
@@ -408,14 +406,12 @@ def seg2explorer(
         raise ValueError("No valid cells found in segmentation data.")
 
     n_cells = len(cell_id)
-    print(f"Collated {n_cells} cells. Preparing Zarr arrays...")
     cell_vertices_arr = np.array(cell_vertices, dtype=np.float32)
     nucleus_vertices_arr = np.array(nucleus_vertices, dtype=np.float32)
     cell_vertices_flat = cell_vertices_arr.reshape(n_cells, -1)
     nucleus_vertices_flat = nucleus_vertices_arr.reshape(n_cells, -1)
 
     # Open source store and create new store
-    print("Writing cells.zarr.zip (this can take a while on network filesystems)...")
     source_zarr_store = ZipStore(source_path / "cells.zarr.zip", mode="r")
     existing_store = zarr.open(source_zarr_store, mode="r")
     new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
@@ -467,7 +463,6 @@ def seg2explorer(
     source_zarr_store.close()
 
     # Create analysis data
-    print("Writing analysis zarr...")
     if analysis_df is None:
         analysis_df = pd.DataFrame(
             [cell_id2old_id[i] for i in cell_id], columns=[cell_id_column]
@@ -516,7 +511,6 @@ def seg2explorer(
         cells_name=cells_filename,
         analysis_name=analysis_filename,
     )
-    print(f"Xenium export complete in {time.perf_counter() - t0:.1f}s.")
 
 
 def _process_one_cell(args: tuple) -> Optional[dict]:
@@ -688,7 +682,6 @@ def seg2explorer_pqdm(
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
     """
-    import time
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
         seg_df = seg_df.to_pandas()
@@ -714,7 +707,6 @@ def seg2explorer_pqdm(
             boundary_method = "delaunay"
 
     grouped_by = seg_df.groupby(cell_id_column)
-    t0 = time.perf_counter()
 
     # Build work items
     work_iter = (
@@ -746,7 +738,6 @@ def seg2explorer_pqdm(
     )
 
     # Collate results
-    print("Collating results...")
     cell_id2old_id: Dict[int, Any] = {}
     cell_id: List[int] = []
     cell_num_vertices: List[int] = []
@@ -783,14 +774,12 @@ def seg2explorer_pqdm(
         raise ValueError("No valid cells found in segmentation data.")
 
     n_cells = len(cell_id)
-    print(f"Collated {n_cells} cells. Preparing Zarr arrays...")
     cell_vertices_arr = np.array(cell_vertices, dtype=np.float32)
     nucleus_vertices_arr = np.array(nucleus_vertices, dtype=np.float32)
     cell_vertices_flat = cell_vertices_arr.reshape(n_cells, -1)
     nucleus_vertices_flat = nucleus_vertices_arr.reshape(n_cells, -1)
 
     # Open source and create new store
-    print("Writing cells.zarr.zip (this can take a while on network filesystems)...")
     source_zarr_store = ZipStore(source_path / "cells.zarr.zip", mode="r")
     existing_store = zarr.open(source_zarr_store, mode="r")
     new_store = zarr.open(storage / f"{cells_filename}.zarr.zip", mode="w")
@@ -839,7 +828,6 @@ def seg2explorer_pqdm(
     source_zarr_store.close()
 
     # Create analysis data
-    print("Writing analysis zarr...")
     if analysis_df is None:
         analysis_df = pd.DataFrame(
             [cell_id2old_id[i] for i in cell_id], columns=[cell_id_column]
@@ -888,4 +876,3 @@ def seg2explorer_pqdm(
         cells_name=cells_filename,
         analysis_name=analysis_filename,
     )
-    print(f"Xenium export complete in {time.perf_counter() - t0:.1f}s.")
