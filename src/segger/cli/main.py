@@ -72,6 +72,11 @@ group_3d = Group(
     help="Related to 3D coordinate handling.",
     sort_key=9,
 )
+group_training = Group(
+    name="Training",
+    help="Related to training configuration (logging, checkpoints, precision).",
+    sort_key=10,
+)
 
 @app.command
 def segment(
@@ -462,6 +467,58 @@ def segment(
             group=group_3d,
         )
     ] = "auto",
+
+    # Training configuration
+    lr_scheduler: Annotated[
+        Literal["none", "cosine", "onecycle"],
+        Parameter(
+            help="Learning rate scheduler. 'none' uses constant LR, "
+                 "'cosine' uses CosineAnnealingWarmRestarts, "
+                 "'onecycle' uses OneCycleLR.",
+            group=group_training,
+        )
+    ] = "none",
+
+    precision: Annotated[
+        Literal["32", "16-mixed", "bf16-mixed"],
+        Parameter(
+            help="Training precision. '32' for full precision, "
+                 "'16-mixed' for float16 mixed precision, "
+                 "'bf16-mixed' for bfloat16 mixed precision.",
+            group=group_training,
+        )
+    ] = "32",
+
+    wandb: Annotated[bool, Parameter(
+        help="Enable Weights & Biases logging.",
+        group=group_training,
+    )] = False,
+
+    wandb_project: Annotated[str, Parameter(
+        help="Weights & Biases project name.",
+        group=group_training,
+    )] = "segger",
+
+    wandb_name: Annotated[str | None, Parameter(
+        help="Weights & Biases run name. Auto-generated if not specified.",
+        group=group_training,
+    )] = None,
+
+    save_checkpoints: Annotated[bool, Parameter(
+        help="Save model checkpoints during training.",
+        group=group_training,
+    )] = True,
+
+    checkpoint_monitor: Annotated[str, Parameter(
+        help="Metric to monitor for checkpoint saving.",
+        group=group_training,
+    )] = "val:loss_sg",
+
+    checkpoint_save_top_k: Annotated[int, Parameter(
+        help="Number of best checkpoints to keep.",
+        validator=validators.Number(gte=0),
+        group=group_training,
+    )] = 3,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
     from ..utils.optional_deps import require_rapids
@@ -542,6 +599,7 @@ def segment(
         hidden_channels=hidden_channels,
         out_channels=out_channels,
         learning_rate=learning_rate,
+        lr_scheduler=lr_scheduler,
         sg_loss_type=segmentation_loss,
         tx_margin=transcripts_margin,
         sg_margin=segmentation_margin,
@@ -561,9 +619,26 @@ def segment(
 
     # Setup Lightning Trainer
     from lightning.pytorch.loggers import CSVLogger
+    from lightning.pytorch.callbacks import ModelCheckpoint
     from ..data import ISTSegmentationWriter
     from lightning.pytorch import Trainer
-    logger = CSVLogger(output_directory)
+
+    # Setup logger(s)
+    loggers = [CSVLogger(output_directory)]
+    if wandb:
+        try:
+            from lightning.pytorch.loggers import WandbLogger
+            wandb_logger = WandbLogger(
+                project=wandb_project,
+                name=wandb_name,
+                save_dir=output_directory,
+            )
+            loggers.append(wandb_logger)
+        except ImportError:
+            pass  # wandb not available, skip
+
+    # Setup callbacks
+    callbacks = []
     writer = ISTSegmentationWriter(
         output_directory,
         min_similarity=min_similarity,
@@ -571,12 +646,26 @@ def segment(
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,
     )
+    callbacks.append(writer)
+
+    if save_checkpoints:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=output_directory / "checkpoints",
+            filename="best-{epoch:02d}-{" + checkpoint_monitor.replace(":", "_") + ":.4f}",
+            monitor=checkpoint_monitor,
+            mode="min",
+            save_top_k=checkpoint_save_top_k,
+            save_last=True,
+        )
+        callbacks.append(checkpoint_callback)
+
     trainer = Trainer(
-        logger=logger,
+        logger=loggers,
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
-        callbacks=[writer],
+        callbacks=callbacks,
         log_every_n_steps=1,
+        precision=precision,
     )
 
     # Training
@@ -645,8 +734,9 @@ def _write_additional_formats(
         if parquet_files:
             predictions_path = parquet_files[0]
         else:
-            print(f"Warning: Could not find predictions file in {output_directory}")
-            return
+            raise FileNotFoundError(
+                f"Could not find predictions file in {output_directory}"
+            )
 
     predictions = pl.read_parquet(predictions_path)
     transcripts = datamodule.tx
@@ -954,36 +1044,43 @@ def export(
 
         print(f"Exporting to Xenium Explorer format in {output_dir}...")
         effective_n_jobs = n_jobs or max(num_workers, 1)
+        if isinstance(seg_df, pl.DataFrame):
+            seg_df = seg_df.to_pandas()
+
+        # Match legacy xenium_explorer expectations
+        if x_column in seg_df.columns and "x_location" not in seg_df.columns:
+            seg_df = seg_df.rename(columns={x_column: "x_location"})
+        if y_column in seg_df.columns and "y_location" not in seg_df.columns:
+            seg_df = seg_df.rename(columns={y_column: "y_location"})
+        if "z_location" not in seg_df.columns:
+            if "z" in seg_df.columns:
+                seg_df["z_location"] = seg_df["z"]
+            else:
+                seg_df["z_location"] = 0.0
+        if "overlaps_nucleus" not in seg_df.columns:
+            if "cell_compartment" in seg_df.columns:
+                seg_df["overlaps_nucleus"] = (seg_df["cell_compartment"] == 2).astype(int)
+            else:
+                seg_df["overlaps_nucleus"] = 0
+
         if export_serial or effective_n_jobs <= 1:
             seg2explorer(
                 seg_df=seg_df,
                 source_path=source_path,
                 output_dir=output_dir,
-                cell_id_column=effective_cell_id_column,
-                x_column=x_column,
-                y_column=y_column,
+                cell_id_columns=effective_cell_id_column,
                 area_low=area_low,
                 area_high=area_high,
-                polygon_max_vertices=polygon_max_vertices,
-                boundary_method=boundary_method,
-                boundary_voxel_size=boundary_voxel_size,
-                boundaries=bd,
             )
         else:
             seg2explorer_pqdm(
                 seg_df=seg_df,
                 source_path=source_path,
                 output_dir=output_dir,
-                cell_id_column=effective_cell_id_column,
-                x_column=x_column,
-                y_column=y_column,
+                cell_id_columns=effective_cell_id_column,
                 area_low=area_low,
                 area_high=area_high,
                 n_jobs=effective_n_jobs,
-                polygon_max_vertices=polygon_max_vertices,
-                boundary_method=boundary_method,
-                boundary_voxel_size=boundary_voxel_size,
-                boundaries=bd,
             )
         print("Export complete!")
         return
@@ -1061,3 +1158,216 @@ def export(
         return
 
     raise ValueError(f"Unsupported export format: {format}")
+
+
+# HPO parameter group
+group_hpo = Group(
+    name="HPO",
+    help="Related to hyperparameter optimization.",
+    sort_key=11,
+)
+
+
+@app.command
+def hpo(
+    # I/O
+    input_directory: Annotated[Path, Parameter(
+        help="Directory containing input data for training.",
+        alias="-i",
+        group=group_io,
+        validator=validators.Path(exists=True, dir_okay=True),
+    )],
+
+    output_directory: Annotated[Path, Parameter(
+        help="Directory for HPO output files (trials, results, checkpoints).",
+        alias="-o",
+        group=group_io,
+    )],
+
+    # HPO parameters
+    n_trials: Annotated[int, Parameter(
+        help="Number of HPO trials to run.",
+        validator=validators.Number(gt=0),
+        group=group_hpo,
+    )] = 100,
+
+    n_epochs: Annotated[int, Parameter(
+        help="Number of training epochs per trial.",
+        validator=validators.Number(gt=0),
+        group=group_hpo,
+    )] = 5,
+
+    n_jobs: Annotated[int, Parameter(
+        help="Number of parallel trials. Set to 1 for sequential execution.",
+        validator=validators.Number(gt=0),
+        group=group_hpo,
+    )] = 1,
+
+    sampler: Annotated[
+        Literal["tpe", "nsga3", "random", "cmaes"],
+        Parameter(
+            help="Optuna sampler type. 'tpe' for single-objective, "
+                 "'nsga3' for multi-objective (auto-selected if n_objectives > 1).",
+            group=group_hpo,
+        )
+    ] = "tpe",
+
+    pruner: Annotated[
+        Literal["hyperband", "median", "none"],
+        Parameter(
+            help="Optuna pruner for early stopping. 'hyperband' (default, best for TPE) "
+                 "uses successive halving, 'median' prunes trials worse than median.",
+            group=group_hpo,
+        )
+    ] = "hyperband",
+
+    n_objectives: Annotated[int, Parameter(
+        help="Number of objectives. 1 for single-objective (scalarized), "
+             "5 for multi-objective (sensitivity, specificity, morphological, "
+             "clustering, vertical).",
+        validator=validators.Number(gte=1, lte=5),
+        group=group_hpo,
+    )] = 1,
+
+    scalarize: Annotated[bool, Parameter(
+        help="Force single-objective optimization with weighted scalarization.",
+        group=group_hpo,
+    )] = False,
+
+    weights: Annotated[str | None, Parameter(
+        help="Comma-separated weights for scalarization. "
+             "Format: sensitivity,specificity,morphological,clustering,vertical. "
+             "Example: '0.2,0.35,0.2,0.15,0.1'.",
+        group=group_hpo,
+    )] = None,
+
+    quick: Annotated[bool, Parameter(
+        help="Use reduced search space for faster HPO.",
+        group=group_hpo,
+    )] = False,
+
+    # Reference data
+    reference_path: Annotated[Path | None, Parameter(
+        help="Path to scRNA-seq reference h5ad file for metric computation.",
+        group=group_hpo,
+    )] = None,
+
+    # Training configuration
+    precision: Annotated[
+        Literal["32", "16-mixed", "bf16-mixed"],
+        Parameter(
+            help="Training precision per trial.",
+            group=group_training,
+        )
+    ] = "16-mixed",
+
+    # Study persistence
+    study_name: Annotated[str, Parameter(
+        help="Name of the Optuna study (for persistence and resumption).",
+        group=group_hpo,
+    )] = "segger_hpo",
+
+    storage: Annotated[str | None, Parameter(
+        help="Database URL for study persistence. "
+             "Example: 'sqlite:///hpo.db' for SQLite, "
+             "'postgresql://user:pass@host/db' for PostgreSQL.",
+        group=group_hpo,
+    )] = None,
+
+    seed: Annotated[int | None, Parameter(
+        help="Random seed for reproducibility.",
+        group=group_hpo,
+    )] = None,
+
+    # Multi-fidelity HPO
+    fidelity: Annotated[float, Parameter(
+        help="Data fraction for multi-fidelity HPO (0.1-1.0). "
+             "Lower values train on data subsets for faster exploration.",
+        validator=validators.Number(gt=0, lte=1),
+        group=group_hpo,
+    )] = 1.0,
+
+    workflow: Annotated[
+        Literal["none", "smart"],
+        Parameter(
+            help="HPO workflow mode. 'none' for standard single-stage HPO. "
+                 "'smart' for two-stage: explore on 20%% data, refine top 10 on full data.",
+            group=group_hpo,
+        )
+    ] = "none",
+
+    early_stopping_patience: Annotated[int, Parameter(
+        help="Epochs with no improvement before early stopping. 0 disables.",
+        validator=validators.Number(gte=0),
+        group=group_hpo,
+    )] = 3,
+):
+    """Run hyperparameter optimization for Segger models.
+
+    This command uses Optuna to search for optimal hyperparameters.
+    Supports both single-objective (TPE sampler) and multi-objective
+    (NSGA-III sampler) optimization.
+
+    Examples
+    --------
+    # Basic HPO with 50 trials
+    segger hpo -i data/ -o hpo_results/ --n-trials 50
+
+    # Multi-objective HPO with NSGA-III
+    segger hpo -i data/ -o hpo_results/ --n-objectives 5
+
+    # Parallel HPO
+    segger hpo -i data/ -o hpo_results/ --n-jobs 4
+
+    # Quick search with reduced parameter space
+    segger hpo -i data/ -o hpo_results/ --quick --n-trials 20
+
+    # Persistent study with SQLite database
+    segger hpo -i data/ -o hpo_results/ --storage sqlite:///hpo.db
+
+    # Smart workflow: explore on 20%% data, refine top 10 on full data
+    segger hpo -i data/ -o hpo_results/ --workflow smart --n-trials 50
+
+    # Manual multi-fidelity: 20%% data, 3 epochs for fast exploration
+    segger hpo -i data/ -o hpo_results/ --fidelity 0.2 --n-epochs 3
+    """
+    try:
+        from ..hpo import run_hpo as _run_hpo
+    except ImportError as e:
+        raise ImportError(
+            f"HPO dependencies not installed. "
+            f"Install with: pip install segger[hpo]"
+        ) from e
+
+    # Handle scalarization
+    effective_n_objectives = 1 if scalarize else n_objectives
+
+    # Parse weights if provided
+    if weights:
+        from ..hpo.metrics import parse_weights_string
+        parse_weights_string(weights)  # Validate format
+
+    # Create output directory
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    # Run HPO
+    _run_hpo(
+        input_directory=input_directory,
+        output_directory=output_directory,
+        n_trials=n_trials,
+        n_epochs=n_epochs,
+        n_jobs=n_jobs,
+        n_objectives=effective_n_objectives,
+        sampler_type=sampler,
+        pruner_type=pruner,
+        quick_search=quick,
+        reference_path=reference_path,
+        precision=precision,
+        study_name=study_name,
+        storage=storage,
+        seed=seed,
+        fidelity=fidelity,
+        early_stopping_patience=early_stopping_patience,
+        workflow=workflow,
+    )

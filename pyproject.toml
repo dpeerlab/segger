@@ -64,6 +64,19 @@ spatialdata-all = [
     "sopa>=1.0.0",
 ]
 
+# Hyperparameter optimization (Optuna-based, no wandb required)
+hpo = [
+    "optuna>=3.5.0",
+    "optuna-dashboard>=0.15.0",  # Web UI for viewing results
+]
+
+# HPO with PyTorch Lightning integration (optional pruning callback)
+hpo-lightning = [
+    "optuna>=3.5.0",
+    "optuna-dashboard>=0.15.0",
+    "optuna-integration>=3.5.0",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0",

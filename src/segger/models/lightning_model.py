@@ -70,6 +70,8 @@ class LitISTEncoder(LightningModule):
         Whether to use positional embeddings in GNN.
     normalize_embeddings : bool
         Whether to L2-normalize output embeddings.
+    lr_scheduler : str
+        Learning rate scheduler type: 'none', 'cosine', or 'onecycle'.
     """
 
     def __init__(
@@ -81,6 +83,7 @@ class LitISTEncoder(LightningModule):
         n_mid_layers: int = 2,
         n_heads: int = 2,
         learning_rate: float = 1e-3,
+        lr_scheduler: str = 'none',
         sg_loss_type: str = 'triplet',
         tx_margin: float = 0.3,
         sg_margin: float = 0.4,
@@ -113,6 +116,7 @@ class LitISTEncoder(LightningModule):
             use_positional_embeddings=use_positional_embeddings,
         )
         self.learning_rate = learning_rate
+        self._lr_scheduler = lr_scheduler
         self._sg_loss_type = sg_loss_type
         self._tx_margin = tx_margin
         self._sg_margin = sg_margin
@@ -424,7 +428,58 @@ class LitISTEncoder(LightningModule):
 
         return src_idx[mask], seg_idx[mask], max_sim[mask], gen_idx[mask]
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        """Configures the optimizer for training."""
+    def configure_optimizers(self) -> dict[str, Any] | torch.optim.Optimizer:
+        """Configures the optimizer and optional LR scheduler for training.
+
+        Returns
+        -------
+        dict or Optimizer
+            If lr_scheduler is 'none', returns just the optimizer.
+            Otherwise returns a dict with optimizer and lr_scheduler config.
+        """
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-        return optimizer
+
+        if self._lr_scheduler == 'none':
+            return optimizer
+
+        if self._lr_scheduler == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=max(1, self.trainer.max_epochs // 4),  # Restart every 1/4 of training
+                T_mult=2,  # Double restart period after each restart
+                eta_min=self.learning_rate * 0.01,  # Min LR is 1% of initial
+            )
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'epoch',
+                    'frequency': 1,
+                },
+            }
+
+        if self._lr_scheduler == 'onecycle':
+            # OneCycleLR needs total_steps, estimate from trainer
+            # Use max_epochs * estimated_steps_per_epoch
+            steps_per_epoch = getattr(self.trainer, 'num_training_batches', 100)
+            total_steps = self.trainer.max_epochs * steps_per_epoch
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.learning_rate * 10,  # Peak at 10x initial LR
+                total_steps=total_steps,
+                pct_start=0.3,  # Warmup for first 30%
+                anneal_strategy='cos',
+            )
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'step',
+                    'frequency': 1,
+                },
+            }
+
+        raise ValueError(
+            f"Unknown lr_scheduler: '{self._lr_scheduler}'. "
+            f"Supported values: 'none', 'cosine', 'onecycle'."
+        )

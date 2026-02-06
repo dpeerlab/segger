@@ -43,7 +43,7 @@ __all__ = [
 
 if TYPE_CHECKING:  # pragma: no cover
     from .boundary import BoundaryIdentification, generate_boundary, generate_boundaries
-    from .xenium import seg2explorer, seg2explorer_pqdm
+    from .xenium_explorer import seg2explorer, seg2explorer_pqdm
     from .adapter import predictions_to_dataframe
     from .output_formats import (
         OutputFormat,
@@ -72,7 +72,7 @@ def __getattr__(name: str):
         from .boundary import BoundaryIdentification, generate_boundary, generate_boundaries
         return locals()[name]
     if name in {"seg2explorer", "seg2explorer_pqdm"}:
-        from .xenium import seg2explorer, seg2explorer_pqdm
+        from .xenium_explorer import seg2explorer, seg2explorer_pqdm
         return locals()[name]
     if name == "predictions_to_dataframe":
         from .adapter import predictions_to_dataframe
@@ -131,6 +131,7 @@ def __getattr__(name: str):
     if name in {
         "boundary",
         "xenium",
+        "xenium_explorer",
         "adapter",
         "output_formats",
         "merged_writer",
