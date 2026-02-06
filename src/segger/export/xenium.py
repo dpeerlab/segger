@@ -196,6 +196,8 @@ def _open_output_group(path: Path) -> "zarr.Group":
                 f"Expected a zip file but found a directory at {path}. "
                 "Please remove or rename this directory and re-run export."
             )
+        if path.exists() and path.is_file():
+            path.unlink()
         store = ZipStore(path, mode="w")
         try:
             return zarr.open_group(store, mode="w", zarr_format=2)
@@ -354,6 +356,7 @@ def _write_masks_from_polygons(
     masks_group.create_dataset(
         "homogeneous_transform",
         data=np.array(src_transform),
+        shape=src_transform.shape,
         chunks=src_transform.chunks,
         dtype=src_transform.dtype,
         compressor=src_transform.compressor,
