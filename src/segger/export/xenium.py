@@ -209,6 +209,55 @@ def _open_output_group(path: Path) -> "zarr.Group":
         return zarr.open_group(path, mode="w")
 
 
+def _normalized_chunks(template, shape: tuple[int, ...]) -> tuple[int, ...]:
+    chunks = template.chunks
+    if chunks is None:
+        return shape
+    norm = []
+    for dim, ch in zip(shape, chunks):
+        norm.append(min(int(ch), int(dim)))
+    # If template has fewer dims, pad with full dims
+    while len(norm) < len(shape):
+        norm.append(shape[len(norm)])
+    return tuple(norm)
+
+
+def _create_like(group: "zarr.Group", name: str, data: np.ndarray, template) -> "zarr.core.Array":
+    """Create a dataset matching template metadata (chunks/compressor/dtype)."""
+    shape = data.shape
+    dtype = template.dtype
+    chunks = _normalized_chunks(template, shape)
+    compressor = template.compressor
+    fill_value = template.fill_value
+    order = getattr(template, "order", "C")
+    return group.create_dataset(
+        name,
+        data=data.astype(dtype, copy=False),
+        shape=shape,
+        chunks=chunks,
+        dtype=dtype,
+        compressor=compressor,
+        fill_value=fill_value,
+        order=order,
+    )
+
+
+def _infer_cell_id_first_column(existing_store: "zarr.Group") -> str:
+    """Infer how to populate cell_id[:, 0] based on source data."""
+    try:
+        sample = np.array(existing_store["cell_id"][:1000])
+        if sample.ndim == 2 and sample.shape[1] >= 1:
+            col0 = sample[:, 0]
+            col1 = sample[:, 1] if sample.shape[1] > 1 else None
+            if np.all(col0 == 0):
+                return "zeros"
+            if col1 is not None and np.all(col0 == col1):
+                return "same_as_col1"
+    except Exception:
+        pass
+    return "same_as_col1"
+
+
 def _resolve_spatial_to_pixel_transform(
     existing_store: "zarr.Group",
     seg_df: pd.DataFrame,
@@ -676,25 +725,33 @@ def seg2explorer(
     # Root datasets
     cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
     cell_id_arr[:, 1] = np.array(cell_id, dtype=np.uint32)
-    new_store["cell_id"] = cell_id_arr
-    new_store["cell_summary"] = np.array(cell_summary_rows, dtype=np.float64)
+    col0_mode = _infer_cell_id_first_column(existing_store)
+    if col0_mode == "same_as_col1":
+        cell_id_arr[:, 0] = cell_id_arr[:, 1]
+    else:
+        cell_id_arr[:, 0] = 0
+
+    _create_like(new_store, "cell_id", cell_id_arr, existing_store["cell_id"])
+    _create_like(new_store, "cell_summary", np.array(cell_summary_rows, dtype=np.float64), existing_store["cell_summary"])
 
     # Polygon sets
     polygon_group = new_store.create_group("polygon_sets")
 
     # Nucleus polygons (set 0)
     set0 = polygon_group.create_group("0")
-    set0["cell_index"] = np.array(cell_id, dtype=np.uint32)
-    set0["method"] = np.zeros(n_cells, dtype=np.uint32)
-    set0["num_vertices"] = np.array(nucleus_num_vertices, dtype=np.int32)
-    set0["vertices"] = nucleus_vertices_flat.astype(np.float32)
+    src0 = existing_store["polygon_sets"]["0"]
+    _create_like(set0, "cell_index", np.array(cell_id, dtype=np.uint32), src0["cell_index"])
+    _create_like(set0, "method", np.zeros(n_cells, dtype=np.uint32), src0["method"])
+    _create_like(set0, "num_vertices", np.array(nucleus_num_vertices, dtype=np.int32), src0["num_vertices"])
+    _create_like(set0, "vertices", nucleus_vertices_flat.astype(np.float32), src0["vertices"])
 
     # Cell polygons (set 1)
     set1 = polygon_group.create_group("1")
-    set1["cell_index"] = np.array(cell_id, dtype=np.uint32)
-    set1["method"] = np.full(n_cells, 1, dtype=np.uint32)
-    set1["num_vertices"] = np.array(cell_num_vertices, dtype=np.int32)
-    set1["vertices"] = cell_vertices_flat.astype(np.float32)
+    src1 = existing_store["polygon_sets"]["1"]
+    _create_like(set1, "cell_index", np.array(cell_id, dtype=np.uint32), src1["cell_index"])
+    _create_like(set1, "method", np.full(n_cells, 1, dtype=np.uint32), src1["method"])
+    _create_like(set1, "num_vertices", np.array(cell_num_vertices, dtype=np.int32), src1["num_vertices"])
+    _create_like(set1, "vertices", cell_vertices_flat.astype(np.float32), src1["vertices"])
 
     # Update attributes
     attrs = dict(existing_store.attrs)
@@ -1075,24 +1132,32 @@ def seg2explorer_pqdm(
     # Root datasets
     cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
     cell_id_arr[:, 1] = np.array(cell_id, dtype=np.uint32)
-    new_store["cell_id"] = cell_id_arr
-    new_store["cell_summary"] = np.array(cell_summary_rows, dtype=np.float64)
+    col0_mode = _infer_cell_id_first_column(existing_store)
+    if col0_mode == "same_as_col1":
+        cell_id_arr[:, 0] = cell_id_arr[:, 1]
+    else:
+        cell_id_arr[:, 0] = 0
+
+    _create_like(new_store, "cell_id", cell_id_arr, existing_store["cell_id"])
+    _create_like(new_store, "cell_summary", np.array(cell_summary_rows, dtype=np.float64), existing_store["cell_summary"])
 
     polygon_group = new_store.create_group("polygon_sets")
 
     # Nucleus polygons (set 0)
     set0 = polygon_group.create_group("0")
-    set0["cell_index"] = np.array(cell_id, dtype=np.uint32)
-    set0["method"] = np.zeros(n_cells, dtype=np.uint32)
-    set0["num_vertices"] = np.array(nucleus_num_vertices, dtype=np.int32)
-    set0["vertices"] = nucleus_vertices_flat.astype(np.float32)
+    src0 = existing_store["polygon_sets"]["0"]
+    _create_like(set0, "cell_index", np.array(cell_id, dtype=np.uint32), src0["cell_index"])
+    _create_like(set0, "method", np.zeros(n_cells, dtype=np.uint32), src0["method"])
+    _create_like(set0, "num_vertices", np.array(nucleus_num_vertices, dtype=np.int32), src0["num_vertices"])
+    _create_like(set0, "vertices", nucleus_vertices_flat.astype(np.float32), src0["vertices"])
 
     # Cell polygons (set 1)
     set1 = polygon_group.create_group("1")
-    set1["cell_index"] = np.array(cell_id, dtype=np.uint32)
-    set1["method"] = np.full(n_cells, 1, dtype=np.uint32)
-    set1["num_vertices"] = np.array(cell_num_vertices, dtype=np.int32)
-    set1["vertices"] = cell_vertices_flat.astype(np.float32)
+    src1 = existing_store["polygon_sets"]["1"]
+    _create_like(set1, "cell_index", np.array(cell_id, dtype=np.uint32), src1["cell_index"])
+    _create_like(set1, "method", np.full(n_cells, 1, dtype=np.uint32), src1["method"])
+    _create_like(set1, "num_vertices", np.array(cell_num_vertices, dtype=np.int32), src1["num_vertices"])
+    _create_like(set1, "vertices", cell_vertices_flat.astype(np.float32), src1["vertices"])
 
     attrs = dict(existing_store.attrs)
     attrs["number_cells"] = n_cells
