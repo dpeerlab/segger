@@ -9,7 +9,8 @@ from shapely.geometry import MultiPolygon, Polygon
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import Dict, Any, Optional, List, Tuple
-from segger.prediction.boundary import generate_boundary
+from segger.export.boundary import generate_boundary as _generate_boundary_method
+from segger.prediction.boundary import generate_boundary as _generate_boundary_delaunay
 from zarr.storage import ZipStore
 import zarr
 
@@ -38,6 +39,44 @@ def get_flatten_version(polygon_vertices: List[List[Tuple[float, float]]], max_v
     return np.array(flattened, dtype=np.float32)
 
 
+def _boundary_from_method(seg_cell, boundary_method: str, boundary_voxel_size: float):
+    if boundary_method == "convex_hull" or boundary_method == "input":
+        points = seg_cell[["x_location", "y_location"]].values
+        if len(points) < 3:
+            return None
+        try:
+            hull = ConvexHull(points)
+            return Polygon(points[hull.vertices])
+        except Exception:
+            return None
+    if boundary_method == "delaunay":
+        if boundary_voxel_size > 0:
+            pts = seg_cell[["x_location", "y_location"]].to_numpy()
+            mins = pts.min(axis=0)
+            bins = np.floor((pts - mins) / boundary_voxel_size).astype(np.int64)
+            _, keep = np.unique(bins, axis=0, return_index=True)
+            if keep.size < len(seg_cell):
+                seg_cell = seg_cell.iloc[keep]
+        geom = _generate_boundary_delaunay(seg_cell, x="x_location", y="y_location")
+    elif boundary_method == "voxel":
+        if boundary_voxel_size <= 0:
+            return None
+        geom = _generate_boundary_method(
+            seg_cell,
+            x="x_location",
+            y="y_location",
+            method="voxel",
+            voxel_size=boundary_voxel_size,
+        )
+    else:
+        geom = None
+    if geom is not None:
+        if isinstance(geom, MultiPolygon):
+            return max(geom.geoms, key=lambda p: p.area) if len(geom.geoms) > 0 else None
+        return geom
+    return None
+
+
 def seg2explorer(
     seg_df: pd.DataFrame,
     source_path: str,
@@ -50,6 +89,8 @@ def seg2explorer(
     cell_id_columns: str = "seg_cell_id",
     area_low: float = 10,
     area_high: float = 100,
+    boundary_method: str = "convex_hull",
+    boundary_voxel_size: float = 0.0,
 ) -> None:
     """Convert segmentation results into a Xenium Explorer-compatible Zarr dataset.
 
@@ -85,7 +126,9 @@ def seg2explorer(
         if len(seg_cell) < 5:
             continue
 
-        cell_convex_hull = generate_boundary(seg_cell)
+        cell_convex_hull = _boundary_from_method(
+            seg_cell, boundary_method, boundary_voxel_size
+        )
         if cell_convex_hull is None or not isinstance(cell_convex_hull, Polygon):
             continue
 
@@ -486,12 +529,14 @@ from pqdm.processes import pqdm  # or from pqdm.processes import pqdm for proces
 import os
 
 def _process_one_cell(args):
-    seg_cell_id, seg_cell, area_low, area_high = args
+    seg_cell_id, seg_cell, area_low, area_high, boundary_method, boundary_voxel_size = args
 
     if len(seg_cell) < 5:
         return None
 
-    cell_convex_hull = generate_boundary(seg_cell)
+    cell_convex_hull = _boundary_from_method(
+        seg_cell, boundary_method, boundary_voxel_size
+    )
     if cell_convex_hull is None or not isinstance(cell_convex_hull, Polygon):
         return None
 
@@ -537,7 +582,9 @@ def seg2explorer_pqdm(
     cell_id_columns: str = "seg_cell_id",
     area_low: float = 10,
     area_high: float = 100,
-    n_jobs: int = 1
+    n_jobs: int = 1,
+    boundary_method: str = "convex_hull",
+    boundary_voxel_size: float = 0.0,
 ) -> None:
     source_path = Path(source_path)
     storage = Path(output_dir)
@@ -547,7 +594,17 @@ def seg2explorer_pqdm(
 
     # Build a lightweight iterable of work items (id, slice, thresholds)
     # NOTE: this will still materialize each group slice, but we avoid copying the whole DF per worker.
-    work_iter = ((seg_cell_id, seg_cell, area_low, area_high) for seg_cell_id, seg_cell in grouped_by)
+    work_iter = (
+        (
+            seg_cell_id,
+            seg_cell,
+            area_low,
+            area_high,
+            boundary_method,
+            boundary_voxel_size,
+        )
+        for seg_cell_id, seg_cell in grouped_by
+    )
 
     # Parallel map with threads (good default). Tune n_jobs.
     # n_jobs = min(32, os.cpu_count() or 8)

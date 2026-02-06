@@ -255,16 +255,22 @@ class BoundaryIdentification:
         boundary_edges = [edge for edge in e if len(e[edge]["simplices"]) < 2]
         self.graph = self.generate_graph(boundary_edges)
         cycles = self.get_cycles(self.graph)
-        try:
-            if len(cycles) == 1:
-                geom = Polygon(self.d.points[cycles[0]])
-            else:
-                geom = MultiPolygon([Polygon(self.d.points[c]) for c in cycles if len(c) >= 3])
-        except Exception as e:
-            print(e, cycles)
+        def _valid_cycle(cycle):
+            if len(cycle) < 3:
+                return False
+            # ensure at least 3 unique points
+            return len(set(cycle)) >= 3
+
+        valid = [c for c in cycles if _valid_cycle(c)]
+        if not valid:
             return None
 
-        return geom
+        try:
+            if len(valid) == 1:
+                return Polygon(self.d.points[valid[0]])
+            return MultiPolygon([Polygon(self.d.points[c]) for c in valid])
+        except Exception:
+            return None
 
     @staticmethod
     def calculate_d_max(points):

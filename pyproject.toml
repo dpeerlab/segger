@@ -36,7 +36,8 @@ dependencies = [
     "tifffile",
     "torch-geometric",
     "torchmetrics",
-    "zarr",
+    "zarr<3",
+    "numcodecs<0.14",
 ]
 
 [project.optional-dependencies]

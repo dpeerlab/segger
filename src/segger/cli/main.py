@@ -1071,6 +1071,8 @@ def export(
                 cell_id_columns=effective_cell_id_column,
                 area_low=area_low,
                 area_high=area_high,
+                boundary_method=boundary_method,
+                boundary_voxel_size=boundary_voxel_size,
             )
         else:
             seg2explorer_pqdm(
@@ -1081,6 +1083,8 @@ def export(
                 area_low=area_low,
                 area_high=area_high,
                 n_jobs=effective_n_jobs,
+                boundary_method=boundary_method,
+                boundary_voxel_size=boundary_voxel_size,
             )
         print("Export complete!")
         return
