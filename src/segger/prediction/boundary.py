@@ -42,11 +42,15 @@ def triangle_angles_from_points(points, triangles):
 
 
 def dfs(v, graph, path, colors):
+    stack = [v]
     colors[v] = 1
-    path.append(v)
-    for d in graph[v]:
-        if colors[d] == 0:
-            dfs(d, graph, path, colors)
+    while stack:
+        node = stack.pop()
+        path.append(node)
+        for d in graph[node]:
+            if colors[d] == 0:
+                colors[d] = 1
+                stack.append(d)
 
 
 def plot_points(points, s=3, color="black", zorder=None):

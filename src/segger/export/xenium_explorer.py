@@ -77,6 +77,61 @@ def _boundary_from_method(seg_cell, boundary_method: str, boundary_voxel_size: f
     return None
 
 
+def _prepare_input_boundaries(
+    boundaries,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
+):
+    if boundaries is None:
+        return {}, {}
+
+    gdf = boundaries
+    if boundary_id_column not in gdf.columns:
+        if gdf.index.name == boundary_id_column:
+            gdf = gdf.reset_index()
+        else:
+            return {}, {}
+
+    def _pick_largest(group):
+        largest = None
+        max_area = -1.0
+        for geom in group.geometry:
+            if geom is None or getattr(geom, "is_empty", True):
+                continue
+            if isinstance(geom, MultiPolygon):
+                geom = max(geom.geoms, key=lambda p: p.area) if len(geom.geoms) > 0 else None
+            if not isinstance(geom, Polygon) or geom is None or geom.is_empty:
+                continue
+            area = geom.area
+            if area > max_area:
+                max_area = area
+                largest = geom
+        return largest
+
+    if boundary_type_column in gdf.columns:
+        cells = gdf[gdf[boundary_type_column] == boundary_cell_value]
+        nuclei = gdf[gdf[boundary_type_column] == boundary_nucleus_value]
+    else:
+        cells = gdf
+        nuclei = gdf.iloc[0:0]
+
+    cell_lookup: dict[Any, Polygon] = {}
+    for cell_id, group in cells.groupby(boundary_id_column):
+        poly = _pick_largest(group)
+        if poly is not None:
+            cell_lookup[cell_id] = poly
+
+    nucleus_lookup: dict[Any, Polygon] = {}
+    for cell_id, group in nuclei.groupby(boundary_id_column):
+        poly = _pick_largest(group)
+        if poly is not None:
+            nucleus_lookup[cell_id] = poly
+
+    return cell_lookup, nucleus_lookup
+
+
 def seg2explorer(
     seg_df: pd.DataFrame,
     source_path: str,
@@ -91,6 +146,11 @@ def seg2explorer(
     area_high: float = 100,
     boundary_method: str = "convex_hull",
     boundary_voxel_size: float = 0.0,
+    boundaries: Optional["gpd.GeoDataFrame"] = None,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
 ) -> None:
     """Convert segmentation results into a Xenium Explorer-compatible Zarr dataset.
 
@@ -118,7 +178,20 @@ def seg2explorer(
     polygon_vertices: List[List[Any]] = [[], []]
     seg_mask_value: List[int] = []
 
-    grouped_by = seg_df.groupby(cell_id_columns)
+    cell_boundaries = {}
+    nucleus_boundaries = {}
+    if boundary_method == "input":
+        cell_boundaries, nucleus_boundaries = _prepare_input_boundaries(
+            boundaries,
+            boundary_id_column=boundary_id_column,
+            boundary_type_column=boundary_type_column,
+            boundary_cell_value=boundary_cell_value,
+            boundary_nucleus_value=boundary_nucleus_value,
+        )
+
+    has_cell_ids = seg_df is not None and cell_id_columns in seg_df.columns
+    grouped_by = seg_df.groupby(cell_id_columns) if has_cell_ids else []
+    seen_cells = set()
 
     for cell_incremental_id, (seg_cell_id, seg_cell) in tqdm(
         enumerate(grouped_by), total=len(grouped_by)
@@ -126,9 +199,12 @@ def seg2explorer(
         if len(seg_cell) < 5:
             continue
 
-        cell_convex_hull = _boundary_from_method(
-            seg_cell, boundary_method, boundary_voxel_size
-        )
+        if boundary_method == "input" and cell_boundaries:
+            cell_convex_hull = cell_boundaries.get(seg_cell_id)
+        else:
+            cell_convex_hull = _boundary_from_method(
+                seg_cell, boundary_method, boundary_voxel_size
+            )
         if cell_convex_hull is None or not isinstance(cell_convex_hull, Polygon):
             continue
 
@@ -138,13 +214,16 @@ def seg2explorer(
         uint_cell_id = cell_incremental_id + 1
         cell_id2old_id[uint_cell_id] = seg_cell_id
 
-        seg_nucleous = seg_cell[seg_cell["overlaps_nucleus"] == 1]
         nucleus_convex_hull = None
-        if len(seg_nucleous) >= 3:
-            try:
-                nucleus_convex_hull = ConvexHull(seg_nucleous[["x_location", "y_location"]])
-            except Exception:
-                pass
+        if boundary_method == "input" and nucleus_boundaries:
+            nucleus_convex_hull = nucleus_boundaries.get(seg_cell_id)
+        else:
+            seg_nucleous = seg_cell[seg_cell["overlaps_nucleus"] == 1]
+            if len(seg_nucleous) >= 3:
+                try:
+                    nucleus_convex_hull = ConvexHull(seg_nucleous[["x_location", "y_location"]])
+                except Exception:
+                    pass
 
         cell_id.append(uint_cell_id)
         cell_summary.append(
@@ -170,6 +249,41 @@ def seg2explorer(
             if nucleus_convex_hull else np.array([[], []]).T
         )
         seg_mask_value.append(uint_cell_id)
+        seen_cells.add(seg_cell_id)
+
+    if boundary_method == "input" and cell_boundaries:
+        for seg_cell_id, cell_poly in cell_boundaries.items():
+            if seg_cell_id in seen_cells:
+                continue
+            if cell_poly is None or not isinstance(cell_poly, Polygon):
+                continue
+            if not (area_low <= cell_poly.area <= area_high):
+                continue
+
+            uint_cell_id = len(cell_id) + 1
+            cell_id2old_id[uint_cell_id] = seg_cell_id
+            cell_id.append(uint_cell_id)
+
+            nucleus_poly = nucleus_boundaries.get(seg_cell_id)
+            cell_summary.append(
+                {
+                    "cell_centroid_x": cell_poly.centroid.x,
+                    "cell_centroid_y": cell_poly.centroid.y,
+                    "cell_area": cell_poly.area,
+                    "nucleus_centroid_x": nucleus_poly.centroid.x if isinstance(nucleus_poly, Polygon) else cell_poly.centroid.x,
+                    "nucleus_centroid_y": nucleus_poly.centroid.y if isinstance(nucleus_poly, Polygon) else cell_poly.centroid.y,
+                    "nucleus_area": nucleus_poly.area if isinstance(nucleus_poly, Polygon) else 0.0,
+                    "z_level": 0.0,
+                }
+            )
+            polygon_num_vertices[0].append(len(cell_poly.exterior.coords))
+            polygon_num_vertices[1].append(len(nucleus_poly.exterior.coords) if isinstance(nucleus_poly, Polygon) else 0)
+            polygon_vertices[0].append(list(cell_poly.exterior.coords))
+            polygon_vertices[1].append(
+                np.array([[], []]).T if not isinstance(nucleus_poly, Polygon)
+                else np.array(nucleus_poly.exterior.coords)
+            )
+            seg_mask_value.append(uint_cell_id)
 
     cell_polygon_vertices = get_flatten_version(polygon_vertices[0], max_value=128)
     # nucl_polygon_vertices = get_flatten_version(polygon_vertices[1], max_value=16)
@@ -585,6 +699,11 @@ def seg2explorer_pqdm(
     n_jobs: int = 1,
     boundary_method: str = "convex_hull",
     boundary_voxel_size: float = 0.0,
+    boundaries: Optional["gpd.GeoDataFrame"] = None,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
 ) -> None:
     source_path = Path(source_path)
     storage = Path(output_dir)

@@ -953,10 +953,28 @@ def export(
     import polars as pl
     from ..export import seg2explorer, seg2explorer_pqdm
     from ..export.merged_writer import merge_predictions_with_transcripts
+    from ..io.spatialdata_loader import is_spatialdata_path, load_from_spatialdata
 
     # Load segmentation data
     print(f"Loading segmentation data from {segmentation_path}...")
-    if segmentation_path.suffix == ".parquet":
+    segmentation_from_spatialdata = False
+    segmentation_boundaries = None
+    if segmentation_path.exists() and is_spatialdata_path(segmentation_path):
+        segmentation_from_spatialdata = True
+        tx, bd = load_from_spatialdata(
+            segmentation_path,
+            points_key=spatialdata_points_key,
+            shapes_key=spatialdata_shapes_key,
+            boundary_type="all",
+        )
+        if bd is None:
+            raise ValueError(
+                "SpatialData segmentation input requires shapes for Xenium export. "
+                "No boundaries found in the SpatialData store."
+            )
+        segmentation_boundaries = bd
+        seg_df = tx.collect()
+    elif segmentation_path.suffix == ".parquet":
         seg_df = pl.read_parquet(segmentation_path)
     elif segmentation_path.suffix == ".csv":
         seg_df = pl.read_csv(segmentation_path)
@@ -979,6 +997,8 @@ def export(
                     f"Using '{alias}' instead."
                 )
                 return alias
+        if segmentation_from_spatialdata:
+            return cell_id_column
         raise ValueError(
             "Segmentation file is missing a cell ID column. "
             "Provide --cell-id-column or include one of: "
@@ -1032,8 +1052,8 @@ def export(
         needs_tx = x_column not in seg_df.columns or y_column not in seg_df.columns
         needs_bd = boundary_method == "input"
         tx = None
-        bd = None
-        if needs_tx or needs_bd:
+        bd = segmentation_boundaries
+        if not segmentation_from_spatialdata and (needs_tx or needs_bd):
             tx, bd = _resolve_transcripts()
         if needs_tx and tx is not None:
             seg_df = merge_predictions_with_transcripts(
@@ -1063,7 +1083,8 @@ def export(
             else:
                 seg_df["overlaps_nucleus"] = 0
 
-        if export_serial or effective_n_jobs <= 1:
+        use_serial = export_serial or effective_n_jobs <= 1 or (boundary_method == "input" and bd is not None)
+        if use_serial:
             seg2explorer(
                 seg_df=seg_df,
                 source_path=source_path,
@@ -1073,6 +1094,7 @@ def export(
                 area_high=area_high,
                 boundary_method=boundary_method,
                 boundary_voxel_size=boundary_voxel_size,
+                boundaries=bd,
             )
         else:
             seg2explorer_pqdm(
@@ -1085,6 +1107,7 @@ def export(
                 n_jobs=effective_n_jobs,
                 boundary_method=boundary_method,
                 boundary_voxel_size=boundary_voxel_size,
+                boundaries=bd,
             )
         print("Export complete!")
         return
