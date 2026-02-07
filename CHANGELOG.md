@@ -19,12 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `segger export` now supports `merged`, `spatialdata`, and `anndata` outputs from segmentation parquet.
 - Xenium export format renamed to `xenium_explorer` (with `xenium` as a deprecated alias).
 - Xenium export now honors `--boundary-method` (e.g., `convex_hull` vs `delaunay`).
+- Checkpoint workflows for `segger segment`: predict-only, resume, and finetune modes.
+- Vocabulary overlap support when loading checkpoints (optional `--checkpoint-vocab`).
+- CLI flag to freeze or update gene embeddings (`--update-gene-embedding`).
+- Optional export of model gene embeddings to parquet (`--export-gene-embeddings`).
+- New checkpoint workflow notebook with scenario-based examples.
 
 ### Changed
 - Prediction graph uses polygon `prediction_scale_factor` (expands/shrinks boundaries).
 - Dependency guidance and install notes for reproducible GPU setups.
 - Unified CLI worker settings (`--num-workers`), with boundary/export jobs defaulting to it.
 - Xenium Explorer export now writes cell/nucleus polygon sets with a vertex cap.
+- Checkpoint loading preserves model gene embeddings unless vocab remapping is requested.
 - Installation guidance now documents only the `segger[spatialdata-io]` extra; SpatialData/SOPA installs are direct.
 
 ### Fixed

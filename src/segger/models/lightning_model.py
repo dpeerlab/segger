@@ -131,6 +131,7 @@ class LitISTEncoder(LightningModule):
             sg_weight_end,
         ])
         self._freeze_gene_embedding = not update_gene_embedding
+        self._use_datamodule_gene_embedding = True
         self._align_loss_enabled = align_loss
         self._align_weight_start = align_weight_start
         self._align_weight_end = align_weight_end
@@ -145,19 +146,55 @@ class LitISTEncoder(LightningModule):
                 f"{type(self.trainer.datamodule).__name__}."
             )
 
-        # Only set gene embeddings if exist in data module
-        if hasattr(self.trainer.datamodule, "gene_embedding"):
+        # Persist gene names in checkpoint for vocab mapping
+        if hasattr(self.trainer.datamodule, "ad"):
+            try:
+                gene_names = [str(x) for x in self.trainer.datamodule.ad.var.index]
+                if "gene_names" not in self.hparams:
+                    self.hparams["gene_names"] = gene_names
+            except Exception:
+                pass
+
+        # Only set gene embeddings if configured and available in data module
+        if self._use_datamodule_gene_embedding:
             tx_fields = StandardTranscriptFields()
-            embedding_weights = (
-                self.trainer.datamodule.gene_embedding
-                .drop(tx_fields.feature)
-                .to_torch()
-                .to(torch.float)
-            )
-            self.model.lin_first['tx'] = Embedding.from_pretrained(
-                embedding_weights,
-                freeze=self._freeze_gene_embedding,
-            )
+            embedding_weights = None
+            if hasattr(self.trainer.datamodule, "tx_embedding"):
+                embedding_weights = (
+                    self.trainer.datamodule.tx_embedding
+                    .drop(tx_fields.feature)
+                    .to_torch()
+                    .to(torch.float)
+                )
+            elif hasattr(self.trainer.datamodule, "gene_embedding"):
+                embedding_weights = (
+                    self.trainer.datamodule.gene_embedding
+                    .drop(tx_fields.feature)
+                    .to_torch()
+                    .to(torch.float)
+                )
+            elif (
+                hasattr(self.trainer.datamodule, "ad")
+                and "X_corr" in self.trainer.datamodule.ad.varm
+            ):
+                embedding_weights = torch.tensor(
+                    self.trainer.datamodule.ad.varm["X_corr"],
+                    dtype=torch.float,
+                )
+
+            if embedding_weights is not None:
+                if embedding_weights.shape[0] != self.model.lin_first['tx'].num_embeddings:
+                    raise ValueError(
+                        "Gene embedding vocab size does not match model n_genes."
+                    )
+                if embedding_weights.shape[1] != self.model.lin_first['tx'].embedding_dim:
+                    raise ValueError(
+                        "Gene embedding dimension does not match model in_channels."
+                    )
+                self.model.lin_first['tx'] = Embedding.from_pretrained(
+                    embedding_weights,
+                    freeze=self._freeze_gene_embedding,
+                )
 
         # Setup loss functions
         self.loss_tx = TripletLoss(
@@ -193,6 +230,10 @@ class LitISTEncoder(LightningModule):
             batch.pos_dict,
             batch.batch_dict,
         )
+
+    def get_gene_embeddings(self) -> torch.Tensor:
+        """Return gene embedding weights (n_genes x embedding_dim)."""
+        return self.model.lin_first['tx'].weight.detach()
 
     def _scheduled_weights(
         self,

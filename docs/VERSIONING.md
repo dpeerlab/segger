@@ -52,3 +52,8 @@ Guidance for I/O-related versioning:
 - **MINOR**: add a new input type, new output format, or new optional export mode.
 - **MAJOR**: change an existing output schema, rename/remove output files, or change defaults that alter downstream pipelines.
 - **PATCH**: bug fixes in import/export logic without schema changes.
+
+Checkpoint compatibility guidance:
+
+- **MINOR**: add optional checkpoint loading modes or additive metadata (e.g., gene name lists).
+- **MAJOR**: change checkpoint structure or loading behavior that breaks existing checkpoints.

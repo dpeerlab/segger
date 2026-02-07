@@ -78,6 +78,80 @@ group_training = Group(
     sort_key=10,
 )
 
+def _read_gene_vocab_file(path: Path) -> list[str]:
+    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+def _get_datamodule_gene_names(datamodule) -> list[str]:
+    if hasattr(datamodule, "ad"):
+        return [str(x) for x in datamodule.ad.var.index]
+    raise ValueError("Datamodule does not expose AnnData gene names.")
+
+def _get_datamodule_gene_embeddings(datamodule):
+    if hasattr(datamodule, "ad") and "X_corr" in datamodule.ad.varm:
+        import torch
+        return torch.tensor(datamodule.ad.varm["X_corr"], dtype=torch.float32)
+    return None
+
+def _resolve_checkpoint_gene_names(model, checkpoint_vocab: Path | None):
+    ckpt_gene_names = None
+    if hasattr(model, "hparams"):
+        ckpt_gene_names = model.hparams.get("gene_names")
+    if ckpt_gene_names is None and checkpoint_vocab is not None:
+        ckpt_gene_names = _read_gene_vocab_file(checkpoint_vocab)
+    return ckpt_gene_names
+
+def _remap_gene_embeddings(
+    model,
+    new_gene_names: list[str],
+    ckpt_gene_names: list[str],
+    init_embeddings,
+    freeze: bool,
+) -> int:
+    import torch
+    from torch.nn import Embedding
+
+    old_weight = model.model.lin_first['tx'].weight.detach()
+    if len(ckpt_gene_names) != old_weight.shape[0]:
+        raise ValueError(
+            "Checkpoint gene list length does not match embedding matrix size."
+        )
+
+    embedding_dim = old_weight.shape[1]
+    if init_embeddings is not None:
+        if init_embeddings.shape[0] != len(new_gene_names):
+            raise ValueError(
+                "Initialization embeddings count does not match new vocab size."
+            )
+        if init_embeddings.shape[1] != embedding_dim:
+            raise ValueError(
+                "Initialization embeddings dimension does not match model."
+            )
+        new_weight = init_embeddings.to(
+            device=old_weight.device,
+            dtype=old_weight.dtype,
+        ).clone()
+    else:
+        new_weight = torch.empty(
+            (len(new_gene_names), embedding_dim),
+            device=old_weight.device,
+            dtype=old_weight.dtype,
+        )
+        torch.nn.init.normal_(new_weight, mean=0.0, std=0.02)
+
+    ckpt_index = {name: idx for idx, name in enumerate(ckpt_gene_names)}
+    overlap = 0
+    for new_idx, name in enumerate(new_gene_names):
+        old_idx = ckpt_index.get(name)
+        if old_idx is not None:
+            new_weight[new_idx] = old_weight[old_idx]
+            overlap += 1
+
+    model.model.lin_first['tx'] = Embedding.from_pretrained(
+        new_weight,
+        freeze=freeze,
+    )
+    return overlap
+
 @app.command
 def segment(
     # I/O
@@ -255,6 +329,11 @@ def segment(
         group=group_model,
     )] = registry.get_default("normalize_embeddings"),
 
+    update_gene_embedding: Annotated[bool, registry.get_parameter(
+        "update_gene_embedding",
+        group=group_model,
+    )] = registry.get_default("update_gene_embedding"),
+
     # Loss
     segmentation_loss: Annotated[
         Literal["triplet", "bce"],
@@ -412,6 +491,16 @@ def segment(
         )
     ] = "segger_raw",
 
+    export_gene_embeddings: Annotated[bool, Parameter(
+        help="Export model gene embeddings to a parquet file in output directory.",
+        group=group_format,
+    )] = False,
+
+    gene_embeddings_filename: Annotated[str, Parameter(
+        help="Filename for exported gene embeddings parquet.",
+        group=group_format,
+    )] = "gene_embeddings.parquet",
+
     boundary_method: Annotated[
         Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
         Parameter(
@@ -513,6 +602,39 @@ def segment(
         validator=validators.Number(gte=0),
         group=group_training,
     )] = 3,
+
+    checkpoint_path: Annotated[Path | None, Parameter(
+        help="Path to a Lightning .ckpt file to load for resume/finetune/predict.",
+        group=group_training,
+    )] = None,
+
+    checkpoint_mode: Annotated[
+        Literal["train", "resume", "finetune", "predict"],
+        Parameter(
+            help="How to use the checkpoint. "
+                 "'train' ignores checkpoints, "
+                 "'resume' continues training with optimizer state, "
+                 "'finetune' loads weights but starts a new optimizer, "
+                 "'predict' skips training and only runs prediction.",
+            group=group_training,
+        )
+    ] = "train",
+
+    vocab_mode: Annotated[
+        Literal["strict", "overlap"],
+        Parameter(
+            help="Vocabulary handling for checkpoints. "
+                 "'strict' requires identical gene lists, "
+                 "'overlap' maps shared genes and initializes new ones.",
+            group=group_training,
+        )
+    ] = "strict",
+
+    checkpoint_vocab: Annotated[Path | None, Parameter(
+        help="Optional text file with checkpoint gene names (one per line). "
+             "Required for vocab_mode='overlap' if checkpoint lacks gene_names.",
+        group=group_training,
+    )] = None,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
     from ..utils.optional_deps import require_rapids
@@ -554,6 +676,31 @@ def segment(
     else:
         use_3d_value = False
 
+    # Validate checkpoint configuration early
+    if checkpoint_mode != "train" and checkpoint_path is None:
+        raise ValueError(
+            "checkpoint_mode is set to use a checkpoint, but checkpoint_path is None."
+        )
+    if checkpoint_mode == "train" and checkpoint_path is not None:
+        raise ValueError(
+            "checkpoint_path was provided with checkpoint_mode='train'. "
+            "Use checkpoint_mode='resume', 'finetune', or 'predict'."
+        )
+    if checkpoint_path is not None and not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    if checkpoint_vocab is not None and not checkpoint_vocab.exists():
+        raise FileNotFoundError(f"Checkpoint vocab not found: {checkpoint_vocab}")
+    if checkpoint_mode == "resume" and vocab_mode != "strict":
+        raise ValueError(
+            "checkpoint_mode='resume' requires vocab_mode='strict'. "
+            "Use checkpoint_mode='finetune' for vocab overlap."
+        )
+    if checkpoint_mode == "train" and vocab_mode != "strict":
+        raise ValueError(
+            "vocab_mode is only used with checkpoints. "
+            "Set checkpoint_mode to 'finetune' or 'predict'."
+        )
+
     # Setup Lightning Data Module
     from ..data import ISTDataModule
     datamodule = ISTDataModule(
@@ -585,31 +732,93 @@ def segment(
     # Setup Lightning Model
     from ..models import LitISTEncoder
     n_genes = datamodule.ad.shape[1]
-    model = LitISTEncoder(
-        n_genes=n_genes,
-        n_mid_layers=n_mid_layers,
-        n_heads=n_heads,
-        in_channels=node_representation_dim,
-        hidden_channels=hidden_channels,
-        out_channels=out_channels,
-        learning_rate=learning_rate,
-        lr_scheduler=lr_scheduler,
-        sg_loss_type=segmentation_loss,
-        tx_margin=transcripts_margin,
-        sg_margin=segmentation_margin,
-        tx_weight_start=transcripts_loss_weight_start,
-        tx_weight_end=transcripts_loss_weight_end,
-        bd_weight_start=cells_loss_weight_start,
-        bd_weight_end=cells_loss_weight_end,
-        sg_weight_start=segmentation_loss_weight_start,
-        sg_weight_end=segmentation_loss_weight_end,
-        align_loss=alignment_loss,
-        align_weight_start=alignment_loss_weight_start,
-        align_weight_end=alignment_loss_weight_end,
-        loss_combination_mode=loss_combination_mode,
-        normalize_embeddings=normalize_embeddings,
-        use_positional_embeddings=use_positional_embeddings,
-    )
+    current_gene_names = _get_datamodule_gene_names(datamodule)
+    if checkpoint_mode in {"resume", "finetune", "predict"}:
+        model = LitISTEncoder.load_from_checkpoint(checkpoint_path)
+        model._use_datamodule_gene_embedding = False
+        ckpt_n_genes = getattr(model, "hparams", {}).get("n_genes")
+        ckpt_gene_names = _resolve_checkpoint_gene_names(model, checkpoint_vocab)
+        if ckpt_gene_names is not None:
+            ckpt_weight_count = model.model.lin_first['tx'].weight.shape[0]
+            if len(ckpt_gene_names) != ckpt_weight_count:
+                raise ValueError(
+                    "Checkpoint gene list length does not match embedding matrix."
+                )
+        if vocab_mode == "strict":
+            if ckpt_n_genes is not None and ckpt_n_genes != n_genes:
+                raise ValueError(
+                    "Checkpoint gene count does not match current data. "
+                    f"Checkpoint n_genes={ckpt_n_genes}, current n_genes={n_genes}."
+                )
+            if ckpt_gene_names is not None and ckpt_gene_names != current_gene_names:
+                raise ValueError(
+                    "Checkpoint gene list does not match current data. "
+                    "Use vocab_mode='overlap' with --checkpoint-vocab."
+                )
+        else:
+            if ckpt_gene_names is None:
+                raise ValueError(
+                    "vocab_mode='overlap' requires checkpoint gene names. "
+                    "Provide --checkpoint-vocab or train a checkpoint with gene_names."
+                )
+            init_embeddings = _get_datamodule_gene_embeddings(datamodule)
+            overlap = _remap_gene_embeddings(
+                model=model,
+                new_gene_names=current_gene_names,
+                ckpt_gene_names=ckpt_gene_names,
+                init_embeddings=init_embeddings,
+                freeze=not update_gene_embedding,
+            )
+            print(
+                f"[segger][vocab] remapped {overlap}/{len(current_gene_names)} "
+                "overlapping genes."
+            )
+            try:
+                model.hparams["n_genes"] = n_genes
+                model.hparams["gene_names"] = current_gene_names
+            except Exception:
+                pass
+        if checkpoint_mode == "finetune":
+            model.learning_rate = learning_rate
+            model._lr_scheduler = lr_scheduler
+            model._freeze_gene_embedding = not update_gene_embedding
+            try:
+                model.model.lin_first['tx'].weight.requires_grad = update_gene_embedding
+            except Exception:
+                pass
+            try:
+                model.hparams["learning_rate"] = learning_rate
+                model.hparams["lr_scheduler"] = lr_scheduler
+                model.hparams["update_gene_embedding"] = update_gene_embedding
+            except Exception:
+                pass
+    else:
+        model = LitISTEncoder(
+            n_genes=n_genes,
+            n_mid_layers=n_mid_layers,
+            n_heads=n_heads,
+            in_channels=node_representation_dim,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            learning_rate=learning_rate,
+            lr_scheduler=lr_scheduler,
+            sg_loss_type=segmentation_loss,
+            tx_margin=transcripts_margin,
+            sg_margin=segmentation_margin,
+            tx_weight_start=transcripts_loss_weight_start,
+            tx_weight_end=transcripts_loss_weight_end,
+            bd_weight_start=cells_loss_weight_start,
+            bd_weight_end=cells_loss_weight_end,
+            sg_weight_start=segmentation_loss_weight_start,
+            sg_weight_end=segmentation_loss_weight_end,
+            align_loss=alignment_loss,
+            align_weight_start=alignment_loss_weight_start,
+            align_weight_end=alignment_loss_weight_end,
+            loss_combination_mode=loss_combination_mode,
+            normalize_embeddings=normalize_embeddings,
+            use_positional_embeddings=use_positional_embeddings,
+            update_gene_embedding=update_gene_embedding,
+        )
 
     # Setup Lightning Trainer
     from lightning.pytorch.loggers import CSVLogger
@@ -639,6 +848,8 @@ def segment(
         fragment_mode=fragment_mode,
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,
+        export_gene_embeddings=export_gene_embeddings,
+        gene_embeddings_filename=gene_embeddings_filename,
     )
     callbacks.append(writer)
 
@@ -662,11 +873,15 @@ def segment(
         precision=precision,
     )
 
-    # Training
-    trainer.fit(model=model, datamodule=datamodule)
-
-    # Prediction
-    predictions = trainer.predict(model=model, datamodule=datamodule)
+    # Training / Prediction
+    if checkpoint_mode == "predict":
+        predictions = trainer.predict(model=model, datamodule=datamodule)
+    else:
+        if checkpoint_mode == "resume":
+            trainer.fit(model=model, datamodule=datamodule, ckpt_path=checkpoint_path)
+        else:
+            trainer.fit(model=model, datamodule=datamodule)
+        predictions = trainer.predict(model=model, datamodule=datamodule)
 
     writer.write_on_epoch_end(
         trainer=trainer,

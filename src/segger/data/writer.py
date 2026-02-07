@@ -32,6 +32,10 @@ class ISTSegmentationWriter(BasePredictionWriter):
         Minimum transcripts per fragment cell (default: 5).
     fragment_similarity_threshold : float, optional
         Similarity threshold for tx-tx edges in fragment mode (default: 0.5).
+    export_gene_embeddings : bool, optional
+        Whether to export model gene embeddings after prediction (default: False).
+    gene_embeddings_filename : str, optional
+        Output filename for gene embeddings parquet (default: "gene_embeddings.parquet").
     """
 
     def __init__(
@@ -41,6 +45,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         fragment_mode: bool = False,
         fragment_min_transcripts: int = 5,
         fragment_similarity_threshold: float = 0.5,
+        export_gene_embeddings: bool = False,
+        gene_embeddings_filename: str = "gene_embeddings.parquet",
     ):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
@@ -48,6 +54,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         self.fragment_mode = fragment_mode
         self.fragment_min_transcripts = fragment_min_transcripts
         self.fragment_similarity_threshold = fragment_similarity_threshold
+        self.export_gene_embeddings = export_gene_embeddings
+        self.gene_embeddings_filename = gene_embeddings_filename
 
     def write_on_epoch_end(
         self,
@@ -202,6 +210,39 @@ class ISTSegmentationWriter(BasePredictionWriter):
 
         # Write output to file
         output.write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+        # Optionally export gene embeddings
+        if self.export_gene_embeddings:
+            self._export_gene_embeddings(trainer, pl_module)
+
+    def _export_gene_embeddings(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+    ) -> None:
+        """Export gene embeddings from the model to a parquet file."""
+        tx_fields = TrainingTranscriptFields()
+
+        if not hasattr(trainer.datamodule, "ad"):
+            return
+
+        gene_names = [str(x) for x in trainer.datamodule.ad.var.index]
+        weights = pl_module.model.lin_first['tx'].weight.detach().cpu().numpy()
+
+        if len(gene_names) != weights.shape[0]:
+            raise ValueError(
+                "Gene embedding export failed: gene name count does not match "
+                "embedding matrix size."
+            )
+
+        emb_cols = [f"emb_{i}" for i in range(weights.shape[1])]
+        emb_df = pl.DataFrame(weights, schema=emb_cols)
+        output = (
+            emb_df
+            .with_columns(pl.Series(gene_names).alias(tx_fields.feature))
+            .select([tx_fields.feature] + emb_cols)
+        )
+        output.write_parquet(self.output_directory / self.gene_embeddings_filename)
 
     def _apply_fragment_mode(
         self,

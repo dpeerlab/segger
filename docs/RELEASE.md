@@ -8,6 +8,7 @@ This checklist standardizes releases and keeps code, docs, and tags in sync.
 - Update `pyproject.toml` version.
 - Update `CHANGELOG.md` with release notes and date.
 - Review docs that mention the version (README, docs, slides if needed).
+- Update notebooks/examples that cover CLI workflows impacted by the release.
 
 ## 2. Run Tests
 
