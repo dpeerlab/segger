@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency guidance and install notes for reproducible GPU setups.
 - Unified CLI worker settings (`--num-workers`), with boundary/export jobs defaulting to it.
 - Xenium Explorer export now writes cell/nucleus polygon sets with a vertex cap.
+- Installation guidance now documents only the `segger[spatialdata-io]` extra; SpatialData/SOPA installs are direct.
 
 ### Fixed
 - Edge permutation now skips negative partition labels to avoid bincount crashes.

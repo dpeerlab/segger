@@ -82,10 +82,7 @@ SOPA_AVAILABLE: bool = _check_sopa()
 SPATIALDATA_INSTALL_MSG = """
 spatialdata is not installed. This package is required for SpatialData I/O support.
 
-To install spatialdata support:
-    pip install segger[spatialdata]
-
-Or install spatialdata directly:
+Install spatialdata directly:
     pip install spatialdata>=0.2.0
 """
 
@@ -96,24 +93,21 @@ SpatialData formats (Xenium, MERSCOPE, CosMX).
 To install spatialdata-io support:
     pip install segger[spatialdata-io]
 
-For full SpatialData support:
-    pip install segger[spatialdata]
-
 Or install spatialdata-io directly:
     pip install spatialdata-io>=0.1.0
+
+SpatialData I/O requires spatialdata:
+    pip install spatialdata>=0.2.0
 """
 
 SOPA_INSTALL_MSG = """
 sopa is not installed. This package is required for SOPA compatibility features.
 
-To install SOPA support:
-    pip install segger[sopa]
-
-Or install sopa directly:
+Install sopa directly:
     pip install sopa>=1.0.0
 
-For all SpatialData features including SOPA:
-    pip install segger[spatialdata-all]
+SOPA requires spatialdata:
+    pip install spatialdata>=0.2.0
 """
 
 RAPIDS_INSTALL_MSG = """
@@ -269,7 +263,7 @@ def warn_spatialdata_unavailable(feature: str = "SpatialData support") -> None:
     """
     warnings.warn(
         f"{feature} requires spatialdata. "
-        "Install with: pip install segger[spatialdata]",
+        "Install with: pip install spatialdata>=0.2.0",
         UserWarning,
         stacklevel=2,
     )
@@ -301,7 +295,7 @@ def warn_sopa_unavailable(feature: str = "SOPA compatibility") -> None:
     """
     warnings.warn(
         f"{feature} requires sopa. "
-        "Install with: pip install segger[sopa]",
+        "Install with: pip install sopa>=1.0.0",
         UserWarning,
         stacklevel=2,
     )

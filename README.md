@@ -60,9 +60,9 @@ from segger.io.preprocessor import get_preprocessor
 
 Common optional dependencies:
 - `opencv-python` (preprocessors)
-- `spatialdata` + `dask` (SpatialData loader/writer)
-- `spatialdata-io` (platform-specific SpatialData readers)
-- `sopa` (optional SOPA workflows; included in `segger[spatialdata-all]`)
+- `spatialdata` + `dask` (SpatialData loader/writer; install directly)
+- `spatialdata-io` (platform-specific SpatialData readers; install with `segger[spatialdata-io]`)
+- `sopa` (optional SOPA workflows; install directly)
 - `geopandas`/`shapely` (geometry utilities)
 
 # Usage
@@ -83,7 +83,7 @@ segger segment --help
 - Output: `--output-format` supports `segger_raw`, `merged`, `spatialdata`, `anndata`, `all`.
 - SpatialData output: optional boundaries via `--boundary-method` (`input`, `convex_hull`, `delaunay`, `voxel`, `skip`) and SOPA compatibility by default (`cell_id` alias in points).
 - Export: `segger export` supports `xenium_explorer`, `merged`, `spatialdata`, and `anndata` from segmentation parquet (boundary methods apply to Xenium too).
-- Extras: install platform readers with `segger[spatialdata-io]`, full SpatialData with `segger[spatialdata]`, and SpatialData + SOPA with `segger[spatialdata-all]`.
+- Extras: install platform readers with `segger[spatialdata-io]`. SpatialData I/O uses `spatialdata` directly.
 
 ## CLI Parameters (New/Updated)
 

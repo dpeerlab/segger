@@ -24,10 +24,10 @@ Usage
 Installation
 ------------
 Requires the spatialdata optional dependency:
-    pip install segger[spatialdata]
+    pip install spatialdata>=0.2.0
 
 For full SOPA integration:
-    pip install segger[sopa]
+    pip install sopa>=1.0.0
 """
 
 from __future__ import annotations
@@ -385,12 +385,11 @@ def get_sopa_installation_instructions() -> str:
         lines.append(f"  {mark} {pkg}: {'installed' if installed else 'not installed'}")
 
     lines.append("")
-    lines.append("To install all SOPA dependencies:")
-    lines.append("  pip install segger[spatialdata-all]")
-    lines.append("")
-    lines.append("Or install individually:")
+    lines.append("To install SOPA dependencies:")
     lines.append("  pip install spatialdata>=0.2.0")
-    lines.append("  pip install spatialdata-io>=0.1.0")
     lines.append("  pip install sopa>=1.0.0")
+    lines.append("")
+    lines.append("Optional platform readers:")
+    lines.append("  pip install segger[spatialdata-io]")
 
     return "\n".join(lines)

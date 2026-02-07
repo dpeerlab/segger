@@ -37,9 +37,9 @@ segger segment -i /path/to/data -o /path/to/output \
 Segger defers imports for several heavy or optional features, so `import segger` works without them. These features become available only when the corresponding dependency is installed.
 
 - Preprocessors: `opencv-python`
-- SpatialData loader/writer: `spatialdata`, `dask`, `zarr` (and `geopandas` for shapes)
+- SpatialData loader/writer: `spatialdata`, `dask`, `zarr` (and `geopandas` for shapes). Install directly.
 - SpatialData platform readers: `spatialdata-io` (install with `segger[spatialdata-io]`)
-- SOPA helpers: `sopa` (optional; install via `segger[spatialdata-all]`)
+- SOPA helpers: `sopa` (optional; install directly)
 - Geometry utilities: `geopandas`, `shapely`
 - scRNA utilities: `scanpy`, `scikit-learn`
 - RAPIDS/GPU helpers: `cudf`, `cuml`, `cugraph`, `cupy`, `cupyx`
