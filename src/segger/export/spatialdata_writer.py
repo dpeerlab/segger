@@ -268,6 +268,10 @@ class SpatialDataWriter:
         # Convert transcripts to pandas for SpatialData
         tx_pd = transcripts.to_pandas()
 
+        # SOPA expects "cell_id" assignment column in points; keep segger_cell_id too.
+        if cell_id_column in tx_pd.columns and "cell_id" not in tx_pd.columns:
+            tx_pd["cell_id"] = tx_pd[cell_id_column]
+
         # Check for z-coordinate
         has_z = z_column and z_column in tx_pd.columns
 
@@ -347,9 +351,22 @@ class SpatialDataWriter:
         import pandas as pd
         from shapely.geometry import MultiPoint
 
+        def _ensure_cell_id(gdf: "gpd.GeoDataFrame") -> "gpd.GeoDataFrame":
+            if "cell_id" in gdf.columns:
+                return gdf
+            if cell_id_column in gdf.columns:
+                gdf = gdf.copy()
+                gdf["cell_id"] = gdf[cell_id_column]
+                return gdf
+            if gdf.index.name:
+                gdf = gdf.reset_index()
+                if "cell_id" not in gdf.columns and len(gdf.columns) > 0:
+                    gdf["cell_id"] = gdf[gdf.columns[0]]
+            return gdf
+
         # Use input boundaries if available
         if boundaries is not None:
-            return boundaries
+            return _ensure_cell_id(boundaries)
 
         # Generate boundaries based on method
         if self.boundary_method == "input":
@@ -382,10 +399,10 @@ class SpatialDataWriter:
             if not hulls:
                 return None
 
-            return gpd.GeoDataFrame(
+            return _ensure_cell_id(gpd.GeoDataFrame(
                 {"cell_id": cell_ids},
                 geometry=hulls,
-            )
+            ))
 
         elif self.boundary_method == "delaunay":
             from segger.export.boundary import generate_boundaries
@@ -405,7 +422,7 @@ class SpatialDataWriter:
             )
             if boundaries_gdf is None or len(boundaries_gdf) == 0:
                 return None
-            return boundaries_gdf
+            return _ensure_cell_id(boundaries_gdf)
 
         elif self.boundary_method == "voxel":
             from segger.export.boundary import generate_boundaries
@@ -425,7 +442,7 @@ class SpatialDataWriter:
             )
             if boundaries_gdf is None or len(boundaries_gdf) == 0:
                 return None
-            return boundaries_gdf
+            return _ensure_cell_id(boundaries_gdf)
 
         return None
 

@@ -62,7 +62,7 @@ Common optional dependencies:
 - `opencv-python` (preprocessors)
 - `spatialdata` + `dask` (SpatialData loader/writer)
 - `spatialdata-io` (platform-specific SpatialData readers)
-- `sopa` (SOPA export helpers)
+- `sopa` (optional SOPA workflows; SpatialData output is SOPA-compatible by default)
 - `geopandas`/`shapely` (geometry utilities)
 
 # Usage
@@ -81,15 +81,14 @@ segger segment --help
 
 - Input: raw platform auto-detect (Xenium/CosMx/MERSCOPE) or SpatialData Zarr (`--input-format spatialdata`).
 - Output: `--output-format` supports `segger_raw`, `merged`, `spatialdata`, `anndata`, `all`.
-- SpatialData output: optional boundaries via `--boundary-method` (`input`, `convex_hull`, `delaunay`, `skip`) and SOPA-ready export (`--sopa-compatible`).
+- SpatialData output: optional boundaries via `--boundary-method` (`input`, `convex_hull`, `delaunay`, `voxel`, `skip`) and SOPA compatibility by default (`cell_id` alias in points).
 - Export: `segger export` supports `xenium_explorer`, `merged`, `spatialdata`, and `anndata` from segmentation parquet (boundary methods apply to Xenium too).
 - Extras: install platform readers with `segger[spatialdata-io]`, full SpatialData with `segger[spatialdata]`.
 
 ## CLI Parameters (New/Updated)
 
 - `--input-format` (`auto` | `raw` | `spatialdata`) and `--output-format` (`segger_raw` | `merged` | `spatialdata` | `anndata` | `all`).
-- `--boundary-method` (`input` | `convex_hull` | `delaunay` | `skip`) and `--boundary-n-jobs` (0 uses `--num-workers`).
-- `--sopa-compatible` for SOPA-ready SpatialData output.
+- `--boundary-method` (`input` | `convex_hull` | `delaunay` | `voxel` | `skip`) and `--boundary-n-jobs` (0 uses `--num-workers`).
 - `--num-workers` for data loading (and as the default for boundary generation).
 - `--prediction-scale-factor`: polygon scaling for tx→bd candidate edges (default 1.2).
 - `--min-similarity`: fixed similarity threshold; if unset, per-gene auto-thresholding.

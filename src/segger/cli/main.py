@@ -412,12 +412,6 @@ def segment(
         )
     ] = "segger_raw",
 
-    sopa_compatible: Annotated[bool, Parameter(
-        help="Ensure output follows SOPA conventions for compatibility with "
-             "SOPA spatial omics workflows. Only applies to spatialdata output.",
-        group=group_format,
-    )] = False,
-
     boundary_method: Annotated[
         Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
         Parameter(
@@ -688,7 +682,6 @@ def segment(
             output_directory=output_directory,
             output_format=output_format,
             datamodule=datamodule,
-            sopa_compatible=sopa_compatible,
             boundary_method=boundary_method,
             boundary_n_jobs=effective_boundary_n_jobs,
             boundary_voxel_size=boundary_voxel_size,
@@ -699,7 +692,6 @@ def _write_additional_formats(
     output_directory: Path,
     output_format: str,
     datamodule,
-    sopa_compatible: bool,
     boundary_method: str,
     boundary_n_jobs: int,
     boundary_voxel_size: float,
@@ -714,8 +706,6 @@ def _write_additional_formats(
         Output format ('merged', 'spatialdata', 'anndata', or 'all').
     datamodule
         ISTDataModule with transcript data.
-    sopa_compatible
-        Whether to ensure SOPA compatibility.
     boundary_method
         Boundary generation method for SpatialData output.
     boundary_n_jobs
@@ -780,24 +770,6 @@ def _write_additional_formats(
                     output_name="segmentation.zarr",
                 )
                 print(f"  Written to: {output_path}")
-
-                # SOPA compatibility post-processing
-                if sopa_compatible:
-                    from ..export import validate_sopa_compatibility, export_for_sopa
-                    import spatialdata
-
-                    sdata = spatialdata.read_zarr(output_path)
-                    issues = validate_sopa_compatibility(sdata)
-                    if issues:
-                        print("  SOPA compatibility issues found:")
-                        for issue in issues:
-                            print(f"    - {issue}")
-                        print("  Attempting to fix...")
-                        sopa_path = output_directory / "segmentation_sopa.zarr"
-                        export_for_sopa(sdata, sopa_path, overwrite=True)
-                        print(f"  SOPA-compatible output: {sopa_path}")
-                    else:
-                        print("  Output is SOPA-compatible.")
 
             except ImportError:
                 print(
@@ -872,10 +844,6 @@ def export(
              "Auto-detected if None.",
         group=group_format,
     )] = None,
-    sopa_compatible: Annotated[bool, Parameter(
-        help="Ensure output follows SOPA conventions (SpatialData export only).",
-        group=group_format,
-    )] = False,
     boundary_method: Annotated[
         Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
         Parameter(
@@ -1144,8 +1112,7 @@ def export(
 
     if format == "spatialdata":
         try:
-            from ..export import SpatialDataWriter, validate_sopa_compatibility, export_for_sopa
-            import spatialdata
+            from ..export import SpatialDataWriter
 
             print("Writing SpatialData format...")
             effective_boundary_n_jobs = boundary_n_jobs or max(num_workers, 1)
@@ -1163,20 +1130,6 @@ def export(
                 output_name="segmentation.zarr",
             )
             print(f"  Written to: {output_path}")
-
-            if sopa_compatible:
-                sdata = spatialdata.read_zarr(output_path)
-                issues = validate_sopa_compatibility(sdata)
-                if issues:
-                    print("  SOPA compatibility issues found:")
-                    for issue in issues:
-                        print(f"    - {issue}")
-                    print("  Attempting to fix...")
-                    sopa_path = output_dir / "segmentation_sopa.zarr"
-                    export_for_sopa(sdata, sopa_path, overwrite=True)
-                    print(f"  SOPA-compatible output: {sopa_path}")
-                else:
-                    print("  Output is SOPA-compatible.")
         except ImportError:
             print(
                 "Warning: spatialdata not installed. "
