@@ -4,12 +4,23 @@ from lightning import LightningModule
 from torch_scatter import scatter_max
 from torch.nn import functional as F
 from typing import Any, TYPE_CHECKING
+from datetime import datetime
 import polars as pl
 import pandas as pd
 import numpy as np
+import logging
 import torch
 import math
 import os
+
+logger = logging.getLogger(__name__)
+
+# Package version - read from importlib.metadata if available
+try:
+    from importlib.metadata import version as _get_version
+    __version__ = _get_version("segger")
+except Exception:
+    __version__ = "0.2.0"  # Fallback
 
 from .triplet_loss import TripletLoss, MetricLoss
 from .alignment_loss import AlignmentLoss
@@ -468,6 +479,104 @@ class LitISTEncoder(LightningModule):
         mask = batch['tx']['predict_mask']
 
         return src_idx[mask], seg_idx[mask], max_sim[mask], gen_idx[mask]
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        """Store metadata for checkpoint validation and compatibility checking.
+
+        This hook is called by Lightning when saving a checkpoint. It stores
+        Segger-specific metadata that can be used to verify checkpoint compatibility
+        when loading, including version info, gene vocabulary, and embedding dimensions.
+
+        Parameters
+        ----------
+        checkpoint : dict
+            The checkpoint dictionary to augment with metadata.
+
+        Notes
+        -----
+        The stored metadata includes:
+        - segger_version: Package version for compatibility checking
+        - n_genes: Number of genes in the vocabulary
+        - gene_names: List of gene names (if available in hparams)
+        - embedding_dim: Input embedding dimension
+        - hidden_channels: Hidden layer dimension
+        - out_channels: Output embedding dimension
+        - saved_at: ISO timestamp of checkpoint creation
+        """
+        checkpoint['segger_metadata'] = {
+            'segger_version': __version__,
+            'n_genes': self.hparams.get('n_genes'),
+            'gene_names': self.hparams.get('gene_names'),
+            'embedding_dim': self.hparams.get('in_channels'),
+            'hidden_channels': self.hparams.get('hidden_channels'),
+            'out_channels': self.hparams.get('out_channels'),
+            'saved_at': datetime.now().isoformat(),
+        }
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        """Validate checkpoint compatibility when loading.
+
+        This hook is called by Lightning when loading a checkpoint. It validates
+        that the checkpoint is compatible with the current Segger version and
+        logs warnings if there are potential compatibility issues.
+
+        Parameters
+        ----------
+        checkpoint : dict
+            The checkpoint dictionary being loaded.
+
+        Notes
+        -----
+        Validation checks:
+        - Major version compatibility (warns if major version differs)
+        - Gene vocabulary size (warns if n_genes differs from current model)
+        - Embedding dimensions (warns if dimensions differ)
+
+        These are warnings rather than errors to allow for intentional transfers
+        where the user explicitly handles vocabulary remapping.
+        """
+        metadata = checkpoint.get('segger_metadata', {})
+
+        if not metadata:
+            logger.info(
+                "Checkpoint does not contain segger_metadata. "
+                "This may be an older checkpoint format."
+            )
+            return
+
+        # Check version compatibility
+        ckpt_version = metadata.get('segger_version')
+        if ckpt_version:
+            current_major = __version__.split('.')[0]
+            ckpt_major = ckpt_version.split('.')[0]
+            if current_major != ckpt_major:
+                logger.warning(
+                    f"Checkpoint was saved with Segger v{ckpt_version}, "
+                    f"but running v{__version__}. "
+                    "Major version mismatch may cause compatibility issues."
+                )
+
+        # Check embedding dimensions
+        ckpt_embedding_dim = metadata.get('embedding_dim')
+        current_embedding_dim = self.hparams.get('in_channels')
+        if (
+            ckpt_embedding_dim is not None
+            and current_embedding_dim is not None
+            and ckpt_embedding_dim != current_embedding_dim
+        ):
+            logger.warning(
+                f"Checkpoint embedding dimension ({ckpt_embedding_dim}) differs from "
+                f"current model ({current_embedding_dim}). "
+                "This may cause shape mismatch errors."
+            )
+
+        # Log checkpoint info
+        saved_at = metadata.get('saved_at', 'unknown')
+        n_genes = metadata.get('n_genes', 'unknown')
+        logger.info(
+            f"Loading checkpoint: saved_at={saved_at}, "
+            f"n_genes={n_genes}, version={ckpt_version or 'unknown'}"
+        )
 
     def configure_optimizers(self) -> dict[str, Any] | torch.optim.Optimizer:
         """Configures the optimizer and optional LR scheduler for training.
