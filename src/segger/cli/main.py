@@ -1657,3 +1657,234 @@ def hpo(
         early_stopping_patience=early_stopping_patience,
         workflow=workflow,
     )
+
+
+# Plotting parameter group
+group_plot = Group(
+    name="Plotting",
+    help="Related to plotting loss curves from training logs.",
+    sort_key=12,
+)
+
+
+def _resolve_metrics_path(
+    output_directory: Path,
+    version: int | None,
+) -> Path:
+    output_directory = Path(output_directory)
+    direct_candidate = output_directory / "metrics.csv"
+    if direct_candidate.exists():
+        return direct_candidate
+
+    logs_dir = output_directory / "lightning_logs"
+    if logs_dir.exists():
+        if version is not None:
+            candidate = logs_dir / f"version_{version}" / "metrics.csv"
+            if candidate.exists():
+                return candidate
+            available_versions = sorted(
+                [
+                    p.name.replace("version_", "")
+                    for p in logs_dir.iterdir()
+                    if p.is_dir() and p.name.startswith("version_")
+                ]
+            )
+            hint = f" Available versions: {', '.join(available_versions)}" if available_versions else ""
+            raise SystemExit(f"metrics.csv not found for version_{version}.{hint}")
+
+        version_dirs = [
+            p for p in logs_dir.iterdir() if p.is_dir() and p.name.startswith("version_")
+        ]
+        parsed_versions = []
+        for vdir in version_dirs:
+            suffix = vdir.name.replace("version_", "")
+            try:
+                parsed_versions.append((int(suffix), vdir))
+            except ValueError:
+                continue
+        if parsed_versions:
+            _, latest_dir = max(parsed_versions, key=lambda item: item[0])
+            candidate = latest_dir / "metrics.csv"
+            if candidate.exists():
+                return candidate
+
+        candidates = sorted(logs_dir.rglob("metrics.csv"), key=lambda p: p.stat().st_mtime)
+        if candidates:
+            return candidates[-1]
+
+    candidates = sorted(output_directory.rglob("metrics.csv"), key=lambda p: p.stat().st_mtime)
+    if candidates:
+        return candidates[-1]
+
+    raise SystemExit(f"No metrics.csv found under: {output_directory}")
+
+
+@app.command
+def plot(
+    output_directory: Annotated[Path, Parameter(
+        help="Segger output directory containing lightning_logs/.../metrics.csv.",
+        alias="-o",
+        group=group_io,
+        validator=validators.Path(exists=True, dir_okay=True),
+    )],
+    version: Annotated[int | None, Parameter(
+        help="Lightning log version to use (e.g. 3 for lightning_logs/version_3). "
+             "Defaults to the latest version.",
+        group=group_plot,
+    )] = None,
+    quick: Annotated[bool, Parameter(
+        help="Plot directly in the terminal using uniplot (no image saved).",
+        group=group_plot,
+    )] = False,
+):
+    """Plot loss curves from training metrics.csv."""
+    output_directory = Path(output_directory)
+    if output_directory.is_file():
+        raise SystemExit(
+            "--output-directory should point to the segmentation output directory, not metrics.csv."
+        )
+
+    metrics_csv = _resolve_metrics_path(output_directory, version)
+
+    import pandas as pd
+
+    df = pd.read_csv(metrics_csv)
+    x_axis = "step"
+    if x_axis not in df.columns:
+        raise SystemExit(
+            "metrics.csv is missing the 'step' column required for plotting."
+        )
+
+    numeric_cols = [col for col in df.select_dtypes(include="number").columns]
+    metric_columns = [col for col in numeric_cols if col not in ("epoch", "step")]
+    if not metric_columns:
+        raise SystemExit("No numeric metric columns found in metrics.csv.")
+
+    def _smooth_values(values):
+        count = len(values)
+        if count < 3:
+            return values
+        window = max(5, min(25, count // 20))
+        return pd.Series(values).rolling(window=window, min_periods=1).mean().to_numpy()
+
+    def _series_for_column(column: str):
+        series = df[[x_axis, column]].dropna()
+        if series.empty:
+            return None, None
+        series = series.sort_values(x_axis)
+        x_vals = series[x_axis].to_numpy()
+        y_vals = series[column].to_numpy()
+        y_vals = _smooth_values(y_vals)
+        return x_vals, y_vals
+
+    grouped_metrics: dict[str, list[tuple[str, str]]] = {}
+    for column in metric_columns:
+        if ":" in column:
+            split, base = column.split(":", 1)
+        else:
+            split, base = "", column
+        grouped_metrics.setdefault(base, []).append((split, column))
+
+    metrics_data: list[tuple[str, list[tuple[str, str, list[float], list[float]]]]] = []
+    for base in sorted(grouped_metrics.keys()):
+        series_entries = []
+        for split, column in grouped_metrics[base]:
+            x_vals, y_vals = _series_for_column(column)
+            if x_vals is None:
+                continue
+            label = split if split else column
+            series_entries.append((label, column, x_vals, y_vals))
+        if series_entries:
+            metrics_data.append((base, series_entries))
+
+    if not metrics_data:
+        raise SystemExit("No non-empty loss curves found in metrics.csv.")
+
+    if quick:
+        try:
+            from uniplot import plot as uniplot_plot
+        except ImportError as exc:
+            raise SystemExit(
+                "uniplot is not installed. Install with: pip install segger[plot]"
+            ) from exc
+
+        plots_per_page = 4
+        total_pages = (len(metrics_data) + plots_per_page - 1) // plots_per_page
+        for page_idx in range(total_pages):
+            start = page_idx * plots_per_page
+            end = start + plots_per_page
+            page_metrics = metrics_data[start:end]
+            print(f"[segger] Loss curves (page {page_idx + 1}/{total_pages})")
+            for base, series_entries in page_metrics:
+                xs = [entry[2] for entry in series_entries]
+                ys = [entry[3] for entry in series_entries]
+                labels = [entry[0] for entry in series_entries]
+                uniplot_plot(
+                    xs=xs,
+                    ys=ys,
+                    legend_labels=labels if len(labels) > 1 else None,
+                    color=len(labels) > 1,
+                    lines=True,
+                    title=base,
+                )
+                print("")
+        print(f"Using metrics: {metrics_csv}")
+        print("Quick plot only (no image saved).")
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise SystemExit(
+            "matplotlib is not installed. Install with: pip install segger[plot]"
+        ) from exc
+
+    plots_per_page = 4
+    total_pages = (len(metrics_data) + plots_per_page - 1) // plots_per_page
+
+    saved_paths = []
+    for page_idx in range(total_pages):
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+        axes = axes.flatten()
+        start = page_idx * plots_per_page
+        end = start + plots_per_page
+        page_metrics = metrics_data[start:end]
+
+        for ax_idx, ax in enumerate(axes):
+            if ax_idx >= len(page_metrics):
+                ax.axis("off")
+                continue
+            base, series_entries = page_metrics[ax_idx]
+            for label, column, x_vals, y_vals in series_entries:
+                split = column.split(":", 1)[0] if ":" in column else ""
+                linestyle = "--" if split == "val" else "-"
+                ax.plot(
+                    x_vals,
+                    y_vals,
+                    label=label,
+                    linestyle=linestyle,
+                    linewidth=1.6,
+                )
+            ax.set_title(base)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="best", fontsize=8)
+
+        for ax in axes[-2:]:
+            ax.set_xlabel(x_axis)
+        axes[0].set_ylabel("loss")
+        axes[2].set_ylabel("loss")
+
+        fig.suptitle("Loss curves")
+        fig.tight_layout()
+
+        if page_idx == 0:
+            output_path = output_directory / "loss_curves.png"
+        else:
+            output_path = output_directory / f"loss_curves_{page_idx + 1}.png"
+        fig.savefig(output_path, dpi=160)
+        plt.close(fig)
+        saved_paths.append(output_path)
+
+    print(f"Using metrics: {metrics_csv}")
+    for path in saved_paths:
+        print(f"Saved plot to: {path}")

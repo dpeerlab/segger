@@ -62,6 +62,7 @@ Common optional dependencies:
 - `opencv-python` (preprocessors)
 - `spatialdata` + `dask` (SpatialData loader/writer; install directly)
 - `spatialdata-io` (platform-specific SpatialData readers; install with `segger[spatialdata-io]`)
+- `uniplot` + `matplotlib` (loss curve plotting; install with `segger[plot]`)
 - `sopa` (optional SOPA workflows; install directly)
 - `geopandas`/`shapely` (geometry utilities)
 
@@ -77,6 +78,16 @@ To see all available parameter options:
 segger segment --help
 ```
 
+Plot loss curves from the latest training run:
+```bash
+segger plot -o /path/to/save/outputs/
+```
+
+Quick terminal plot (no image saved):
+```bash
+segger plot -o /path/to/save/outputs/ --quick
+```
+
 ## Input/Output Summary (Recent Changes)
 
 - Input: raw platform auto-detect (Xenium/CosMx/MERSCOPE) or SpatialData Zarr (`--input-format spatialdata`).
@@ -84,6 +95,7 @@ segger segment --help
 - SpatialData output: optional boundaries via `--boundary-method` (`input`, `convex_hull`, `delaunay`, `voxel`, `skip`) and SOPA compatibility by default (`cell_id` alias in points).
 - Export: `segger export` supports `xenium_explorer`, `merged`, `spatialdata`, and `anndata` from segmentation parquet (boundary methods apply to Xenium too).
 - Extras: install platform readers with `segger[spatialdata-io]`. SpatialData I/O uses `spatialdata` directly.
+- Plotting: `segger plot` reads Lightning `metrics.csv` (latest version by default). Install with `segger[plot]`.
 
 ## CLI Parameters (New/Updated)
 

@@ -39,6 +39,7 @@ Segger defers imports for several heavy or optional features, so `import segger`
 - Preprocessors: `opencv-python`
 - SpatialData loader/writer: `spatialdata`, `dask`, `zarr` (and `geopandas` for shapes). Install directly.
 - SpatialData platform readers: `spatialdata-io` (install with `segger[spatialdata-io]`)
+- Loss curve plotting: `uniplot` + `matplotlib` (install with `segger[plot]`)
 - SOPA helpers: `sopa` (optional; install directly)
 - Geometry utilities: `geopandas`, `shapely`
 - scRNA utilities: `scanpy`, `scikit-learn`
