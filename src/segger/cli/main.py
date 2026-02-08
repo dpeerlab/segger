@@ -65,6 +65,11 @@ group_format = Group(
     help="Related to input/output formats (SpatialData, AnnData) and SOPA compatibility.",
     sort_key=1,
 )
+group_boundary = Group(
+    name="Boundary",
+    help="Related to boundary generation and polygon settings.",
+    sort_key=1.5,
+)
 group_quality = Group(
     name="Quality Filtering",
     help="Related to transcript quality filtering.",
@@ -550,7 +555,7 @@ def segment(
             help="Output format for segmentation results. "
                  "'segger_raw' is the default predictions parquet. "
                  "'merged' joins predictions with original transcripts. "
-                 "'spatialdata' creates a SpatialData Zarr store (requires segger[spatialdata]). "
+                 "'spatialdata' creates a SpatialData Zarr store (requires spatialdata). "
                  "'anndata' creates an .h5ad AnnData table. "
                  "'all' writes all available formats.",
             group=group_format,
@@ -576,7 +581,7 @@ def segment(
                  "'delaunay' uses Delaunay-based boundary extraction. "
                  "'voxel' uses voxelized masks from transcript bins. "
                  "'skip' omits shapes from output.",
-            group=group_format,
+            group=group_boundary,
         )
     ] = "input",
 
@@ -585,14 +590,14 @@ def segment(
              "Only used with --boundary-method=delaunay. "
              "Set to 0 to use --num-workers.",
         validator=validators.Number(gte=0),
-        group=group_format,
+        group=group_boundary,
     )] = 0,
 
     boundary_voxel_size: Annotated[float, Parameter(
         help="Voxel size for boundary downsampling (delaunay) or voxel masks. "
              "Same units as x/y; set to 0 to disable.",
         validator=validators.Number(gte=0),
-        group=group_format,
+        group=group_boundary,
     )] = 0.0,
 
     # Quality Filtering
@@ -637,6 +642,14 @@ def segment(
             group=group_training,
         )
     ] = "32",
+
+    model_summary: Annotated[
+        bool,
+        Parameter(
+            help="Print model summary after the first batch (materialized params).",
+            group=group_training,
+        )
+    ] = False,
 
     wandb: Annotated[bool, Parameter(
         help="Enable Weights & Biases logging.",
@@ -910,9 +923,66 @@ def segment(
 
     # Setup Lightning Trainer
     from lightning.pytorch.loggers import CSVLogger
-    from lightning.pytorch.callbacks import ModelCheckpoint
+    from lightning.pytorch.callbacks import Callback, ModelCheckpoint
     from ..data import ISTSegmentationWriter
     from lightning.pytorch import Trainer
+
+    class _MaterializedModelSummaryCallback(Callback):
+        def __init__(self, max_depth: int = 1) -> None:
+            self._printed = False
+            self._max_depth = max_depth
+
+        def _print_summary(self, trainer, pl_module) -> None:
+            if self._printed or not getattr(trainer, "is_global_zero", True):
+                return
+            self._printed = True
+
+            try:
+                from lightning.pytorch.utilities.model_summary import ModelSummary
+                summary = ModelSummary(pl_module, max_depth=self._max_depth)
+                print(summary)
+            except Exception as exc:
+                logger.warning(
+                    "ModelSummary unavailable; printing param counts only: %s",
+                    exc,
+                )
+
+            total_params = sum(p.numel() for p in pl_module.parameters())
+            trainable_params = sum(p.numel() for p in pl_module.parameters() if p.requires_grad)
+            print(
+                f"[segger] Materialized params (full module): "
+                f"trainable={trainable_params:,} total={total_params:,}"
+            )
+
+            model_only = getattr(pl_module, "model", None)
+            if model_only is not None:
+                model_total = sum(p.numel() for p in model_only.parameters())
+                model_trainable = sum(p.numel() for p in model_only.parameters() if p.requires_grad)
+                print(
+                    f"[segger] Materialized params (model only): "
+                    f"trainable={model_trainable:,} total={model_total:,}"
+                )
+
+        def on_train_batch_end(
+            self,
+            trainer,
+            pl_module,
+            outputs,
+            batch,
+            batch_idx,
+        ) -> None:
+            self._print_summary(trainer, pl_module)
+
+        def on_predict_batch_end(
+            self,
+            trainer,
+            pl_module,
+            outputs,
+            batch,
+            batch_idx,
+            dataloader_idx=0,
+        ) -> None:
+            self._print_summary(trainer, pl_module)
 
     # Setup logger(s)
     loggers = [CSVLogger(output_directory)]
@@ -930,6 +1000,9 @@ def segment(
 
     # Setup callbacks
     callbacks = []
+    enable_model_summary = False
+    if model_summary:
+        callbacks.append(_MaterializedModelSummaryCallback())
     writer = ISTSegmentationWriter(
         output_directory,
         min_similarity=min_similarity,
@@ -962,6 +1035,7 @@ def segment(
         callbacks=callbacks,
         log_every_n_steps=1,
         precision=precision,
+        enable_model_summary=enable_model_summary,
     )
 
     # Training / Prediction
@@ -1080,7 +1154,7 @@ def _write_additional_formats(
             except ImportError:
                 print(
                     "Warning: spatialdata not installed. "
-                    "Install with: pip install segger[spatialdata]"
+                    "Install with: pip install spatialdata>=0.2.0"
                 )
 
         elif fmt == "anndata":
@@ -1140,16 +1214,6 @@ def export(
             group=group_format,
         )
     ] = "auto",
-    spatialdata_points_key: Annotated[str | None, Parameter(
-        help="Key in sdata.points for transcripts when using SpatialData input. "
-             "Auto-detected if None.",
-        group=group_format,
-    )] = None,
-    spatialdata_shapes_key: Annotated[str | None, Parameter(
-        help="Key in sdata.shapes for boundaries when using SpatialData input. "
-             "Auto-detected if None.",
-        group=group_format,
-    )] = None,
     boundary_method: Annotated[
         Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
         Parameter(
@@ -1159,22 +1223,14 @@ def export(
                  "'delaunay' uses Delaunay-based boundary extraction. "
                  "'voxel' uses voxelized masks from transcript bins. "
                  "'skip' omits shapes from output.",
-            group=group_format,
+            group=group_boundary,
         )
     ] = "input",
-    boundary_n_jobs: Annotated[int, Parameter(
-        help="Parallel workers for Delaunay boundary generation (threads). "
-             "Only used with --boundary-method=delaunay. "
-             "Set to 0 to use --num-workers.",
-        validator=validators.Number(gte=0),
-        group=group_format,
-    )] = 0,
-
     boundary_voxel_size: Annotated[float, Parameter(
         help="Voxel size for boundary downsampling (delaunay) or voxel masks. "
              "Same units as x/y; set to 0 to disable.",
         validator=validators.Number(gte=0),
-        group=group_format,
+        group=group_boundary,
     )] = 0.0,
     cell_id_column: Annotated[str, Parameter(
         help="Column name for cell IDs in segmentation data. "
@@ -1193,35 +1249,25 @@ def export(
     area_low: Annotated[float, Parameter(
         help="Minimum cell area threshold.",
         validator=validators.Number(gt=0),
-        group=group_export,
+        group=group_boundary,
     )] = 10.0,
     area_high: Annotated[float, Parameter(
         help="Maximum cell area threshold.",
         validator=validators.Number(gt=0),
-        group=group_export,
+        group=group_boundary,
     )] = 1000.0,
     num_workers: Annotated[int, Parameter(
         help="Number of parallel workers for polygon generation. "
              "Set to 0 to use a single worker.",
         validator=validators.Number(gte=0),
-        group=group_export,
+        group=group_boundary,
     )] = 1,
-    n_jobs: Annotated[int, Parameter(
-        help="Deprecated. Use --num-workers. If set, overrides --num-workers. "
-             "Set to 0 to use --num-workers.",
-        validator=validators.Number(gte=0),
-        group=group_export,
-    )] = 0,
     polygon_max_vertices: Annotated[int, Parameter(
         help="Maximum number of vertices per polygon (including closure). "
              "Xenium Explorer expects <= 13.",
         validator=validators.Number(gt=3),
-        group=group_export,
+        group=group_boundary,
     )] = 13,
-    export_serial: Annotated[bool, Parameter(
-        help="Disable parallel processing for export (no pqdm). Useful for debugging errors.",
-        group=group_export,
-    )] = False,
 ):
     """Export segmentation results to multiple formats."""
     import polars as pl
@@ -1237,8 +1283,6 @@ def export(
         segmentation_from_spatialdata = True
         tx, bd = load_from_spatialdata(
             segmentation_path,
-            points_key=spatialdata_points_key,
-            shapes_key=spatialdata_shapes_key,
             boundary_type="all",
         )
         if bd is None:
@@ -1294,11 +1338,7 @@ def export(
             resolved_format = "spatialdata" if is_spatialdata_path(source_path) else "raw"
 
         if resolved_format == "spatialdata":
-            tx, bd = load_from_spatialdata(
-                source_path,
-                points_key=spatialdata_points_key,
-                shapes_key=spatialdata_shapes_key,
-            )
+            tx, bd = load_from_spatialdata(source_path)
             return tx, bd
 
         pp = get_preprocessor(
@@ -1337,7 +1377,7 @@ def export(
             )
 
         print(f"Exporting to Xenium Explorer format in {output_dir}...")
-        effective_n_jobs = n_jobs or max(num_workers, 1)
+        effective_n_jobs = max(num_workers, 1)
         if isinstance(seg_df, pl.DataFrame):
             seg_df = seg_df.to_pandas()
 
@@ -1357,7 +1397,7 @@ def export(
             else:
                 seg_df["overlaps_nucleus"] = 0
 
-        use_serial = export_serial or effective_n_jobs <= 1 or (boundary_method == "input" and bd is not None)
+        use_serial = effective_n_jobs <= 1 or (boundary_method == "input" and bd is not None)
         if use_serial:
             seg2explorer(
                 seg_df=seg_df,
@@ -1421,7 +1461,7 @@ def export(
             from ..export import SpatialDataWriter
 
             print("Writing SpatialData format...")
-            effective_boundary_n_jobs = boundary_n_jobs or max(num_workers, 1)
+            effective_boundary_n_jobs = max(num_workers, 1)
             writer = SpatialDataWriter(
                 include_boundaries=(boundary_method != "skip"),
                 boundary_method=boundary_method,
@@ -1439,7 +1479,7 @@ def export(
         except ImportError:
             print(
                 "Warning: spatialdata not installed. "
-                "Install with: pip install segger[spatialdata]"
+                "Install with: pip install spatialdata>=0.2.0"
             )
         return
 
@@ -1452,6 +1492,65 @@ group_hpo = Group(
     help="Related to hyperparameter optimization.",
     sort_key=11,
 )
+
+group_plot = Group(
+    name="Plotting",
+    help="Related to plotting loss curves from training logs.",
+    sort_key=12,
+)
+
+
+def _resolve_metrics_path(
+    output_directory: Path,
+    version: int | None,
+) -> Path:
+    output_directory = Path(output_directory)
+    direct_candidate = output_directory / "metrics.csv"
+    if direct_candidate.exists():
+        return direct_candidate
+
+    logs_dir = output_directory / "lightning_logs"
+    if logs_dir.exists():
+        if version is not None:
+            candidate = logs_dir / f"version_{version}" / "metrics.csv"
+            if candidate.exists():
+                return candidate
+            available_versions = sorted(
+                [
+                    p.name.replace("version_", "")
+                    for p in logs_dir.iterdir()
+                    if p.is_dir() and p.name.startswith("version_")
+                ]
+            )
+            hint = f" Available versions: {', '.join(available_versions)}" if available_versions else ""
+            raise SystemExit(f"metrics.csv not found for version_{version}.{hint}")
+
+        version_dirs = [
+            p for p in logs_dir.iterdir() if p.is_dir() and p.name.startswith("version_")
+        ]
+        parsed_versions = []
+        for vdir in version_dirs:
+            suffix = vdir.name.replace("version_", "")
+            try:
+                parsed_versions.append((int(suffix), vdir))
+            except ValueError:
+                continue
+        if parsed_versions:
+            _, latest_dir = max(parsed_versions, key=lambda item: item[0])
+            candidate = latest_dir / "metrics.csv"
+            if candidate.exists():
+                return candidate
+
+        candidates = sorted(logs_dir.rglob("metrics.csv"), key=lambda p: p.stat().st_mtime)
+        if candidates:
+            return candidates[-1]
+
+    candidates = sorted(output_directory.rglob("metrics.csv"), key=lambda p: p.stat().st_mtime)
+    if candidates:
+        return candidates[-1]
+
+    raise SystemExit(f"No metrics.csv found under: {output_directory}")
+
 
 
 @app.command
@@ -1657,3 +1756,120 @@ def hpo(
         early_stopping_patience=early_stopping_patience,
         workflow=workflow,
     )
+
+
+@app.command
+def plot(
+    output_directory: Annotated[Path, Parameter(
+        help="Segger output directory containing lightning_logs/.../metrics.csv.",
+        alias="-o",
+        group=group_io,
+        validator=validators.Path(exists=True, dir_okay=True),
+    )],
+    version: Annotated[int | None, Parameter(
+        help="Lightning log version to use (e.g. 3 for lightning_logs/version_3). "
+             "Defaults to the latest version.",
+        group=group_plot,
+    )] = None,
+    quick: Annotated[bool, Parameter(
+        help="Plot directly in the terminal using uniplot (no image saved).",
+        group=group_plot,
+    )] = False,
+):
+    """Plot loss curves from training metrics.csv."""
+    output_directory = Path(output_directory)
+    if output_directory.is_file():
+        raise SystemExit(
+            "--output-directory should point to the segmentation output directory, not metrics.csv."
+        )
+
+    metrics_csv = _resolve_metrics_path(output_directory, version)
+
+    import pandas as pd
+
+    df = pd.read_csv(metrics_csv)
+    x_axis = "step"
+    if x_axis not in df.columns:
+        raise SystemExit(
+            "metrics.csv is missing the 'step' column required for plotting."
+        )
+
+    numeric_cols = [col for col in df.select_dtypes(include="number").columns]
+    metric_columns = [col for col in numeric_cols if col not in ("epoch", "step")]
+    if not metric_columns:
+        raise SystemExit("No numeric metric columns found in metrics.csv.")
+
+    def _series_for_column(column: str):
+        series = df[[x_axis, column]].dropna()
+        if series.empty:
+            return None, None
+        series = series.sort_values(x_axis)
+        x_vals = series[x_axis].to_numpy()
+        y_vals = series[column].to_numpy()
+        return x_vals, y_vals
+
+    series_data = []
+    for column in metric_columns:
+        x_vals, y_vals = _series_for_column(column)
+        if x_vals is None:
+            continue
+        series_data.append((column, x_vals, y_vals))
+
+    if not series_data:
+        raise SystemExit("No non-empty loss curves found in metrics.csv.")
+
+    if quick:
+        try:
+            from uniplot import plot as uniplot_plot
+        except ImportError as exc:
+            raise SystemExit(
+                "uniplot is not installed. Install with: pip install segger[plot]"
+            ) from exc
+
+        xs = [entry[1] for entry in series_data]
+        ys = [entry[2] for entry in series_data]
+        labels = [entry[0] for entry in series_data]
+        uniplot_plot(
+            xs=xs,
+            ys=ys,
+            legend_labels=labels if len(labels) > 1 else None,
+            color=len(labels) > 1,
+            lines=True,
+            title="Loss curves",
+        )
+        print(f"Using metrics: {metrics_csv}")
+        print("Quick plot only (no image saved).")
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise SystemExit(
+            "matplotlib is not installed. Install with: pip install segger[plot]"
+        ) from exc
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for column, x_vals, y_vals in series_data:
+        split = column.split(":", 1)[0] if ":" in column else ""
+        linestyle = "--" if split == "val" else "-"
+        ax.plot(
+            x_vals,
+            y_vals,
+            label=column,
+            linestyle=linestyle,
+            linewidth=1.6,
+        )
+
+    ax.set_xlabel(x_axis)
+    ax.set_ylabel("loss")
+    ax.set_title("Loss curves")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9)
+
+    output_path = output_directory / "loss_curves.png"
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+    print(f"Using metrics: {metrics_csv}")
+    print(f"Saved plot to: {output_path}")
