@@ -202,7 +202,7 @@ class SeggerObjective:
             num_workers=0,  # Reduce overhead for HPO
             transcripts_graph_max_k=params.get("transcripts_max_k", 5),
             transcripts_graph_max_dist=params.get("transcripts_max_dist", 5.0),
-            prediction_graph_scale_factor=params.get("prediction_scale_factor", 1.2),
+            prediction_graph_scale_factor=params.get("prediction_scale_factor", 2.0),
         )
 
         # Apply fidelity (data subsampling) if < 1.0
@@ -636,4 +636,3 @@ def _save_study_results(
 
     with open(output_directory / "hpo_results.json", "w") as f:
         json.dump(results, f, indent=2, default=str)
-

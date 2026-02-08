@@ -1,8 +1,11 @@
 from cyclopts import App, Parameter, Group, validators
 from typing import Annotated, Literal
 from pathlib import Path
+import logging
 
 from .registry import ParameterRegistry
+
+logger = logging.getLogger(__name__)
 
 
 # Register defaults and descriptions from files directly
@@ -106,7 +109,38 @@ def _remap_gene_embeddings(
     ckpt_gene_names: list[str],
     init_embeddings,
     freeze: bool,
-) -> int:
+    seed: int = 42,
+) -> tuple[int, dict]:
+    """Remap gene embeddings from checkpoint to new vocabulary.
+
+    Parameters
+    ----------
+    model
+        The LitISTEncoder model with loaded checkpoint weights.
+    new_gene_names : list[str]
+        Gene names in the new dataset.
+    ckpt_gene_names : list[str]
+        Gene names from the checkpoint.
+    init_embeddings
+        Optional tensor of embeddings for new genes (from datamodule).
+        If None, new genes are randomly initialized.
+    freeze : bool
+        Whether to freeze gene embeddings after remapping.
+    seed : int
+        Random seed for reproducible initialization of new genes.
+
+    Returns
+    -------
+    tuple[int, dict]
+        - overlap: Number of genes successfully remapped from checkpoint.
+        - verification: Dictionary with remapping statistics for verification.
+
+    Raises
+    ------
+    ValueError
+        If checkpoint gene list length doesn't match embedding matrix,
+        or if init_embeddings dimensions don't match.
+    """
     import torch
     from torch.nn import Embedding
 
@@ -130,27 +164,59 @@ def _remap_gene_embeddings(
             device=old_weight.device,
             dtype=old_weight.dtype,
         ).clone()
+        used_init_embeddings = True
     else:
+        # Use reproducible seed for random initialization
+        torch.manual_seed(seed)
         new_weight = torch.empty(
             (len(new_gene_names), embedding_dim),
             device=old_weight.device,
             dtype=old_weight.dtype,
         )
         torch.nn.init.normal_(new_weight, mean=0.0, std=0.02)
+        used_init_embeddings = False
 
     ckpt_index = {name: idx for idx, name in enumerate(ckpt_gene_names)}
     overlap = 0
+    new_genes = []
     for new_idx, name in enumerate(new_gene_names):
         old_idx = ckpt_index.get(name)
         if old_idx is not None:
             new_weight[new_idx] = old_weight[old_idx]
             overlap += 1
+        else:
+            new_genes.append(name)
 
     model.model.lin_first['tx'] = Embedding.from_pretrained(
         new_weight,
         freeze=freeze,
     )
-    return overlap
+
+    # Build verification metadata
+    verification = {
+        'overlap_count': overlap,
+        'new_genes_count': len(new_genes),
+        'total_genes': len(new_gene_names),
+        'overlap_ratio': overlap / len(new_gene_names) if new_gene_names else 0.0,
+        'used_init_embeddings': used_init_embeddings,
+        'embedding_dim': embedding_dim,
+        'embedding_mean': float(new_weight.mean().item()),
+        'embedding_std': float(new_weight.std().item()),
+        'seed': seed if not used_init_embeddings else None,
+    }
+
+    # Log detailed remapping info
+    logger.info(
+        f"Gene embedding remapping: {overlap}/{len(new_gene_names)} genes from checkpoint "
+        f"({verification['overlap_ratio']:.1%} overlap), "
+        f"{len(new_genes)} new genes initialized"
+    )
+    if new_genes and len(new_genes) <= 10:
+        logger.debug(f"New genes: {new_genes}")
+    elif new_genes:
+        logger.debug(f"New genes (first 10): {new_genes[:10]}...")
+
+    return overlap, verification
 
 @app.command
 def segment(
@@ -255,7 +321,7 @@ def segment(
         help="Scale factor for prediction polygons. >1.0 expands, <1.0 shrinks.",
         validator=validators.Number(gt=0),
         group=group_prediction,
-    )] = 1.2,
+    )] = 2.0,
 
     # Tiling
     tiling_margin_training: Annotated[float, registry.get_parameter(
@@ -762,36 +828,58 @@ def segment(
                     "Provide --checkpoint-vocab or train a checkpoint with gene_names."
                 )
             init_embeddings = _get_datamodule_gene_embeddings(datamodule)
-            overlap = _remap_gene_embeddings(
+            overlap, verification = _remap_gene_embeddings(
                 model=model,
                 new_gene_names=current_gene_names,
                 ckpt_gene_names=ckpt_gene_names,
                 init_embeddings=init_embeddings,
                 freeze=not update_gene_embedding,
+                seed=42,  # Fixed seed for reproducibility
             )
             print(
                 f"[segger][vocab] remapped {overlap}/{len(current_gene_names)} "
-                "overlapping genes."
+                f"overlapping genes ({verification['overlap_ratio']:.1%} overlap)."
             )
             try:
                 model.hparams["n_genes"] = n_genes
                 model.hparams["gene_names"] = current_gene_names
-            except Exception:
-                pass
+            except AttributeError as e:
+                logger.warning(
+                    f"Could not update hparams after vocab remapping: {e}. "
+                    "Checkpoint metadata may be incomplete."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Unexpected error updating hparams after vocab remapping: {e}"
+                )
         if checkpoint_mode == "finetune":
             model.learning_rate = learning_rate
             model._lr_scheduler = lr_scheduler
             model._freeze_gene_embedding = not update_gene_embedding
             try:
                 model.model.lin_first['tx'].weight.requires_grad = update_gene_embedding
-            except Exception:
-                pass
+            except AttributeError as e:
+                logger.warning(
+                    f"Could not set gene embedding requires_grad: {e}. "
+                    "Gene embeddings may not train as expected."
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to configure gene embedding gradients: {e}"
+                ) from e
             try:
                 model.hparams["learning_rate"] = learning_rate
                 model.hparams["lr_scheduler"] = lr_scheduler
                 model.hparams["update_gene_embedding"] = update_gene_embedding
-            except Exception:
-                pass
+            except AttributeError as e:
+                logger.warning(
+                    f"Could not update hparams for finetune mode: {e}. "
+                    "Checkpoint metadata may be incomplete."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Unexpected error updating hparams for finetune mode: {e}"
+                )
     else:
         model = LitISTEncoder(
             n_genes=n_genes,
@@ -856,11 +944,14 @@ def segment(
     if save_checkpoints:
         checkpoint_callback = ModelCheckpoint(
             dirpath=output_directory / "checkpoints",
-            filename="best-{epoch:02d}-{" + checkpoint_monitor.replace(":", "_") + ":.4f}",
+            filename="segger-{epoch:02d}-{" + checkpoint_monitor.replace(":", "_") + ":.4f}",
             monitor=checkpoint_monitor,
             mode="min",
             save_top_k=checkpoint_save_top_k,
             save_last=True,
+            verbose=True,  # Log when checkpoints are saved
+            enable_version_counter=True,  # Avoid overwrites with same name
+            auto_insert_metric_name=False,  # Cleaner filenames
         )
         callbacks.append(checkpoint_callback)
 
@@ -1108,7 +1199,7 @@ def export(
         help="Maximum cell area threshold.",
         validator=validators.Number(gt=0),
         group=group_export,
-    )] = 100.0,
+    )] = 1000.0,
     num_workers: Annotated[int, Parameter(
         help="Number of parallel workers for polygon generation. "
              "Set to 0 to use a single worker.",
