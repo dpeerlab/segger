@@ -19,6 +19,7 @@ import numpy as np
 import anndata as ad
 import scanpy as sc
 import pandas as pd
+import scipy.sparse as sp
 from itertools import combinations
 
 
@@ -125,12 +126,20 @@ def find_mutually_exclusive_genes(
                 continue
 
             gene_expr = adata[:, gene].X
-            cell_type_mask = adata.obs[cell_type_column] == cell_type
+            # Use NumPy masks for sparse indexing compatibility
+            cell_type_mask = (adata.obs[cell_type_column] == cell_type).to_numpy()
             non_cell_type_mask = ~cell_type_mask
 
             # Check expression thresholds
-            expr_in = (gene_expr[cell_type_mask] > 0).mean()
-            expr_out = (gene_expr[non_cell_type_mask] > 0).mean()
+            expr_in_subset = gene_expr[cell_type_mask]
+            expr_out_subset = gene_expr[non_cell_type_mask]
+            if sp.issparse(expr_in_subset):
+                # Fraction of cells expressing the gene without densifying
+                expr_in = expr_in_subset.getnnz() / expr_in_subset.shape[0]
+                expr_out = expr_out_subset.getnnz() / expr_out_subset.shape[0]
+            else:
+                expr_in = (expr_in_subset > 0).mean()
+                expr_out = (expr_out_subset > 0).mean()
 
             if expr_in > expr_threshold_in and expr_out < expr_threshold_out:
                 exclusive_genes[cell_type].append(gene)

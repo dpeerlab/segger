@@ -59,7 +59,16 @@ def build_anndata_table(
 
     assigned = transcripts.filter(pl.col(cell_id_column).is_not_null())
     if unassigned_value is not None:
-        assigned = assigned.filter(pl.col(cell_id_column) != unassigned_value)
+        # Match compare dtype to avoid string-vs-numeric errors for cell IDs.
+        col_dtype = transcripts.schema.get(cell_id_column)
+        try:
+            compare_value = pl.Series([unassigned_value]).cast(col_dtype).item()
+            filter_expr = pl.col(cell_id_column) != compare_value
+        except Exception:
+            filter_expr = (
+                pl.col(cell_id_column).cast(pl.Utf8) != str(unassigned_value)
+            )
+        assigned = assigned.filter(filter_expr)
 
     # Gene list from all transcripts (even if no assignments)
     var_idx = (

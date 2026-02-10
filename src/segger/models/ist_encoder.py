@@ -57,10 +57,14 @@ class Positional2dEmbedder(Module):
             pos: torch.Tensor,
             batch: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if pos.numel() == 0:
+            return pos.new_zeros((0, self.dim * 2))
         if batch is None:
             pos = pos - pos.min(dim=0).values
             pos = pos / pos.max(dim=0).values
         else:
+            if batch.numel() == 0:
+                return pos.new_zeros((0, self.dim * 2))
             # Vectorized per-batch normalization using scatter operations
             num_batches = batch.max().item() + 1
             mins, _ = scatter_min(pos, batch, dim=0, dim_size=num_batches)

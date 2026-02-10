@@ -33,10 +33,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
     fragment_similarity_threshold : float, optional
         Similarity threshold for tx-tx edges in fragment mode (default: 0.5).
     export_gene_embeddings : bool, optional
-        Whether to export model gene embeddings after prediction (default: False).
-    gene_embeddings_filename : str, optional
-        Output filename for gene embeddings parquet (default: "gene_embeddings.parquet").
+        Whether to export model gene embeddings after prediction (default: True).
+        Embeddings are saved to 'gene_embeddings.parquet' in the output directory.
     """
+
+    # Fixed filename for gene embeddings (simplifies checkpoint workflows)
+    GENE_EMBEDDINGS_FILENAME = "gene_embeddings.parquet"
 
     def __init__(
         self,
@@ -45,8 +47,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         fragment_mode: bool = False,
         fragment_min_transcripts: int = 5,
         fragment_similarity_threshold: float = 0.5,
-        export_gene_embeddings: bool = False,
-        gene_embeddings_filename: str = "gene_embeddings.parquet",
+        export_gene_embeddings: bool = True,
     ):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
@@ -55,7 +56,6 @@ class ISTSegmentationWriter(BasePredictionWriter):
         self.fragment_min_transcripts = fragment_min_transcripts
         self.fragment_similarity_threshold = fragment_similarity_threshold
         self.export_gene_embeddings = export_gene_embeddings
-        self.gene_embeddings_filename = gene_embeddings_filename
 
     def write_on_epoch_end(
         self,
@@ -206,7 +206,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
 
         # Apply fragment mode if enabled
         if self.fragment_mode:
-            output = self._apply_fragment_mode(output, trainer)
+            output = self._apply_fragment_mode(output, trainer, pl_module)
 
         # Write output to file
         output.write_parquet(self.output_directory / 'segger_segmentation.parquet')
@@ -242,18 +242,19 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .with_columns(pl.Series(gene_names).alias(tx_fields.feature))
             .select([tx_fields.feature] + emb_cols)
         )
-        output.write_parquet(self.output_directory / self.gene_embeddings_filename)
+        output.write_parquet(self.output_directory / self.GENE_EMBEDDINGS_FILENAME)
 
     def _apply_fragment_mode(
         self,
         segmentation_df: pl.DataFrame,
         trainer: Trainer,
+        pl_module: LightningModule,
     ) -> pl.DataFrame:
         """Apply fragment mode to group unassigned transcripts.
 
         Collects tx-tx edges from the prediction dataset. If edge similarities
         (edge_attr) are not stored, computes them post-hoc using gene embeddings
-        from the data module.
+        from the trained model (not data module, to use checkpoint embeddings).
 
         Parameters
         ----------
@@ -261,6 +262,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
             Segmentation results with cell assignments.
         trainer : Trainer
             PyTorch Lightning trainer with access to datamodule.
+        pl_module : LightningModule
+            The trained model module with gene embeddings.
 
         Returns
         -------
@@ -277,9 +280,13 @@ class ISTSegmentationWriter(BasePredictionWriter):
         dataset = trainer.datamodule.predict_dataset
         datamodule = trainer.datamodule
 
-        # Check if we have gene embeddings for post-hoc similarity computation
+        # Use model gene embeddings (trained/checkpoint weights) for similarity computation
+        # This is important for predict mode where checkpoint embeddings should be used
         gene_embeddings = None
-        if hasattr(datamodule, 'ad') and 'X_corr' in datamodule.ad.varm:
+        if hasattr(pl_module, 'get_gene_embeddings'):
+            gene_embeddings = pl_module.get_gene_embeddings().cpu()
+        elif hasattr(datamodule, 'ad') and 'X_corr' in datamodule.ad.varm:
+            # Fallback to data module if model method not available
             gene_embeddings = torch.tensor(
                 datamodule.ad.varm['X_corr'],
                 dtype=torch.float32,

@@ -123,6 +123,8 @@ class ISTDataModule(LightningDataModule):
         Graph structure used during prediction.
     prediction_graph_max_k : int, default=3
         Maximum number of edges per transcript for prediction graphs.
+    prediction_graph_fallback : bool, default=False
+        If True, add kNN candidates for transcripts with zero polygon matches.
     prediction_graph_max_dist : float, default=1.0
         Maximum distance for edges in prediction graphs.
     tiling_mode : {"adaptive", "square"}, default="adaptive"
@@ -156,6 +158,10 @@ class ISTDataModule(LightningDataModule):
         Path to scRNA-seq reference h5ad file for discovering ME gene pairs.
         Required when alignment_loss=True.
     scrna_celltype_column : str, default="celltype"
+    allowed_genes : list[str] or None, optional
+        If provided, filter transcripts to this gene list before building
+        AnnData and graphs. Useful for aligning prediction to a checkpoint
+        vocabulary.
         Column name in scRNA-seq reference for cell type annotations.
     """
     input_directory: Path
@@ -174,6 +180,7 @@ class ISTDataModule(LightningDataModule):
     segmentation_graph_negative_edge_rate: float = 1.
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"] = "cell"
     prediction_graph_max_k: int = 3
+    prediction_graph_fallback: bool = False
     prediction_graph_scale_factor: float = 2.0
     tiling_mode: Literal["adaptive", "square"] = "adaptive"  # TODO: Remove (benchmarking only)
     tiling_margin_training: float = 20.
@@ -189,6 +196,7 @@ class ISTDataModule(LightningDataModule):
     alignment_loss: bool = False
     scrna_reference_path: Optional[Path] = None
     scrna_celltype_column: str = "celltype"
+    allowed_genes: Optional[List[str]] = None
 
     def __post_init__(self):
         """Initialize the data module after dataclass field assignment.
@@ -246,6 +254,9 @@ class ISTDataModule(LightningDataModule):
             include_z=(self.use_3d != False),  # Include z unless explicitly disabled
         )
         tx = self.tx = pp.transcripts
+        if self.allowed_genes is not None:
+            tx = tx.filter(pl.col(tx_fields.feature).is_in(self.allowed_genes))
+            self.tx = tx
         bd = self.bd = pp.boundaries
 
         # Mask transcripts to reference segmentation
@@ -280,9 +291,17 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
         )
+        prediction_boundaries = bd
+        if (
+            self.prediction_graph_mode == "uniform"
+            and bd is not None
+            and bd_fields.boundary_type in bd.columns
+        ):
+            prediction_boundaries = bd[bd[bd_fields.boundary_type] == boundary_type]
+
         self.data = setup_heterodata(
             transcripts=tx,
-            boundaries=bd,
+            boundaries=prediction_boundaries,
             adata=self.ad,
             segmentation_mask=tx_mask,  # This is the original mask, which is correct
             cells_embedding_key=(
@@ -294,6 +313,7 @@ class ISTDataModule(LightningDataModule):
             transcripts_graph_max_dist=self.transcripts_graph_max_dist,
             prediction_graph_mode=self.prediction_graph_mode,
             prediction_graph_max_k=self.prediction_graph_max_k,
+            prediction_graph_fallback=self.prediction_graph_fallback,
             prediction_graph_scale_factor=self.prediction_graph_scale_factor,
             use_3d=self.use_3d,
             me_gene_pairs=self.me_gene_pairs,
@@ -364,6 +384,12 @@ class ISTDataModule(LightningDataModule):
                 feature_column=tx_fields.feature,
             )
 
+        # Apply vocab filtering if requested
+        if self.allowed_genes is not None:
+            transcripts_lf = transcripts_lf.filter(
+                pl.col(tx_fields.feature).is_in(self.allowed_genes)
+            )
+
         # Collect to DataFrame
         tx = self.tx = transcripts_lf.collect()
         bd = self.bd = boundaries
@@ -412,9 +438,17 @@ class ISTDataModule(LightningDataModule):
             compute_morphology=(self.cells_representation_mode == "morphology"),
         )
 
+        prediction_boundaries = bd
+        if (
+            self.prediction_graph_mode == "uniform"
+            and bd is not None
+            and bd_fields.boundary_type in bd.columns
+        ):
+            prediction_boundaries = bd[bd[bd_fields.boundary_type] == boundary_type]
+
         self.data = setup_heterodata(
             transcripts=tx,
-            boundaries=bd,
+            boundaries=prediction_boundaries,
             adata=self.ad,
             segmentation_mask=tx_mask,
             cells_embedding_key=(
@@ -426,6 +460,7 @@ class ISTDataModule(LightningDataModule):
             transcripts_graph_max_dist=self.transcripts_graph_max_dist,
             prediction_graph_mode=self.prediction_graph_mode,
             prediction_graph_max_k=self.prediction_graph_max_k,
+            prediction_graph_fallback=self.prediction_graph_fallback,
             prediction_graph_scale_factor=self.prediction_graph_scale_factor,
             use_3d=self.use_3d,
             me_gene_pairs=self.me_gene_pairs,
@@ -589,3 +624,80 @@ class ISTDataModule(LightningDataModule):
             batch_sampler=sampler,
             shuffle=False,
         )
+
+    # -------------------------------------------------------------------------
+    # Helper methods for checkpoint/vocab handling
+    # -------------------------------------------------------------------------
+
+    @property
+    def gene_names(self) -> list[str]:
+        """Get gene names from AnnData.
+
+        Returns
+        -------
+        list[str]
+            List of gene names from the AnnData var index.
+
+        Raises
+        ------
+        AttributeError
+            If AnnData has not been created yet (call load() first).
+        """
+        if not hasattr(self, 'ad') or self.ad is None:
+            raise AttributeError("AnnData not available. Call load() first.")
+        return [str(x) for x in self.ad.var.index]
+
+    @property
+    def n_genes(self) -> int:
+        """Get number of genes in vocabulary.
+
+        Returns
+        -------
+        int
+            Number of genes in the AnnData.
+        """
+        if not hasattr(self, 'ad') or self.ad is None:
+            raise AttributeError("AnnData not available. Call load() first.")
+        return self.ad.shape[1]
+
+    def get_gene_embeddings(self) -> torch.Tensor | None:
+        """Get precomputed gene embeddings if available.
+
+        Returns the gene correlation/embedding matrix from AnnData varm
+        if it exists. This is used for initializing gene embeddings in
+        finetune mode.
+
+        Returns
+        -------
+        torch.Tensor or None
+            Tensor of shape (n_genes, embedding_dim) with precomputed
+            gene embeddings, or None if not available.
+        """
+        if not hasattr(self, 'ad') or self.ad is None:
+            return None
+        if 'X_corr' in self.ad.varm:
+            return torch.tensor(self.ad.varm['X_corr'], dtype=torch.float32)
+        return None
+
+    def filter_to_genes(self, gene_names: list[str]) -> None:
+        """Filter transcripts to specified genes.
+
+        Sets the allowed_genes parameter and reloads data if already loaded.
+        Useful for aligning prediction data to a checkpoint's vocabulary.
+
+        Parameters
+        ----------
+        gene_names : list[str]
+            List of gene names to keep. Transcripts with genes not in
+            this list will be filtered out.
+
+        Notes
+        -----
+        This method sets the allowed_genes attribute which is used during
+        data loading to filter transcripts. If data has already been loaded,
+        it triggers a reload.
+        """
+        self.allowed_genes = gene_names
+        # Reload data if already loaded
+        if hasattr(self, 'ad') and self.ad is not None:
+            self.load()

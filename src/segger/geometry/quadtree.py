@@ -36,7 +36,11 @@ def get_quadtree_kwargs(
     max_depth = 1
     while extent // (1 << max_depth) > 0:
         max_depth += 1
-    scale = extent // (1 << max_depth - 1)
+    max_depth = min(max_depth, 15)
+
+    # Keep scale consistent with the final (possibly capped) depth.
+    # Using true division avoids collapsing to 0 for sub-unit extents.
+    scale = extent / (1 << (max_depth - 1)) if extent > 0 else 1.0
 
     # Return as dictionary
     return dict(
@@ -45,7 +49,7 @@ def get_quadtree_kwargs(
         y_min=y_min,
         y_max=y_max,
         scale=scale,
-        max_depth=min(max_depth, 15),
+        max_depth=max_depth,
     )
 
 

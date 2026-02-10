@@ -273,6 +273,7 @@ def setup_prediction_graph(
     mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
     use_3d: bool | Literal["auto"] = False,
     max_dist: Optional[float] = None,
+    fallback_uniform: bool = False,
 ) -> torch.Tensor:
     """Setup prediction graph connecting transcripts to cell boundaries.
 
@@ -308,33 +309,62 @@ def setup_prediction_graph(
     For 3D data with shape-based modes, consider using z-slice boundaries.
     """
     from shapely.affinity import scale as shapely_scale
+    from shapely.ops import unary_union
+
+    def _make_valid_geom(geom):
+        if geom is None or geom.is_empty or geom.is_valid:
+            return geom
+        make_valid = None
+        try:
+            from shapely.validation import make_valid as _make_valid
+            make_valid = _make_valid
+        except Exception:
+            try:
+                from shapely import make_valid as _make_valid
+                make_valid = _make_valid
+            except Exception:
+                make_valid = None
+        if make_valid is not None:
+            fixed = make_valid(geom)
+        else:
+            fixed = geom.buffer(0)
+        if fixed.is_empty:
+            return fixed
+        if fixed.geom_type == "GeometryCollection":
+            polys = [g for g in fixed.geoms if g.geom_type in ("Polygon", "MultiPolygon")]
+            if not polys:
+                return fixed
+            fixed = unary_union(polys)
+        return fixed
 
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
 
-    # Uniform kNN graph
+    # Uniform kNN graph (tx -> bd)
     if mode == "uniform":
-        # Determine coordinate columns
-        coord_cols = [tx_fields.x, tx_fields.y]
+        # Determine coordinate columns (always use real x/y; append z if enabled)
         has_z = tx_fields.z in tx.columns
 
         if use_3d == "auto":
             use_3d = has_z and tx[tx_fields.z].null_count() < len(tx)
 
+        xy = tx[[tx_fields.x, tx_fields.y]].to_numpy()
         if use_3d and has_z:
-            coord_cols.append(tx_fields.z)
+            z_vals = tx[tx_fields.z].to_numpy().reshape(-1, 1)
+            tx_points = np.hstack([xy, z_vals])
+        else:
+            tx_points = xy
 
-        points = tx[coord_cols].to_numpy()
-        query = bd.geometry.centroid.get_coordinates().values
+        bd_points = bd.geometry.centroid.get_coordinates().values
 
         # For 3D, add z=0 for boundary centroids (they're 2D polygons)
-        if use_3d and len(coord_cols) == 3:
-            query_z = np.zeros((len(query), 1))
-            query = np.hstack([query, query_z])
+        if use_3d and has_z:
+            bd_z = np.zeros((len(bd_points), 1))
+            bd_points = np.hstack([bd_points, bd_z])
 
         edge_index, _ = kdtree_neighbors(
-            points=points,
-            query=query,
+            points=bd_points,
+            query=tx_points,
             max_k=max_k,
             max_dist=max_dist if max_dist is not None else float('inf'),
         )
@@ -345,13 +375,22 @@ def setup_prediction_graph(
     points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
     boundary_type = (bd_fields.cell_value if mode == "cell"
                      else bd_fields.nucleus_value)
-    polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
+    bd_subset = bd[bd[bd_fields.boundary_type] == boundary_type]
+    polygons_raw = bd_subset.geometry
+    invalid_raw = ~polygons_raw.is_valid
+    if invalid_raw.any():
+        polygons = polygons_raw.apply(_make_valid_geom)
+    else:
+        polygons = polygons_raw
 
     # Scale polygons around their centroid
     # scale_factor > 1.0 expands, < 1.0 shrinks
     scaled_polygons = polygons.apply(
         lambda geom: shapely_scale(geom, xfact=scale_factor, yfact=scale_factor, origin='centroid')
-    ).reset_index(drop=True)
+    )
+    if (~scaled_polygons.is_valid).any():
+        scaled_polygons = scaled_polygons.apply(_make_valid_geom)
+    scaled_polygons = scaled_polygons.reset_index(drop=True)
 
     result = points_in_polygons(
         points=points,
@@ -359,6 +398,31 @@ def setup_prediction_graph(
         predicate='contains',
         batches=10,
     )
-
-    return torch.tensor(
+    edge_index = torch.tensor(
         result[['index_query', 'index_match']].values.T).to(torch.int).cpu()
+
+    if fallback_uniform:
+        n_points = points.shape[0]
+        if edge_index.numel() == 0:
+            missing = torch.arange(n_points, dtype=torch.long)
+        else:
+            counts = torch.bincount(edge_index[0], minlength=n_points)
+            missing = torch.nonzero(counts == 0, as_tuple=False).squeeze(1)
+        if missing.numel() > 0:
+            fallback_k = max_k if max_k is not None else 3
+            if fallback_k <= 0:
+                return edge_index
+            bd_points = polygons.centroid.get_coordinates().values
+            missing_np = missing.cpu().numpy()
+            tx_missing = points[missing_np]
+            edge_fallback, _ = kdtree_neighbors(
+                points=bd_points,
+                query=tx_missing,
+                max_k=fallback_k,
+                max_dist=float('inf') if max_dist is None else max_dist,
+            )
+            # Map local missing indices back to global transcript indices
+            edge_fallback[0] = missing[edge_fallback[0]]
+            edge_index = torch.cat([edge_index, edge_fallback.cpu()], dim=1)
+
+    return edge_index

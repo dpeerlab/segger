@@ -3,7 +3,7 @@ from torch_geometric.data import Batch
 from lightning import LightningModule
 from torch_scatter import scatter_max
 from torch.nn import functional as F
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from datetime import datetime
 import polars as pl
 import pandas as pd
@@ -40,6 +40,17 @@ class LitISTEncoder(LightningModule):
 
     The training uses cosine-scheduled weight transitions between loss
     components, allowing gradual emphasis shifts during training.
+
+    Checkpoint Handling
+    -------------------
+    The model supports three checkpoint modes:
+    - **train**: Fresh training, embeddings initialized from data module
+    - **finetune**: Load checkpoint weights, remap vocabulary, fresh optimizer
+    - **predict**: Load checkpoint exactly, use checkpoint embeddings
+
+    When loaded from a checkpoint, the model respects checkpoint state and
+    won't overwrite gene embeddings during setup(). For finetune mode, use
+    remap_gene_embeddings() to adapt vocabulary before training.
 
     Parameters
     ----------
@@ -81,8 +92,6 @@ class LitISTEncoder(LightningModule):
         Whether to use positional embeddings in GNN.
     normalize_embeddings : bool
         Whether to L2-normalize output embeddings.
-    lr_scheduler : str
-        Learning rate scheduler type: 'none', 'cosine', or 'onecycle'.
     """
 
     def __init__(
@@ -94,7 +103,6 @@ class LitISTEncoder(LightningModule):
         n_mid_layers: int = 2,
         n_heads: int = 2,
         learning_rate: float = 1e-3,
-        lr_scheduler: str = 'none',
         sg_loss_type: str = 'triplet',
         tx_margin: float = 0.3,
         sg_margin: float = 0.4,
@@ -113,7 +121,7 @@ class LitISTEncoder(LightningModule):
         normalize_embeddings: bool = True,
     ):
         super().__init__()
-        
+
         self.save_hyperparameters()
 
         self.model = ISTEncoder(
@@ -127,7 +135,6 @@ class LitISTEncoder(LightningModule):
             use_positional_embeddings=use_positional_embeddings,
         )
         self.learning_rate = learning_rate
-        self._lr_scheduler = lr_scheduler
         self._sg_loss_type = sg_loss_type
         self._tx_margin = tx_margin
         self._sg_margin = sg_margin
@@ -148,6 +155,10 @@ class LitISTEncoder(LightningModule):
         self._align_weight_end = align_weight_end
         self._loss_combination_mode = loss_combination_mode
 
+        # Checkpoint state tracking
+        self._loaded_from_checkpoint = False
+        self._checkpoint_gene_names: list[str] | None = None
+
     def setup(self, stage):
         # LitISTEncoder needs supp. data from ISTDataModule to train
         from ..data.data_module import ISTDataModule
@@ -157,57 +168,102 @@ class LitISTEncoder(LightningModule):
                 f"{type(self.trainer.datamodule).__name__}."
             )
 
-        # Persist gene names in checkpoint for vocab mapping
+        # Persist gene names in checkpoint for vocab mapping (always update for fresh training)
         if hasattr(self.trainer.datamodule, "ad"):
             try:
                 gene_names = [str(x) for x in self.trainer.datamodule.ad.var.index]
-                if "gene_names" not in self.hparams:
+                # Only update gene_names if not loaded from checkpoint
+                # (checkpoint gene_names take precedence for predict mode)
+                if not self._loaded_from_checkpoint:
                     self.hparams["gene_names"] = gene_names
             except Exception:
                 pass
 
-        # Only set gene embeddings if configured and available in data module
-        if self._use_datamodule_gene_embedding:
-            tx_fields = StandardTranscriptFields()
-            embedding_weights = None
-            if hasattr(self.trainer.datamodule, "tx_embedding"):
-                embedding_weights = (
-                    self.trainer.datamodule.tx_embedding
-                    .drop(tx_fields.feature)
-                    .to_torch()
-                    .to(torch.float)
-                )
-            elif hasattr(self.trainer.datamodule, "gene_embedding"):
-                embedding_weights = (
-                    self.trainer.datamodule.gene_embedding
-                    .drop(tx_fields.feature)
-                    .to_torch()
-                    .to(torch.float)
-                )
-            elif (
-                hasattr(self.trainer.datamodule, "ad")
-                and "X_corr" in self.trainer.datamodule.ad.varm
-            ):
-                embedding_weights = torch.tensor(
-                    self.trainer.datamodule.ad.varm["X_corr"],
-                    dtype=torch.float,
-                )
-
-            if embedding_weights is not None:
-                if embedding_weights.shape[0] != self.model.lin_first['tx'].num_embeddings:
-                    raise ValueError(
-                        "Gene embedding vocab size does not match model n_genes."
-                    )
-                if embedding_weights.shape[1] != self.model.lin_first['tx'].embedding_dim:
-                    raise ValueError(
-                        "Gene embedding dimension does not match model in_channels."
-                    )
-                self.model.lin_first['tx'] = Embedding.from_pretrained(
-                    embedding_weights,
-                    freeze=self._freeze_gene_embedding,
-                )
+        # Initialize gene embeddings from data module OR respect checkpoint state
+        if self._loaded_from_checkpoint:
+            # Checkpoint mode: Don't overwrite embeddings, just validate compatibility
+            self._validate_vocab_compatibility()
+        elif self._use_datamodule_gene_embedding:
+            # Fresh training: Initialize embeddings from data module
+            self._initialize_embeddings_from_datamodule()
 
         # Setup loss functions
+        self._setup_loss_functions()
+
+        return super().setup(stage)
+
+    def _validate_vocab_compatibility(self):
+        """Validate checkpoint vocabulary is compatible with data module.
+
+        Called during setup() when loaded from checkpoint. Logs warnings
+        if there are potential compatibility issues but doesn't fail
+        (actual errors will occur during forward pass if shapes mismatch).
+        """
+        if not hasattr(self.trainer.datamodule, "ad"):
+            return
+
+        dm_n_genes = self.trainer.datamodule.ad.shape[1]
+        model_n_genes = self.model.lin_first['tx'].num_embeddings
+
+        if dm_n_genes != model_n_genes:
+            logger.warning(
+                f"Data module has {dm_n_genes} genes but model expects {model_n_genes}. "
+                "If this is predict mode, ensure data was filtered to checkpoint genes. "
+                "If this is finetune mode, call remap_gene_embeddings() first."
+            )
+
+    def _initialize_embeddings_from_datamodule(self):
+        """Initialize gene embeddings from data module.
+
+        Called during setup() for fresh training. Loads precomputed
+        gene embeddings from the data module's AnnData if available.
+        """
+        tx_fields = StandardTranscriptFields()
+        embedding_weights = None
+
+        if hasattr(self.trainer.datamodule, "tx_embedding"):
+            embedding_weights = (
+                self.trainer.datamodule.tx_embedding
+                .drop(tx_fields.feature)
+                .to_torch()
+                .to(torch.float)
+            )
+        elif hasattr(self.trainer.datamodule, "gene_embedding"):
+            embedding_weights = (
+                self.trainer.datamodule.gene_embedding
+                .drop(tx_fields.feature)
+                .to_torch()
+                .to(torch.float)
+            )
+        elif (
+            hasattr(self.trainer.datamodule, "ad")
+            and "X_corr" in self.trainer.datamodule.ad.varm
+        ):
+            embedding_weights = torch.tensor(
+                self.trainer.datamodule.ad.varm["X_corr"],
+                dtype=torch.float,
+            )
+
+        if embedding_weights is not None:
+            if embedding_weights.shape[0] != self.model.lin_first['tx'].num_embeddings:
+                raise ValueError(
+                    "Gene embedding vocab size does not match model n_genes."
+                )
+            if embedding_weights.shape[1] != self.model.lin_first['tx'].embedding_dim:
+                raise ValueError(
+                    "Gene embedding dimension does not match model in_channels."
+                )
+            self.model.lin_first['tx'] = Embedding.from_pretrained(
+                embedding_weights,
+                freeze=self._freeze_gene_embedding,
+            )
+
+    def _setup_loss_functions(self):
+        """Setup loss functions for training.
+
+        Initializes triplet, metric, and segmentation losses from data module
+        similarity matrices. Optionally sets up alignment loss for ME genes.
+        """
         self.loss_tx = TripletLoss(
             self.trainer.datamodule.tx_similarity,
             margin=self._tx_margin,
@@ -231,7 +287,6 @@ class LitISTEncoder(LightningModule):
                 weight_start=self._align_weight_start,
                 weight_end=self._align_weight_end,
             )
-        return super().setup(stage)
 
     def forward(self, batch: Batch) -> torch.Tensor:
         """Forward pass for the batch of data."""
@@ -245,6 +300,156 @@ class LitISTEncoder(LightningModule):
     def get_gene_embeddings(self) -> torch.Tensor:
         """Return gene embedding weights (n_genes x embedding_dim)."""
         return self.model.lin_first['tx'].weight.detach()
+
+    def get_checkpoint_gene_names(self) -> list[str] | None:
+        """Return gene names from the loaded checkpoint.
+
+        Returns
+        -------
+        list[str] or None
+            Gene names stored in checkpoint metadata, or None if not available.
+        """
+        return self._checkpoint_gene_names
+
+    def remap_gene_embeddings(
+        self,
+        new_gene_names: list[str],
+        init_embeddings: torch.Tensor | None = None,
+        freeze: bool = False,
+        seed: int = 42,
+    ) -> tuple[int, dict]:
+        """Remap gene embeddings from checkpoint vocabulary to new vocabulary.
+
+        This method adapts the model's gene embeddings for finetune mode when
+        the new dataset has different genes than the checkpoint. Shared genes
+        keep their checkpoint weights, while new genes are initialized from
+        provided embeddings or randomly.
+
+        Parameters
+        ----------
+        new_gene_names : list[str]
+            Gene names in the new dataset.
+        init_embeddings : torch.Tensor, optional
+            Tensor of shape (n_new_genes, embedding_dim) with embeddings for
+            new genes. If None, new genes are randomly initialized.
+        freeze : bool, default False
+            Whether to freeze gene embeddings after remapping.
+        seed : int, default 42
+            Random seed for reproducible initialization of new genes.
+
+        Returns
+        -------
+        tuple[int, dict]
+            - overlap: Number of genes successfully remapped from checkpoint.
+            - verification: Dictionary with remapping statistics.
+
+        Raises
+        ------
+        ValueError
+            If checkpoint gene names are not available, or if init_embeddings
+            dimensions don't match the model.
+
+        Examples
+        --------
+        >>> model = LitISTEncoder.load_from_checkpoint("model.ckpt")
+        >>> overlap, stats = model.remap_gene_embeddings(
+        ...     new_gene_names=datamodule.gene_names,
+        ...     init_embeddings=datamodule.get_gene_embeddings(),
+        ... )
+        >>> print(f"Remapped {overlap} genes, {stats['new_genes_count']} new")
+        """
+        ckpt_gene_names = self._checkpoint_gene_names
+        if ckpt_gene_names is None:
+            raise ValueError(
+                "Cannot remap gene embeddings: checkpoint lacks gene_names. "
+                "Provide a checkpoint with gene_names metadata or use train mode."
+            )
+
+        old_weight = self.model.lin_first['tx'].weight.detach()
+        if len(ckpt_gene_names) != old_weight.shape[0]:
+            raise ValueError(
+                f"Checkpoint gene list length ({len(ckpt_gene_names)}) does not "
+                f"match embedding matrix size ({old_weight.shape[0]})."
+            )
+
+        embedding_dim = old_weight.shape[1]
+        if init_embeddings is not None:
+            if init_embeddings.shape[0] != len(new_gene_names):
+                raise ValueError(
+                    f"Initialization embeddings count ({init_embeddings.shape[0]}) "
+                    f"does not match new vocab size ({len(new_gene_names)})."
+                )
+            if init_embeddings.shape[1] != embedding_dim:
+                raise ValueError(
+                    f"Initialization embeddings dimension ({init_embeddings.shape[1]}) "
+                    f"does not match model ({embedding_dim})."
+                )
+            new_weight = init_embeddings.to(
+                device=old_weight.device,
+                dtype=old_weight.dtype,
+            ).clone()
+            used_init_embeddings = True
+        else:
+            # Use reproducible seed for random initialization
+            torch.manual_seed(seed)
+            new_weight = torch.empty(
+                (len(new_gene_names), embedding_dim),
+                device=old_weight.device,
+                dtype=old_weight.dtype,
+            )
+            torch.nn.init.normal_(new_weight, mean=0.0, std=0.02)
+            used_init_embeddings = False
+
+        # Build index for fast lookup
+        ckpt_index = {name: idx for idx, name in enumerate(ckpt_gene_names)}
+        overlap = 0
+        new_genes = []
+        for new_idx, name in enumerate(new_gene_names):
+            old_idx = ckpt_index.get(name)
+            if old_idx is not None:
+                new_weight[new_idx] = old_weight[old_idx]
+                overlap += 1
+            else:
+                new_genes.append(name)
+
+        # Replace embedding layer
+        self.model.lin_first['tx'] = Embedding.from_pretrained(
+            new_weight,
+            freeze=freeze,
+        )
+
+        # Update hparams for new vocabulary
+        try:
+            self.hparams["n_genes"] = len(new_gene_names)
+            self.hparams["gene_names"] = new_gene_names
+        except Exception as e:
+            logger.warning(f"Could not update hparams after vocab remapping: {e}")
+
+        # Build verification metadata
+        verification = {
+            'overlap_count': overlap,
+            'new_genes_count': len(new_genes),
+            'total_genes': len(new_gene_names),
+            'overlap_ratio': overlap / len(new_gene_names) if new_gene_names else 0.0,
+            'used_init_embeddings': used_init_embeddings,
+            'embedding_dim': embedding_dim,
+            'embedding_mean': float(new_weight.mean().item()),
+            'embedding_std': float(new_weight.std().item()),
+            'seed': seed if not used_init_embeddings else None,
+        }
+
+        # Log detailed remapping info
+        logger.info(
+            f"Gene embedding remapping: {overlap}/{len(new_gene_names)} genes from checkpoint "
+            f"({verification['overlap_ratio']:.1%} overlap), "
+            f"{len(new_genes)} new genes initialized"
+        )
+        if new_genes and len(new_genes) <= 10:
+            logger.debug(f"New genes: {new_genes}")
+        elif new_genes:
+            logger.debug(f"New genes (first 10): {new_genes[:10]}...")
+
+        return overlap, verification
 
     def _scheduled_weights(
         self,
@@ -467,7 +672,7 @@ class LitISTEncoder(LightningModule):
             dim_size=batch['tx'].num_nodes,
         )
         # Filter by similarity
-        valid = max_idx < dst.shape[0]
+        valid = (max_idx >= 0) & (max_idx < dst.shape[0])
         if min_similarity is not None:
             valid &= max_sim >= min_similarity
 
@@ -497,16 +702,30 @@ class LitISTEncoder(LightningModule):
         The stored metadata includes:
         - segger_version: Package version for compatibility checking
         - n_genes: Number of genes in the vocabulary
-        - gene_names: List of gene names (if available in hparams)
+        - gene_names: List of gene names (always saved for vocab mapping)
+        - embedding_shape: Shape of gene embedding matrix [n_genes, embedding_dim]
         - embedding_dim: Input embedding dimension
         - hidden_channels: Hidden layer dimension
         - out_channels: Output embedding dimension
         - saved_at: ISO timestamp of checkpoint creation
         """
+        # Get gene names from hparams or data module
+        gene_names = self.hparams.get('gene_names', [])
+        if not gene_names and hasattr(self, 'trainer') and self.trainer is not None:
+            if hasattr(self.trainer.datamodule, 'ad'):
+                try:
+                    gene_names = [str(x) for x in self.trainer.datamodule.ad.var.index]
+                except Exception:
+                    pass
+
+        # Get embedding shape from model
+        embedding_shape = list(self.model.lin_first['tx'].weight.shape)
+
         checkpoint['segger_metadata'] = {
             'segger_version': __version__,
             'n_genes': self.hparams.get('n_genes'),
-            'gene_names': self.hparams.get('gene_names'),
+            'gene_names': gene_names,  # Always save gene names
+            'embedding_shape': embedding_shape,  # [n_genes, embedding_dim]
             'embedding_dim': self.hparams.get('in_channels'),
             'hidden_channels': self.hparams.get('hidden_channels'),
             'out_channels': self.hparams.get('out_channels'),
@@ -514,11 +733,12 @@ class LitISTEncoder(LightningModule):
         }
 
     def on_load_checkpoint(self, checkpoint: dict) -> None:
-        """Validate checkpoint compatibility when loading.
+        """Validate checkpoint compatibility and store checkpoint state.
 
         This hook is called by Lightning when loading a checkpoint. It validates
-        that the checkpoint is compatible with the current Segger version and
-        logs warnings if there are potential compatibility issues.
+        that the checkpoint is compatible with the current Segger version,
+        stores checkpoint gene names for later use, and sets the loaded flag
+        to prevent embedding overwrite during setup().
 
         Parameters
         ----------
@@ -527,22 +747,37 @@ class LitISTEncoder(LightningModule):
 
         Notes
         -----
-        Validation checks:
-        - Major version compatibility (warns if major version differs)
-        - Gene vocabulary size (warns if n_genes differs from current model)
-        - Embedding dimensions (warns if dimensions differ)
+        This method:
+        1. Sets _loaded_from_checkpoint flag to prevent embedding overwrite
+        2. Stores checkpoint gene names in _checkpoint_gene_names
+        3. Validates version and dimension compatibility
+        4. Logs warnings for potential compatibility issues
 
-        These are warnings rather than errors to allow for intentional transfers
-        where the user explicitly handles vocabulary remapping.
+        For old checkpoints without gene_names, logs a warning but allows
+        loading to proceed. Actual failures will occur during predict if
+        vocabulary doesn't match.
         """
+        # Mark as loaded from checkpoint to prevent setup() from overwriting embeddings
+        self._loaded_from_checkpoint = True
+
         metadata = checkpoint.get('segger_metadata', {})
 
         if not metadata:
-            logger.info(
+            logger.warning(
                 "Checkpoint does not contain segger_metadata. "
-                "This may be an older checkpoint format."
+                "This may be an older checkpoint format (pre-v0.2.x). "
+                "Gene names not available - predict mode may fail if vocab differs."
             )
+            self._checkpoint_gene_names = None
             return
+
+        # Store checkpoint gene names for vocab mapping
+        self._checkpoint_gene_names = metadata.get('gene_names')
+        if not self._checkpoint_gene_names:
+            logger.warning(
+                "Checkpoint lacks gene_names. Saved before v0.2.x? "
+                "Predict mode may fail if vocabulary differs from training."
+            )
 
         # Check version compatibility
         ckpt_version = metadata.get('segger_version')
@@ -573,63 +808,13 @@ class LitISTEncoder(LightningModule):
         # Log checkpoint info
         saved_at = metadata.get('saved_at', 'unknown')
         n_genes = metadata.get('n_genes', 'unknown')
+        gene_count = len(self._checkpoint_gene_names) if self._checkpoint_gene_names else 0
         logger.info(
             f"Loading checkpoint: saved_at={saved_at}, "
-            f"n_genes={n_genes}, version={ckpt_version or 'unknown'}"
+            f"n_genes={n_genes}, gene_names={gene_count}, version={ckpt_version or 'unknown'}"
         )
 
-    def configure_optimizers(self) -> dict[str, Any] | torch.optim.Optimizer:
-        """Configures the optimizer and optional LR scheduler for training.
-
-        Returns
-        -------
-        dict or Optimizer
-            If lr_scheduler is 'none', returns just the optimizer.
-            Otherwise returns a dict with optimizer and lr_scheduler config.
-        """
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        """Configures the optimizer for training."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-
-        if self._lr_scheduler == 'none':
-            return optimizer
-
-        if self._lr_scheduler == 'cosine':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer,
-                T_0=max(1, self.trainer.max_epochs // 4),  # Restart every 1/4 of training
-                T_mult=2,  # Double restart period after each restart
-                eta_min=self.learning_rate * 0.01,  # Min LR is 1% of initial
-            )
-            return {
-                'optimizer': optimizer,
-                'lr_scheduler': {
-                    'scheduler': scheduler,
-                    'interval': 'epoch',
-                    'frequency': 1,
-                },
-            }
-
-        if self._lr_scheduler == 'onecycle':
-            # OneCycleLR needs total_steps, estimate from trainer
-            # Use max_epochs * estimated_steps_per_epoch
-            steps_per_epoch = getattr(self.trainer, 'num_training_batches', 100)
-            total_steps = self.trainer.max_epochs * steps_per_epoch
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=self.learning_rate * 10,  # Peak at 10x initial LR
-                total_steps=total_steps,
-                pct_start=0.3,  # Warmup for first 30%
-                anneal_strategy='cos',
-            )
-            return {
-                'optimizer': optimizer,
-                'lr_scheduler': {
-                    'scheduler': scheduler,
-                    'interval': 'step',
-                    'frequency': 1,
-                },
-            }
-
-        raise ValueError(
-            f"Unknown lr_scheduler: '{self._lr_scheduler}'. "
-            f"Supported values: 'none', 'cosine', 'onecycle'."
-        )
+        return optimizer

@@ -7,6 +7,56 @@ from .registry import ParameterRegistry
 
 logger = logging.getLogger(__name__)
 
+# Allow explicit true/false values for boolean flags (e.g., "--flag true").
+_BOOL_FLAGS = {
+    "--overwrite",
+    "--prediction-fallback",
+    "--use-positional-embeddings",
+    "--normalize-embeddings",
+    "--update-gene-embedding",
+    "--alignment-loss",
+    "--fragment-mode",
+    "--export-gene-embeddings",
+    "--save-checkpoints",
+    "--export-serial",
+    "--quick",
+}
+_BOOL_TRUE = {"true", "1", "yes", "on"}
+_BOOL_FALSE = {"false", "0", "no", "off"}
+
+
+def _normalize_bool_flags(argv: list[str]) -> list[str]:
+    """Normalize boolean flags to be compatible with cyclopts' flag parsing."""
+    normalized: list[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        # Handle --flag=true/false
+        if token.startswith("--") and "=" in token:
+            flag, value = token.split("=", 1)
+            if flag in _BOOL_FLAGS:
+                value_l = value.strip().lower()
+                if value_l in _BOOL_TRUE:
+                    normalized.append(flag)
+                    i += 1
+                    continue
+                if value_l in _BOOL_FALSE:
+                    i += 1
+                    continue
+        # Handle --flag true/false
+        if token in _BOOL_FLAGS and i + 1 < len(argv):
+            value_l = argv[i + 1].strip().lower()
+            if value_l in _BOOL_TRUE:
+                normalized.append(token)
+                i += 2
+                continue
+            if value_l in _BOOL_FALSE:
+                i += 2
+                continue
+        normalized.append(token)
+        i += 1
+    return normalized
+
 
 # Register defaults and descriptions from files directly
 # This is to avoid needing to import all requirements before calling CLI
@@ -22,7 +72,7 @@ for file_path, class_name in to_register:
 
 
 # CLI App
-app = App(name="Segger")
+_app = App(name="Segger")
 
 # Parameter groups
 group_io = Group(
@@ -77,148 +127,12 @@ group_3d = Group(
 )
 group_training = Group(
     name="Training",
-    help="Related to training configuration (logging, checkpoints, precision).",
+    help="Related to training configuration (checkpoints, resume/finetune).",
     sort_key=10,
 )
 
-def _read_gene_vocab_file(path: Path) -> list[str]:
-    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
-def _get_datamodule_gene_names(datamodule) -> list[str]:
-    if hasattr(datamodule, "ad"):
-        return [str(x) for x in datamodule.ad.var.index]
-    raise ValueError("Datamodule does not expose AnnData gene names.")
-
-def _get_datamodule_gene_embeddings(datamodule):
-    if hasattr(datamodule, "ad") and "X_corr" in datamodule.ad.varm:
-        import torch
-        return torch.tensor(datamodule.ad.varm["X_corr"], dtype=torch.float32)
-    return None
-
-def _resolve_checkpoint_gene_names(model, checkpoint_vocab: Path | None):
-    ckpt_gene_names = None
-    if hasattr(model, "hparams"):
-        ckpt_gene_names = model.hparams.get("gene_names")
-    if ckpt_gene_names is None and checkpoint_vocab is not None:
-        ckpt_gene_names = _read_gene_vocab_file(checkpoint_vocab)
-    return ckpt_gene_names
-
-def _remap_gene_embeddings(
-    model,
-    new_gene_names: list[str],
-    ckpt_gene_names: list[str],
-    init_embeddings,
-    freeze: bool,
-    seed: int = 42,
-) -> tuple[int, dict]:
-    """Remap gene embeddings from checkpoint to new vocabulary.
-
-    Parameters
-    ----------
-    model
-        The LitISTEncoder model with loaded checkpoint weights.
-    new_gene_names : list[str]
-        Gene names in the new dataset.
-    ckpt_gene_names : list[str]
-        Gene names from the checkpoint.
-    init_embeddings
-        Optional tensor of embeddings for new genes (from datamodule).
-        If None, new genes are randomly initialized.
-    freeze : bool
-        Whether to freeze gene embeddings after remapping.
-    seed : int
-        Random seed for reproducible initialization of new genes.
-
-    Returns
-    -------
-    tuple[int, dict]
-        - overlap: Number of genes successfully remapped from checkpoint.
-        - verification: Dictionary with remapping statistics for verification.
-
-    Raises
-    ------
-    ValueError
-        If checkpoint gene list length doesn't match embedding matrix,
-        or if init_embeddings dimensions don't match.
-    """
-    import torch
-    from torch.nn import Embedding
-
-    old_weight = model.model.lin_first['tx'].weight.detach()
-    if len(ckpt_gene_names) != old_weight.shape[0]:
-        raise ValueError(
-            "Checkpoint gene list length does not match embedding matrix size."
-        )
-
-    embedding_dim = old_weight.shape[1]
-    if init_embeddings is not None:
-        if init_embeddings.shape[0] != len(new_gene_names):
-            raise ValueError(
-                "Initialization embeddings count does not match new vocab size."
-            )
-        if init_embeddings.shape[1] != embedding_dim:
-            raise ValueError(
-                "Initialization embeddings dimension does not match model."
-            )
-        new_weight = init_embeddings.to(
-            device=old_weight.device,
-            dtype=old_weight.dtype,
-        ).clone()
-        used_init_embeddings = True
-    else:
-        # Use reproducible seed for random initialization
-        torch.manual_seed(seed)
-        new_weight = torch.empty(
-            (len(new_gene_names), embedding_dim),
-            device=old_weight.device,
-            dtype=old_weight.dtype,
-        )
-        torch.nn.init.normal_(new_weight, mean=0.0, std=0.02)
-        used_init_embeddings = False
-
-    ckpt_index = {name: idx for idx, name in enumerate(ckpt_gene_names)}
-    overlap = 0
-    new_genes = []
-    for new_idx, name in enumerate(new_gene_names):
-        old_idx = ckpt_index.get(name)
-        if old_idx is not None:
-            new_weight[new_idx] = old_weight[old_idx]
-            overlap += 1
-        else:
-            new_genes.append(name)
-
-    model.model.lin_first['tx'] = Embedding.from_pretrained(
-        new_weight,
-        freeze=freeze,
-    )
-
-    # Build verification metadata
-    verification = {
-        'overlap_count': overlap,
-        'new_genes_count': len(new_genes),
-        'total_genes': len(new_gene_names),
-        'overlap_ratio': overlap / len(new_gene_names) if new_gene_names else 0.0,
-        'used_init_embeddings': used_init_embeddings,
-        'embedding_dim': embedding_dim,
-        'embedding_mean': float(new_weight.mean().item()),
-        'embedding_std': float(new_weight.std().item()),
-        'seed': seed if not used_init_embeddings else None,
-    }
-
-    # Log detailed remapping info
-    logger.info(
-        f"Gene embedding remapping: {overlap}/{len(new_gene_names)} genes from checkpoint "
-        f"({verification['overlap_ratio']:.1%} overlap), "
-        f"{len(new_genes)} new genes initialized"
-    )
-    if new_genes and len(new_genes) <= 10:
-        logger.debug(f"New genes: {new_genes}")
-    elif new_genes:
-        logger.debug(f"New genes (first 10): {new_genes[:10]}...")
-
-    return overlap, verification
-
-@app.command
+@_app.command
 def segment(
     # I/O
     input_directory: Annotated[Path, registry.get_parameter(
@@ -234,6 +148,11 @@ def segment(
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
+
+    overwrite: Annotated[bool, Parameter(
+        help="Overwrite existing output files for additional formats (e.g., AnnData, SpatialData).",
+        group=group_io,
+    )] = False,
 
     num_workers: Annotated[int, registry.get_parameter(
         "num_workers",
@@ -310,6 +229,11 @@ def segment(
             group=group_prediction,
         )
     ] = registry.get_default("prediction_graph_mode"),
+
+    prediction_fallback: Annotated[bool, Parameter(
+        help="If True, add kNN candidates for transcripts with zero polygon matches.",
+        group=group_prediction,
+    )] = False,
 
     prediction_max_k: Annotated[int | None, registry.get_parameter(
         "prediction_graph_max_k",
@@ -500,7 +424,7 @@ def segment(
     min_similarity: Annotated[float | None, Parameter(
         help="Minimum similarity threshold for transcript-cell assignment. "
              "If None, uses per-gene auto-thresholding (Li+Yen methods).",
-        validator=validators.Number(gte=0, lte=1),
+        validator=validators.Number(gte=-1, lte=1),
         group=group_prediction,
     )] = None,
 
@@ -558,14 +482,10 @@ def segment(
     ] = "segger_raw",
 
     export_gene_embeddings: Annotated[bool, Parameter(
-        help="Export model gene embeddings to a parquet file in output directory.",
+        help="Export model gene embeddings to a parquet file in output directory. "
+             "Enabled by default to support checkpoint workflows.",
         group=group_format,
-    )] = False,
-
-    gene_embeddings_filename: Annotated[str, Parameter(
-        help="Filename for exported gene embeddings parquet.",
-        group=group_format,
-    )] = "gene_embeddings.parquet",
+    )] = True,
 
     boundary_method: Annotated[
         Literal["input", "convex_hull", "delaunay", "voxel", "skip"],
@@ -617,42 +537,7 @@ def segment(
         )
     ] = "auto",
 
-    # Training configuration
-    lr_scheduler: Annotated[
-        Literal["none", "cosine", "onecycle"],
-        Parameter(
-            help="Learning rate scheduler. 'none' uses constant LR, "
-                 "'cosine' uses CosineAnnealingWarmRestarts, "
-                 "'onecycle' uses OneCycleLR.",
-            group=group_training,
-        )
-    ] = "none",
-
-    precision: Annotated[
-        Literal["32", "16-mixed", "bf16-mixed"],
-        Parameter(
-            help="Training precision. '32' for full precision, "
-                 "'16-mixed' for float16 mixed precision, "
-                 "'bf16-mixed' for bfloat16 mixed precision.",
-            group=group_training,
-        )
-    ] = "32",
-
-    wandb: Annotated[bool, Parameter(
-        help="Enable Weights & Biases logging.",
-        group=group_training,
-    )] = False,
-
-    wandb_project: Annotated[str, Parameter(
-        help="Weights & Biases project name.",
-        group=group_training,
-    )] = "segger",
-
-    wandb_name: Annotated[str | None, Parameter(
-        help="Weights & Biases run name. Auto-generated if not specified.",
-        group=group_training,
-    )] = None,
-
+    # Checkpoint configuration
     save_checkpoints: Annotated[bool, Parameter(
         help="Save model checkpoints during training.",
         group=group_training,
@@ -670,37 +555,20 @@ def segment(
     )] = 3,
 
     checkpoint_path: Annotated[Path | None, Parameter(
-        help="Path to a Lightning .ckpt file to load for resume/finetune/predict.",
+        help="Path to a Lightning .ckpt file to load for finetune/predict.",
         group=group_training,
     )] = None,
 
     checkpoint_mode: Annotated[
-        Literal["train", "resume", "finetune", "predict"],
+        Literal["train", "finetune", "predict"],
         Parameter(
             help="How to use the checkpoint. "
-                 "'train' ignores checkpoints, "
-                 "'resume' continues training with optimizer state, "
-                 "'finetune' loads weights but starts a new optimizer, "
-                 "'predict' skips training and only runs prediction.",
+                 "'train' ignores checkpoints (fresh training). "
+                 "'finetune' loads weights, auto-remaps vocab, fresh optimizer. "
+                 "'predict' skips training, uses checkpoint embeddings exactly.",
             group=group_training,
         )
     ] = "train",
-
-    vocab_mode: Annotated[
-        Literal["strict", "overlap"],
-        Parameter(
-            help="Vocabulary handling for checkpoints. "
-                 "'strict' requires identical gene lists, "
-                 "'overlap' maps shared genes and initializes new ones.",
-            group=group_training,
-        )
-    ] = "strict",
-
-    checkpoint_vocab: Annotated[Path | None, Parameter(
-        help="Optional text file with checkpoint gene names (one per line). "
-             "Required for vocab_mode='overlap' if checkpoint lacks gene_names.",
-        group=group_training,
-    )] = None,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
     from ..utils.optional_deps import require_rapids
@@ -750,22 +618,24 @@ def segment(
     if checkpoint_mode == "train" and checkpoint_path is not None:
         raise ValueError(
             "checkpoint_path was provided with checkpoint_mode='train'. "
-            "Use checkpoint_mode='resume', 'finetune', or 'predict'."
+            "Use checkpoint_mode='finetune' or 'predict'."
         )
     if checkpoint_path is not None and not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    if checkpoint_vocab is not None and not checkpoint_vocab.exists():
-        raise FileNotFoundError(f"Checkpoint vocab not found: {checkpoint_vocab}")
-    if checkpoint_mode == "resume" and vocab_mode != "strict":
-        raise ValueError(
-            "checkpoint_mode='resume' requires vocab_mode='strict'. "
-            "Use checkpoint_mode='finetune' for vocab overlap."
-        )
-    if checkpoint_mode == "train" and vocab_mode != "strict":
-        raise ValueError(
-            "vocab_mode is only used with checkpoints. "
-            "Set checkpoint_mode to 'finetune' or 'predict'."
-        )
+
+    # For predict mode, preload checkpoint to get gene names for filtering
+    ckpt_gene_names = None
+    model = None
+    if checkpoint_mode == "predict":
+        from ..models import LitISTEncoder
+        model = LitISTEncoder.load_from_checkpoint(checkpoint_path)
+        model._use_datamodule_gene_embedding = False
+        ckpt_gene_names = model.get_checkpoint_gene_names()
+        if ckpt_gene_names is None:
+            logger.warning(
+                "Checkpoint lacks gene_names metadata. "
+                "Prediction may fail if vocabulary differs from training data."
+            )
 
     # Setup Lightning Data Module
     from ..data import ISTDataModule
@@ -783,6 +653,7 @@ def segment(
         transcripts_graph_max_dist=transcripts_max_dist,
         prediction_graph_mode=prediction_mode,
         prediction_graph_max_k=prediction_max_k,
+        prediction_graph_fallback=prediction_fallback,
         prediction_graph_scale_factor=prediction_scale_factor,
         tiling_margin_training=tiling_margin_training,
         tiling_margin_prediction=tiling_margin_prediction,
@@ -793,94 +664,73 @@ def segment(
         alignment_loss=alignment_loss,
         scrna_reference_path=scrna_reference_path,
         scrna_celltype_column=scrna_celltype_column,
+        allowed_genes=ckpt_gene_names,
     )
-    
+
     # Setup Lightning Model
-    from ..models import LitISTEncoder
-    n_genes = datamodule.ad.shape[1]
-    current_gene_names = _get_datamodule_gene_names(datamodule)
-    if checkpoint_mode in {"resume", "finetune", "predict"}:
+    n_genes = datamodule.n_genes
+    current_gene_names = datamodule.gene_names
+
+    if checkpoint_mode == "predict":
+        # Predict mode: Use checkpoint exactly, filter data to match
+        if model is None:
+            from ..models import LitISTEncoder
+            model = LitISTEncoder.load_from_checkpoint(checkpoint_path)
+            model._use_datamodule_gene_embedding = False
+
+        # Verify vocabulary compatibility
+        ckpt_n_genes = model.hparams.get("n_genes")
+        if ckpt_n_genes is not None and ckpt_n_genes != n_genes:
+            if ckpt_gene_names is not None:
+                # Auto-filter was applied, check it worked
+                logger.info(
+                    f"Data filtered to {n_genes} genes (checkpoint has {ckpt_n_genes})"
+                )
+            else:
+                raise ValueError(
+                    f"Checkpoint has {ckpt_n_genes} genes but data has {n_genes}. "
+                    "Checkpoint lacks gene_names for auto-filtering. "
+                    "Use a checkpoint with gene_names metadata or finetune mode."
+                )
+
+    elif checkpoint_mode == "finetune":
+        # Finetune mode: Load checkpoint, auto-remap vocabulary
+        from ..models import LitISTEncoder
         model = LitISTEncoder.load_from_checkpoint(checkpoint_path)
         model._use_datamodule_gene_embedding = False
-        ckpt_n_genes = getattr(model, "hparams", {}).get("n_genes")
-        ckpt_gene_names = _resolve_checkpoint_gene_names(model, checkpoint_vocab)
-        if ckpt_gene_names is not None:
-            ckpt_weight_count = model.model.lin_first['tx'].weight.shape[0]
-            if len(ckpt_gene_names) != ckpt_weight_count:
-                raise ValueError(
-                    "Checkpoint gene list length does not match embedding matrix."
-                )
-        if vocab_mode == "strict":
-            if ckpt_n_genes is not None and ckpt_n_genes != n_genes:
-                raise ValueError(
-                    "Checkpoint gene count does not match current data. "
-                    f"Checkpoint n_genes={ckpt_n_genes}, current n_genes={n_genes}."
-                )
-            if ckpt_gene_names is not None and ckpt_gene_names != current_gene_names:
-                raise ValueError(
-                    "Checkpoint gene list does not match current data. "
-                    "Use vocab_mode='overlap' with --checkpoint-vocab."
-                )
-        else:
-            if ckpt_gene_names is None:
-                raise ValueError(
-                    "vocab_mode='overlap' requires checkpoint gene names. "
-                    "Provide --checkpoint-vocab or train a checkpoint with gene_names."
-                )
-            init_embeddings = _get_datamodule_gene_embeddings(datamodule)
-            overlap, verification = _remap_gene_embeddings(
-                model=model,
-                new_gene_names=current_gene_names,
-                ckpt_gene_names=ckpt_gene_names,
-                init_embeddings=init_embeddings,
-                freeze=not update_gene_embedding,
-                seed=42,  # Fixed seed for reproducibility
+
+        # Auto-remap vocabulary (shared genes keep weights, new genes initialized)
+        ckpt_gene_names = model.get_checkpoint_gene_names()
+        if ckpt_gene_names is None:
+            raise ValueError(
+                "Finetune mode requires checkpoint with gene_names metadata. "
+                "Use train mode for fresh training or retrain with newer Segger version."
             )
-            print(
-                f"[segger][vocab] remapped {overlap}/{len(current_gene_names)} "
-                f"overlapping genes ({verification['overlap_ratio']:.1%} overlap)."
-            )
-            try:
-                model.hparams["n_genes"] = n_genes
-                model.hparams["gene_names"] = current_gene_names
-            except AttributeError as e:
-                logger.warning(
-                    f"Could not update hparams after vocab remapping: {e}. "
-                    "Checkpoint metadata may be incomplete."
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Unexpected error updating hparams after vocab remapping: {e}"
-                )
-        if checkpoint_mode == "finetune":
-            model.learning_rate = learning_rate
-            model._lr_scheduler = lr_scheduler
-            model._freeze_gene_embedding = not update_gene_embedding
-            try:
-                model.model.lin_first['tx'].weight.requires_grad = update_gene_embedding
-            except AttributeError as e:
-                logger.warning(
-                    f"Could not set gene embedding requires_grad: {e}. "
-                    "Gene embeddings may not train as expected."
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to configure gene embedding gradients: {e}"
-                ) from e
-            try:
-                model.hparams["learning_rate"] = learning_rate
-                model.hparams["lr_scheduler"] = lr_scheduler
-                model.hparams["update_gene_embedding"] = update_gene_embedding
-            except AttributeError as e:
-                logger.warning(
-                    f"Could not update hparams for finetune mode: {e}. "
-                    "Checkpoint metadata may be incomplete."
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Unexpected error updating hparams for finetune mode: {e}"
-                )
+
+        init_embeddings = datamodule.get_gene_embeddings()
+        overlap, verification = model.remap_gene_embeddings(
+            new_gene_names=current_gene_names,
+            init_embeddings=init_embeddings,
+            freeze=not update_gene_embedding,
+            seed=42,
+        )
+        print(
+            f"[segger][vocab] remapped {overlap}/{len(current_gene_names)} "
+            f"overlapping genes ({verification['overlap_ratio']:.1%} overlap)."
+        )
+
+        # Update training parameters for finetune
+        model.learning_rate = learning_rate
+        model._freeze_gene_embedding = not update_gene_embedding
+        try:
+            model.model.lin_first['tx'].weight.requires_grad = update_gene_embedding
+            model.hparams["learning_rate"] = learning_rate
+            model.hparams["update_gene_embedding"] = update_gene_embedding
+        except Exception as e:
+            logger.warning(f"Could not update hparams for finetune mode: {e}")
+
     else:
+        from ..models import LitISTEncoder
         model = LitISTEncoder(
             n_genes=n_genes,
             n_mid_layers=n_mid_layers,
@@ -889,7 +739,6 @@ def segment(
             hidden_channels=hidden_channels,
             out_channels=out_channels,
             learning_rate=learning_rate,
-            lr_scheduler=lr_scheduler,
             sg_loss_type=segmentation_loss,
             tx_margin=transcripts_margin,
             sg_margin=segmentation_margin,
@@ -914,22 +763,10 @@ def segment(
     from ..data import ISTSegmentationWriter
     from lightning.pytorch import Trainer
 
-    # Setup logger(s)
-    loggers = [CSVLogger(output_directory)]
-    if wandb:
-        try:
-            from lightning.pytorch.loggers import WandbLogger
-            wandb_logger = WandbLogger(
-                project=wandb_project,
-                name=wandb_name,
-                save_dir=output_directory,
-            )
-            loggers.append(wandb_logger)
-        except ImportError:
-            pass  # wandb not available, skip
+    logger = CSVLogger(output_directory)
 
     # Setup callbacks
-    callbacks = []
+    callbacks: list = []
     writer = ISTSegmentationWriter(
         output_directory,
         min_similarity=min_similarity,
@@ -937,7 +774,6 @@ def segment(
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,
         export_gene_embeddings=export_gene_embeddings,
-        gene_embeddings_filename=gene_embeddings_filename,
     )
     callbacks.append(writer)
 
@@ -956,22 +792,19 @@ def segment(
         callbacks.append(checkpoint_callback)
 
     trainer = Trainer(
-        logger=loggers,
+        logger=logger,
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
         callbacks=callbacks,
         log_every_n_steps=1,
-        precision=precision,
     )
 
     # Training / Prediction
     if checkpoint_mode == "predict":
         predictions = trainer.predict(model=model, datamodule=datamodule)
     else:
-        if checkpoint_mode == "resume":
-            trainer.fit(model=model, datamodule=datamodule, ckpt_path=checkpoint_path)
-        else:
-            trainer.fit(model=model, datamodule=datamodule)
+        # train or finetune mode
+        trainer.fit(model=model, datamodule=datamodule)
         predictions = trainer.predict(model=model, datamodule=datamodule)
 
     writer.write_on_epoch_end(
@@ -991,6 +824,7 @@ def segment(
             boundary_method=boundary_method,
             boundary_n_jobs=effective_boundary_n_jobs,
             boundary_voxel_size=boundary_voxel_size,
+            overwrite=overwrite,
         )
 
 
@@ -1001,6 +835,7 @@ def _write_additional_formats(
     boundary_method: str,
     boundary_n_jobs: int,
     boundary_voxel_size: float,
+    overwrite: bool = False,
 ):
     """Write segmentation results in additional output formats.
 
@@ -1074,6 +909,7 @@ def _write_additional_formats(
                     transcripts=transcripts,
                     boundaries=datamodule.bd if hasattr(datamodule, 'bd') else None,
                     output_name="segmentation.zarr",
+                    overwrite=overwrite,
                 )
                 print(f"  Written to: {output_path}")
 
@@ -1093,6 +929,7 @@ def _write_additional_formats(
                 output_dir=output_directory,
                 transcripts=transcripts,
                 output_name="segger_segmentation.h5ad",
+                overwrite=overwrite,
             )
             print(f"  Written to: {output_path}")
 
@@ -1105,7 +942,7 @@ group_export = Group(
 )
 
 
-@app.command
+@_app.command
 def export(
     segmentation_path: Annotated[Path, Parameter(
         help="Path to segmentation result (.parquet or .csv) file.",
@@ -1225,7 +1062,6 @@ def export(
 ):
     """Export segmentation results to multiple formats."""
     import polars as pl
-    from ..export import seg2explorer, seg2explorer_pqdm
     from ..export.merged_writer import merge_predictions_with_transcripts
     from ..io.spatialdata_loader import is_spatialdata_path, load_from_spatialdata
 
@@ -1341,31 +1177,48 @@ def export(
         if isinstance(seg_df, pl.DataFrame):
             seg_df = seg_df.to_pandas()
 
-        # Match legacy xenium_explorer expectations
-        if x_column in seg_df.columns and "x_location" not in seg_df.columns:
-            seg_df = seg_df.rename(columns={x_column: "x_location"})
-        if y_column in seg_df.columns and "y_location" not in seg_df.columns:
-            seg_df = seg_df.rename(columns={y_column: "y_location"})
-        if "z_location" not in seg_df.columns:
-            if "z" in seg_df.columns:
-                seg_df["z_location"] = seg_df["z"]
-            else:
-                seg_df["z_location"] = 0.0
-        if "overlaps_nucleus" not in seg_df.columns:
-            if "cell_compartment" in seg_df.columns:
-                seg_df["overlaps_nucleus"] = (seg_df["cell_compartment"] == 2).astype(int)
-            else:
-                seg_df["overlaps_nucleus"] = 0
+        def _resolve_coord_columns(df):
+            if x_column in df.columns and y_column in df.columns:
+                return x_column, y_column
+            if "x_location" in df.columns and "y_location" in df.columns:
+                return "x_location", "y_location"
+            if "x" in df.columns and "y" in df.columns:
+                return "x", "y"
+            raise ValueError(
+                "Could not resolve x/y columns for Xenium export. "
+                f"Tried '{x_column}/{y_column}', 'x_location/y_location', and 'x/y'."
+            )
 
-        use_serial = export_serial or effective_n_jobs <= 1 or (boundary_method == "input" and bd is not None)
+        effective_x_col, effective_y_col = _resolve_coord_columns(seg_df)
+        effective_z_col = None
+        if "z" in seg_df.columns:
+            effective_z_col = "z"
+        elif "z_location" in seg_df.columns:
+            effective_z_col = "z_location"
+
+        nucleus_column = "cell_compartment" if "cell_compartment" in seg_df.columns else None
+        nucleus_value = 2
+        if nucleus_column is None and "overlaps_nucleus" in seg_df.columns:
+            nucleus_column = "overlaps_nucleus"
+            nucleus_value = 1
+
+        from ..export.xenium_optimized import seg2explorer, seg2explorer_pqdm
+
+        use_serial = export_serial or effective_n_jobs <= 1
         if use_serial:
             seg2explorer(
                 seg_df=seg_df,
                 source_path=source_path,
                 output_dir=output_dir,
-                cell_id_columns=effective_cell_id_column,
+                cell_id_column=effective_cell_id_column,
+                x_column=effective_x_col,
+                y_column=effective_y_col,
+                z_column=effective_z_col,
+                nucleus_column=nucleus_column,
+                nucleus_value=nucleus_value,
                 area_low=area_low,
                 area_high=area_high,
+                polygon_max_vertices=polygon_max_vertices,
                 boundary_method=boundary_method,
                 boundary_voxel_size=boundary_voxel_size,
                 boundaries=bd,
@@ -1375,10 +1228,16 @@ def export(
                 seg_df=seg_df,
                 source_path=source_path,
                 output_dir=output_dir,
-                cell_id_columns=effective_cell_id_column,
+                cell_id_column=effective_cell_id_column,
+                x_column=effective_x_col,
+                y_column=effective_y_col,
+                z_column=effective_z_col,
+                nucleus_column=nucleus_column,
+                nucleus_value=nucleus_value,
                 area_low=area_low,
                 area_high=area_high,
                 n_jobs=effective_n_jobs,
+                polygon_max_vertices=polygon_max_vertices,
                 boundary_method=boundary_method,
                 boundary_voxel_size=boundary_voxel_size,
                 boundaries=bd,
@@ -1446,219 +1305,6 @@ def export(
     raise ValueError(f"Unsupported export format: {format}")
 
 
-# HPO parameter group
-group_hpo = Group(
-    name="HPO",
-    help="Related to hyperparameter optimization.",
-    sort_key=11,
-)
-
-
-@app.command
-def hpo(
-    # I/O
-    input_directory: Annotated[Path, Parameter(
-        help="Directory containing input data for training.",
-        alias="-i",
-        group=group_io,
-        validator=validators.Path(exists=True, dir_okay=True),
-    )],
-
-    output_directory: Annotated[Path, Parameter(
-        help="Directory for HPO output files (trials, results, checkpoints).",
-        alias="-o",
-        group=group_io,
-    )],
-
-    # HPO parameters
-    n_trials: Annotated[int, Parameter(
-        help="Number of HPO trials to run.",
-        validator=validators.Number(gt=0),
-        group=group_hpo,
-    )] = 100,
-
-    n_epochs: Annotated[int, Parameter(
-        help="Number of training epochs per trial.",
-        validator=validators.Number(gt=0),
-        group=group_hpo,
-    )] = 5,
-
-    n_jobs: Annotated[int, Parameter(
-        help="Number of parallel trials. Set to 1 for sequential execution.",
-        validator=validators.Number(gt=0),
-        group=group_hpo,
-    )] = 1,
-
-    sampler: Annotated[
-        Literal["tpe", "nsga3", "random", "cmaes"],
-        Parameter(
-            help="Optuna sampler type. 'tpe' for single-objective, "
-                 "'nsga3' for multi-objective (auto-selected if n_objectives > 1).",
-            group=group_hpo,
-        )
-    ] = "tpe",
-
-    pruner: Annotated[
-        Literal["hyperband", "median", "none"],
-        Parameter(
-            help="Optuna pruner for early stopping. 'hyperband' (default, best for TPE) "
-                 "uses successive halving, 'median' prunes trials worse than median.",
-            group=group_hpo,
-        )
-    ] = "hyperband",
-
-    n_objectives: Annotated[int, Parameter(
-        help="Number of objectives. 1 for single-objective (scalarized), "
-             "5 for multi-objective (sensitivity, specificity, morphological, "
-             "clustering, vertical).",
-        validator=validators.Number(gte=1, lte=5),
-        group=group_hpo,
-    )] = 1,
-
-    scalarize: Annotated[bool, Parameter(
-        help="Force single-objective optimization with weighted scalarization.",
-        group=group_hpo,
-    )] = False,
-
-    weights: Annotated[str | None, Parameter(
-        help="Comma-separated weights for scalarization. "
-             "Format: sensitivity,specificity,morphological,clustering,vertical. "
-             "Example: '0.2,0.35,0.2,0.15,0.1'.",
-        group=group_hpo,
-    )] = None,
-
-    quick: Annotated[bool, Parameter(
-        help="Use reduced search space for faster HPO.",
-        group=group_hpo,
-    )] = False,
-
-    # Reference data
-    reference_path: Annotated[Path | None, Parameter(
-        help="Path to scRNA-seq reference h5ad file for metric computation.",
-        group=group_hpo,
-    )] = None,
-
-    # Training configuration
-    precision: Annotated[
-        Literal["32", "16-mixed", "bf16-mixed"],
-        Parameter(
-            help="Training precision per trial.",
-            group=group_training,
-        )
-    ] = "16-mixed",
-
-    # Study persistence
-    study_name: Annotated[str, Parameter(
-        help="Name of the Optuna study (for persistence and resumption).",
-        group=group_hpo,
-    )] = "segger_hpo",
-
-    storage: Annotated[str | None, Parameter(
-        help="Database URL for study persistence. "
-             "Example: 'sqlite:///hpo.db' for SQLite, "
-             "'postgresql://user:pass@host/db' for PostgreSQL.",
-        group=group_hpo,
-    )] = None,
-
-    seed: Annotated[int | None, Parameter(
-        help="Random seed for reproducibility.",
-        group=group_hpo,
-    )] = None,
-
-    # Multi-fidelity HPO
-    fidelity: Annotated[float, Parameter(
-        help="Data fraction for multi-fidelity HPO (0.1-1.0). "
-             "Lower values train on data subsets for faster exploration.",
-        validator=validators.Number(gt=0, lte=1),
-        group=group_hpo,
-    )] = 1.0,
-
-    workflow: Annotated[
-        Literal["none", "smart"],
-        Parameter(
-            help="HPO workflow mode. 'none' for standard single-stage HPO. "
-                 "'smart' for two-stage: explore on 20%% data, refine top 10 on full data.",
-            group=group_hpo,
-        )
-    ] = "none",
-
-    early_stopping_patience: Annotated[int, Parameter(
-        help="Epochs with no improvement before early stopping. 0 disables.",
-        validator=validators.Number(gte=0),
-        group=group_hpo,
-    )] = 3,
-):
-    """Run hyperparameter optimization for Segger models.
-
-    This command uses Optuna to search for optimal hyperparameters.
-    Supports both single-objective (TPE sampler) and multi-objective
-    (NSGA-III sampler) optimization.
-
-    Examples
-    --------
-    # Basic HPO with 50 trials
-    segger hpo -i data/ -o hpo_results/ --n-trials 50
-
-    # Multi-objective HPO with NSGA-III
-    segger hpo -i data/ -o hpo_results/ --n-objectives 5
-
-    # Parallel HPO
-    segger hpo -i data/ -o hpo_results/ --n-jobs 4
-
-    # Quick search with reduced parameter space
-    segger hpo -i data/ -o hpo_results/ --quick --n-trials 20
-
-    # Persistent study with SQLite database
-    segger hpo -i data/ -o hpo_results/ --storage sqlite:///hpo.db
-
-    # Smart workflow: explore on 20%% data, refine top 10 on full data
-    segger hpo -i data/ -o hpo_results/ --workflow smart --n-trials 50
-
-    # Manual multi-fidelity: 20%% data, 3 epochs for fast exploration
-    segger hpo -i data/ -o hpo_results/ --fidelity 0.2 --n-epochs 3
-    """
-    try:
-        from ..hpo import run_hpo as _run_hpo
-    except ImportError as e:
-        raise ImportError(
-            f"HPO dependencies not installed. "
-            f"Install with: pip install segger[hpo]"
-        ) from e
-
-    # Handle scalarization
-    effective_n_objectives = 1 if scalarize else n_objectives
-
-    # Parse weights if provided
-    if weights:
-        from ..hpo.metrics import parse_weights_string
-        parse_weights_string(weights)  # Validate format
-
-    # Create output directory
-    output_directory = Path(output_directory)
-    output_directory.mkdir(parents=True, exist_ok=True)
-
-    # Run HPO
-    _run_hpo(
-        input_directory=input_directory,
-        output_directory=output_directory,
-        n_trials=n_trials,
-        n_epochs=n_epochs,
-        n_jobs=n_jobs,
-        n_objectives=effective_n_objectives,
-        sampler_type=sampler,
-        pruner_type=pruner,
-        quick_search=quick,
-        reference_path=reference_path,
-        precision=precision,
-        study_name=study_name,
-        storage=storage,
-        seed=seed,
-        fidelity=fidelity,
-        early_stopping_patience=early_stopping_patience,
-        workflow=workflow,
-    )
-
-
 # Plotting parameter group
 group_plot = Group(
     name="Plotting",
@@ -1719,7 +1365,7 @@ def _resolve_metrics_path(
     raise SystemExit(f"No metrics.csv found under: {output_directory}")
 
 
-@app.command
+@_app.command
 def plot(
     output_directory: Annotated[Path, Parameter(
         help="Segger output directory containing lightning_logs/.../metrics.csv.",
@@ -1888,3 +1534,13 @@ def plot(
     print(f"Using metrics: {metrics_csv}")
     for path in saved_paths:
         print(f"Saved plot to: {path}")
+
+
+def app(*args, **kwargs):
+    """CLI entrypoint wrapper to normalize boolean flag values."""
+    import sys
+    argv = kwargs.pop("argv", None)
+    if argv is None:
+        argv = sys.argv[1:]
+    sys.argv = [sys.argv[0]] + _normalize_bool_flags(list(argv))
+    return _app(*args, **kwargs)

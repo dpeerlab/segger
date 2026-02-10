@@ -46,6 +46,7 @@ def setup_heterodata(
     transcripts_graph_max_dist: float,
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"],
     prediction_graph_max_k: int,
+    prediction_graph_fallback: bool,
     prediction_graph_scale_factor: float,
     cells_embedding_key: str = 'X_pca',
     cells_clusters_column: str = 'phenograph_cluster',
@@ -78,6 +79,8 @@ def setup_heterodata(
         Mode for tx-bd prediction graph.
     prediction_graph_max_k : int
         Maximum neighbors for prediction graph.
+    prediction_graph_fallback : bool
+        If True, add kNN candidates for transcripts with zero polygon matches.
     prediction_graph_scale_factor : float
         Scale factor for polygon expansion/shrinking.
     cells_embedding_key : str, optional
@@ -327,6 +330,7 @@ def setup_heterodata(
         scale_factor=prediction_graph_scale_factor,
         mode=prediction_graph_mode,
         use_3d=use_3d_actual if prediction_graph_mode == "uniform" else False,
+        fallback_uniform=prediction_graph_fallback,
     )
 
     debug_me = os.getenv("SEGGER_DEBUG_ME", "").lower() in {
