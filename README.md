@@ -62,6 +62,7 @@ Common optional dependencies:
 - `opencv-python` (preprocessors)
 - `spatialdata` + `dask` (SpatialData loader/writer)
 - `spatialdata-io` (platform-specific SpatialData readers)
+- `uniplot` + `matplotlib` (loss curve plotting; install with `segger[plot]`)
 - `sopa` (SOPA export helpers)
 - `geopandas`/`shapely` (geometry utilities)
 
@@ -77,6 +78,28 @@ To see all available parameter options:
 segger segment --help
 ```
 
+Run prediction only from a saved checkpoint (no retraining):
+```bash
+segger predict -c /path/to/checkpoints/segger-best-epoch.ckpt \
+  -i /path/to/your/ist/data/ \
+  -o /path/to/save/outputs/
+```
+
+Plot loss curves from the latest training run:
+```bash
+segger plot -o /path/to/save/outputs/
+```
+
+Quick terminal plot (no image saved):
+```bash
+segger plot -o /path/to/save/outputs/ --quick
+```
+
+Plot a specific Lightning run version:
+```bash
+segger plot -o /path/to/save/outputs/ --log-version 0
+```
+
 ## CLI Parameters (New/Updated)
 
 - `--input-format` (`auto` | `raw` | `spatialdata`) and `--output-format` (`segger_raw` | `merged` | `spatialdata` | `anndata` | `all`).
@@ -88,6 +111,7 @@ segger segment --help
 - `--fragment-mode`, `--fragment-min-transcripts`, `--fragment-similarity-threshold`.
 - `--alignment-loss`, `--scrna-reference-path`, `--scrna-celltype-column`.
 - `--alignment-loss-weight-start`, `--alignment-loss-weight-end`, `--loss-combination-mode`.
+- `--early-stopping-patience` (default `10`) and `--early-stopping-min-delta` (default `1e-4`) for validation-based stopping on `val:loss`.
 - `--use-3d` (`auto` | `true` | `false`) and `--min-qv` for quality filtering.
 - `--tiling-margin-training`, `--tiling-margin-prediction`, `--max-nodes-per-tile`, `--max-edges-per-batch`.
 

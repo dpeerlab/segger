@@ -197,6 +197,7 @@ segger segment -i data/ -o output/ \
 1. Use `--loss-combination-mode interpolate` (default)
 2. Reduce `--alignment-loss-weight-end` to 0.05
 3. Check data quality and batch sizes
+4. Increase `--early-stopping-patience` if validation loss is noisy
 
 ### Alignment loss too high
 
@@ -214,12 +215,19 @@ segger segment -i data/ -o output/ \
 
 During training, monitor these logged metrics:
 
+- `val:loss` - Total validation loss (used by early stopping/checkpointing)
 - `train:loss_tx` - Transcript embedding loss
 - `train:loss_bd` - Boundary embedding loss
 - `train:loss_sg` - Segmentation loss
 - `train:loss_align` - Alignment loss (if enabled)
 
 All should decrease over training. If alignment loss stays high, ME gene constraints may be too strict.
+
+Early stopping defaults:
+- `--early-stopping-patience 10`
+- `--early-stopping-min-delta 1e-4`
+
+Set `--early-stopping-patience 0` to disable early stopping.
 
 ## Mathematical Details
 

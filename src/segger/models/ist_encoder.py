@@ -57,15 +57,20 @@ class Positional2dEmbedder(Module):
             pos: torch.Tensor,
             batch: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if pos.numel() == 0:
+            pos_freq = self.embed(pos, self.frequency_embedding_size)
+            pos_emb = self.mlp(pos_freq)
+            return pos_emb.flatten(-2)
+
         if batch is None:
             pos = pos - pos.min(dim=0).values
-            pos = pos / pos.max(dim=0).values
+            pos = pos / pos.max(dim=0).values.clamp_min(1e-8)
         else:
             # Vectorized per-batch normalization using scatter operations
             num_batches = batch.max().item() + 1
             mins, _ = scatter_min(pos, batch, dim=0, dim_size=num_batches)
             maxs, _ = scatter_max(pos, batch, dim=0, dim_size=num_batches)
-            pos = (pos - mins[batch]) / (maxs[batch] - mins[batch] + 1e-8)
+            pos = (pos - mins[batch]) / (maxs[batch] - mins[batch]).clamp_min(1e-8)
 
         pos_freq = self.embed(pos, self.frequency_embedding_size)  # ... x 2 x freq_dim
         pos_emb = self.mlp(pos_freq)  # ... x 2 x dim

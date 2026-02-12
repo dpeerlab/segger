@@ -57,6 +57,12 @@ sopa = [
     "spatialdata>=0.2.0",  # SOPA requires spatialdata
 ]
 
+# Plotting utilities (terminal + PNG loss curves)
+plot = [
+    "matplotlib>=3.7",
+    "uniplot>=0.10.0",
+]
+
 # All SpatialData features including SOPA
 spatialdata-all = [
     "spatialdata>=0.2.0",

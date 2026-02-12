@@ -515,6 +515,11 @@ def extract_largest_polygon(
     """
     if geom is None:
         return None
+    if getattr(geom, "is_empty", False):
+        return None
     if isinstance(geom, MultiPolygon):
-        return max(geom.geoms, key=lambda p: p.area)
+        candidates = [p for p in geom.geoms if p is not None and not p.is_empty]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.area)
     return geom

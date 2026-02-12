@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import importlib.util
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
@@ -44,18 +45,15 @@ F = TypeVar("F", bound=Callable[..., Any])
 def _check_spatialdata() -> bool:
     """Check if spatialdata is available."""
     try:
-        import spatialdata  # noqa: F401
-        return True
+        return importlib.util.find_spec("spatialdata") is not None
     except Exception:
-        # Catch all exceptions: ImportError, NotImplementedError from dask, etc.
         return False
 
 
 def _check_spatialdata_io() -> bool:
     """Check if spatialdata-io is available."""
     try:
-        import spatialdata_io  # noqa: F401
-        return True
+        return importlib.util.find_spec("spatialdata_io") is not None
     except Exception:
         return False
 
@@ -63,8 +61,7 @@ def _check_spatialdata_io() -> bool:
 def _check_sopa() -> bool:
     """Check if sopa is available."""
     try:
-        import sopa  # noqa: F401
-        return True
+        return importlib.util.find_spec("sopa") is not None
     except Exception:
         return False
 

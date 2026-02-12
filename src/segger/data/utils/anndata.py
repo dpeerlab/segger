@@ -28,6 +28,7 @@ def anndata_from_transcripts(
     cell_id_column: str,
     score_column: str | None = None,
     coordinate_columns: list[str] | None = None,
+    feature_vocab: list[str] | None = None,
 ):
     """TODO: Add description.
     """
@@ -35,8 +36,21 @@ def anndata_from_transcripts(
     # Remove non-nuclear transcript
     tx = tx.filter(pl.col(cell_id_column).is_not_null())
     # Get sparse counts from transcripts
-    feature_idx = tx.select(
-        feature_column).unique().with_row_index()
+    if feature_vocab is None:
+        feature_idx = tx.select(
+            feature_column).unique().with_row_index()
+    else:
+        feature_vocab = [str(gene) for gene in feature_vocab]
+        if len(feature_vocab) != len(set(feature_vocab)):
+            raise ValueError(
+                "feature_vocab contains duplicate genes. "
+                "Gene vocabulary must be unique to preserve checkpoint mapping."
+            )
+        feature_idx = pl.DataFrame(
+            {feature_column: feature_vocab}
+        ).with_row_index()
+        tx = tx.filter(pl.col(feature_column).is_in(feature_vocab))
+
     segment_idx = tx.select(
         cell_id_column).unique().with_row_index()
     groupby = (
@@ -64,7 +78,10 @@ def anndata_from_transcripts(
     )
     # Get correlation matrix
     ijv = groupby.len().to_numpy().T
-    X = sp.coo_matrix((ijv[2], ijv[:2])).tocsr()
+    X = sp.coo_matrix(
+        (ijv[2], ijv[:2]),
+        shape=(len(segment_idx), len(feature_idx)),
+    ).tocsr()
     
     # To AnnData
     adata = sc.AnnData(
@@ -148,10 +165,13 @@ def setup_anndata(
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
     compute_morphology: bool = False,
+    feature_vocab: list[str] | None = None,
 ):
     """TODO: Add description.
     """
     _lazy_imports()
+    if feature_vocab is not None:
+        feature_vocab = [str(gene) for gene in feature_vocab]
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
@@ -162,7 +182,17 @@ def setup_anndata(
         tx_fields.feature,
         cell_column,
         coordinate_columns=[tx_fields.x, tx_fields.y],
+        feature_vocab=feature_vocab,
     )
+    if ad.n_obs == 0:
+        raise ValueError(
+            "No transcripts with valid cell assignments were found for AnnData construction."
+        )
+    if ad.n_vars == 0:
+        raise ValueError(
+            "No genes available to build AnnData. "
+            "Check input filtering and checkpoint vocabulary overlap."
+        )
 
     # Map boundary cell IDs to boundary index
     ad.obs = (
@@ -182,12 +212,16 @@ def setup_anndata(
     )
     assert ~ad.obs.index.isna().any()
 
-    # Remove genes with fewer than min counts permanently
+    # Remove low-count genes unless a fixed checkpoint vocabulary is provided
     ad.var['n_counts'] = ad.X.sum(0).A.flatten()
-    ad = ad[:,  ad.var['n_counts'].ge(genes_min_counts)]
+    if feature_vocab is None:
+        ad = ad[:, ad.var['n_counts'].ge(genes_min_counts)]
 
-    # Explicitly sort indices for reproducibility
-    ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
+    # Explicitly sort indices for reproducibility unless vocab order is fixed
+    if feature_vocab is None:
+        ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
+    else:
+        ad = ad[ad.obs.index.sort_values(), feature_vocab]
     
     # Add raw counts
     ad.raw = ad.copy()

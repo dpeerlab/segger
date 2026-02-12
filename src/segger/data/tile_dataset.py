@@ -4,7 +4,7 @@ from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 import torch
 
 
@@ -271,7 +271,120 @@ class TilePredictDataset(Dataset):
 
 
 class DynamicBatchSamplerPatch(DynamicBatchSampler):
-    """TODO: Description
+    """Dynamic batch sampler with an exact length for deterministic prediction.
+
+    `torch_geometric.loader.DynamicBatchSampler` does not implement `__len__`
+    because batch counts depend on dynamic packing. In Segger prediction we use
+    `shuffle=False`, so packing is deterministic and the number of yielded
+    batches can be computed exactly.
     """
+
+    _SKIP = -1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sample_sizes: list[int] | None = None
+        self._num_batches: int | None = None
+
+    def _get_sample_size(self, idx: int) -> int:
+        data = self.dataset[idx]
+        num = data.num_nodes if self.mode == 'node' else data.num_edges
+
+        if not isinstance(num, int):
+            raise TypeError(
+                f"'{self.__class__.__name__}' expected dataset to return "
+                f"'{self.mode}' as an int, but found type '{type(num)}'"
+            )
+
+        if num > self.max_num:
+            if self.skip_too_big:
+                return self._SKIP
+            raise ValueError(
+                f"'{self.__class__.__name__}' expected {self.mode} <= "
+                f"{self.max_num}, but found {num}. Increase 'max_num' or set "
+                f"'skip_too_big=True'"
+            )
+        return num
+
+    def _ensure_sample_sizes(self) -> None:
+        if self._sample_sizes is not None:
+            return
+        self._sample_sizes = [
+            self._get_sample_size(idx) for idx in range(len(self.dataset))
+        ]
+
+    def _iter_index_size(self) -> Iterator[tuple[int, int]]:
+        self._ensure_sample_sizes()
+        assert self._sample_sizes is not None
+        # PyG has changed internal sampler attribute names across versions.
+        if hasattr(self, "sampler"):
+            indices = self.sampler
+        elif hasattr(self, "_sampler"):
+            indices = self._sampler
+        else:
+            indices = range(len(self.dataset))
+        for idx in indices:
+            idx = int(idx)
+            yield idx, self._sample_sizes[idx]
+
+    def _compute_num_batches(self) -> int:
+        if self._num_batches is not None:
+            return self._num_batches
+
+        num_batches = 0
+        current = 0
+        num_processed = 0
+
+        for _, sample_size in self._iter_index_size():
+            if sample_size == self._SKIP:
+                continue
+
+            if current + sample_size > self.max_num:
+                num_batches += 1
+                current = 0
+            current += sample_size
+            num_processed += 1
+
+            if self.num_steps is not None and num_processed >= self.num_steps:
+                break
+
+        if current > 0:
+            num_batches += 1
+
+        self._num_batches = num_batches
+        return num_batches
+
+    def __iter__(self):
+        if self.shuffle:
+            # For shuffled sampling, preserve upstream behavior.
+            yield from super().__iter__()
+            return
+
+        batch = []
+        current = 0
+        num_processed = 0
+
+        for idx, sample_size in self._iter_index_size():
+            if sample_size == self._SKIP:
+                continue
+
+            if current + sample_size > self.max_num:
+                yield batch
+                batch = []
+                current = 0
+
+            batch.append(idx)
+            current += sample_size
+            num_processed += 1
+
+            if self.num_steps is not None and num_processed >= self.num_steps:
+                break
+
+        if len(batch) > 0:
+            yield batch
+
     def __len__(self):
-        return len(self.dataset)  # ceiling on dataset length
+        if self.shuffle:
+            # Order-dependent packing with random sampling has no stable length.
+            return len(self.dataset)
+        return self._compute_num_batches()

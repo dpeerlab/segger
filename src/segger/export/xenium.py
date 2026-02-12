@@ -7,12 +7,17 @@ Zarr format for visualization and validation.
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import json
+from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 import pandas as pd
 import polars as pl
 import zarr
-from pqdm.processes import pqdm
+from pqdm.processes import pqdm as pqdm_processes
+try:
+    from pqdm.threads import pqdm as pqdm_threads
+except Exception:
+    pqdm_threads = None
 from shapely.geometry import MultiPoint, MultiPolygon, Polygon
 from tqdm import tqdm
 from zarr.storage import ZipStore
@@ -56,14 +61,45 @@ def _safe_boundary_polygon(
     seg_cell: pd.DataFrame,
     x: str,
     y: str,
+    boundary_method: str = "delaunay",
+    boundary_voxel_size: float = 0.0,
 ) -> Optional[Polygon]:
     """Generate a robust polygon boundary for a cell.
 
-    Tries Delaunay-based boundary first, then falls back to convex hull.
+    Uses the requested boundary method with robust fallbacks.
     """
-    cell_poly = generate_boundary(seg_cell, x=x, y=y)
-    if isinstance(cell_poly, MultiPolygon):
-        cell_poly = extract_largest_polygon(cell_poly)
+    if boundary_method in {"convex_hull", "input"}:
+        mp = MultiPoint(seg_cell[[x, y]].values)
+        cell_poly = mp.convex_hull if not mp.is_empty else None
+    elif boundary_method == "voxel":
+        if boundary_voxel_size <= 0:
+            return None
+        points = seg_cell[[x, y]].to_numpy(dtype=np.float64)
+        if len(points) < 3:
+            return None
+        mins = points.min(axis=0)
+        bins = np.floor((points - mins) / boundary_voxel_size).astype(np.int64)
+        _, keep = np.unique(bins, axis=0, return_index=True)
+        reduced = points[np.sort(keep)]
+        if len(reduced) < 3:
+            return None
+        mp = MultiPoint(reduced)
+        cell_poly = mp.convex_hull if not mp.is_empty else None
+    else:
+        working = seg_cell
+        if boundary_voxel_size > 0:
+            points = seg_cell[[x, y]].to_numpy(dtype=np.float64)
+            mins = points.min(axis=0)
+            bins = np.floor((points - mins) / boundary_voxel_size).astype(np.int64)
+            _, keep = np.unique(bins, axis=0, return_index=True)
+            working = seg_cell.iloc[np.sort(keep)]
+
+        try:
+            cell_poly = generate_boundary(working, x=x, y=y)
+            if isinstance(cell_poly, MultiPolygon):
+                cell_poly = extract_largest_polygon(cell_poly)
+        except Exception:
+            cell_poly = None
 
     if cell_poly is None or not isinstance(cell_poly, Polygon) or cell_poly.is_empty:
         # Fallback: convex hull of points
@@ -74,6 +110,62 @@ def _safe_boundary_polygon(
         return None
 
     return cell_poly
+
+
+def _prepare_input_boundaries(
+    boundaries,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
+) -> Tuple[Dict[Any, Polygon], Dict[Any, Polygon]]:
+    """Prepare lookup tables for input cell/nucleus boundaries."""
+    if boundaries is None:
+        return {}, {}
+
+    gdf = boundaries
+    if boundary_id_column not in gdf.columns:
+        if gdf.index.name == boundary_id_column:
+            gdf = gdf.reset_index()
+        else:
+            return {}, {}
+
+    def _pick_largest(group):
+        largest = None
+        max_area = -1.0
+        for geom in group.geometry:
+            if geom is None or getattr(geom, "is_empty", True):
+                continue
+            if isinstance(geom, MultiPolygon):
+                geom = extract_largest_polygon(geom)
+            if not isinstance(geom, Polygon) or geom is None or geom.is_empty:
+                continue
+            area = float(geom.area)
+            if area > max_area:
+                max_area = area
+                largest = geom
+        return largest
+
+    if boundary_type_column in gdf.columns:
+        cells = gdf[gdf[boundary_type_column] == boundary_cell_value]
+        nuclei = gdf[gdf[boundary_type_column] == boundary_nucleus_value]
+    else:
+        cells = gdf
+        nuclei = gdf.iloc[0:0]
+
+    cell_lookup: Dict[Any, Polygon] = {}
+    for cell_id, group in cells.groupby(boundary_id_column):
+        poly = _pick_largest(group)
+        if poly is not None:
+            cell_lookup[cell_id] = poly
+
+    nucleus_lookup: Dict[Any, Polygon] = {}
+    for cell_id, group in nuclei.groupby(boundary_id_column):
+        poly = _pick_largest(group)
+        if poly is not None:
+            nucleus_lookup[cell_id] = poly
+
+    return cell_lookup, nucleus_lookup
 
 
 def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -155,6 +247,14 @@ def seg2explorer(
     area_low: float = 10,
     area_high: float = 100,
     polygon_max_vertices: int = 13,
+    boundary_method: str = "delaunay",
+    boundary_voxel_size: float = 0.0,
+    boundaries: Optional["gpd.GeoDataFrame"] = None,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
+    cell_id_columns: Optional[str] = None,
 ) -> None:
     """Convert segmentation results to Xenium Explorer format.
 
@@ -193,6 +293,12 @@ def seg2explorer(
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
     """
+    if cell_id_columns is not None:
+        cell_id_column = cell_id_columns
+
+    if boundary_method == "skip":
+        raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
         seg_df = seg_df.to_pandas()
@@ -200,6 +306,17 @@ def seg2explorer(
     source_path = Path(source_path)
     storage = Path(output_dir)
     storage.mkdir(parents=True, exist_ok=True)
+
+    cell_boundaries: Dict[Any, Polygon] = {}
+    nucleus_boundaries: Dict[Any, Polygon] = {}
+    if boundary_method == "input":
+        cell_boundaries, nucleus_boundaries = _prepare_input_boundaries(
+            boundaries=boundaries,
+            boundary_id_column=boundary_id_column,
+            boundary_type_column=boundary_type_column,
+            boundary_cell_value=boundary_cell_value,
+            boundary_nucleus_value=boundary_nucleus_value,
+        )
 
     # Drop unassigned cells if numeric
     if cell_id_column in seg_df.columns:
@@ -224,13 +341,25 @@ def seg2explorer(
         if len(seg_cell) < 5:
             continue
 
-        cell_poly = _safe_boundary_polygon(seg_cell, x=x_column, y=y_column)
+        if boundary_method == "input" and cell_boundaries:
+            cell_poly = cell_boundaries.get(seg_cell_id)
+        else:
+            fallback_method = "delaunay" if boundary_method == "input" else boundary_method
+            cell_poly = _safe_boundary_polygon(
+                seg_cell,
+                x=x_column,
+                y=y_column,
+                boundary_method=fallback_method,
+                boundary_voxel_size=boundary_voxel_size,
+            )
         if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
             continue
 
         # Nucleus polygon (optional)
         nucleus_poly = None
-        if nucleus_column is not None and nucleus_column in seg_cell.columns:
+        if boundary_method == "input" and nucleus_boundaries:
+            nucleus_poly = nucleus_boundaries.get(seg_cell_id)
+        elif nucleus_column is not None and nucleus_column in seg_cell.columns:
             seg_nucleus = seg_cell[seg_cell[nucleus_column] == nucleus_value]
             if len(seg_nucleus) >= 3:
                 nucleus_poly = MultiPoint(seg_nucleus[[x_column, y_column]].values).convex_hull
@@ -323,10 +452,11 @@ def seg2explorer(
         "Segger nucleus boundaries",
         "Segger cell boundaries",
     ]
-    attrs["segmentation_methods"] = [
-        "segger_nucleus_convex_hull",
-        "segger_cell_delaunay",
-    ]
+    cell_method = f"segger_cell_{boundary_method}"
+    nucleus_method = "segger_nucleus_convex_hull"
+    if boundary_method == "input" and nucleus_boundaries:
+        nucleus_method = "segger_nucleus_input"
+    attrs["segmentation_methods"] = [nucleus_method, cell_method]
     attrs.setdefault("spatial_units", "microns")
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)
@@ -399,12 +529,20 @@ def _process_one_cell(args: tuple) -> Optional[dict]:
         area_low,
         area_high,
         polygon_max_vertices,
+        boundary_method,
+        boundary_voxel_size,
     ) = args
 
     if len(seg_cell) < 5:
         return None
 
-    cell_poly = _safe_boundary_polygon(seg_cell, x=x_col, y=y_col)
+    cell_poly = _safe_boundary_polygon(
+        seg_cell,
+        x=x_col,
+        y=y_col,
+        boundary_method=boundary_method,
+        boundary_voxel_size=boundary_voxel_size,
+    )
     if cell_poly is None or not (area_low <= cell_poly.area <= area_high):
         return None
 
@@ -474,6 +612,14 @@ def seg2explorer_pqdm(
     area_high: float = 100,
     n_jobs: int = 1,
     polygon_max_vertices: int = 13,
+    boundary_method: str = "delaunay",
+    boundary_voxel_size: float = 0.0,
+    boundaries: Optional["gpd.GeoDataFrame"] = None,
+    boundary_id_column: str = "cell_id",
+    boundary_type_column: str = "boundary_type",
+    boundary_cell_value: str = "cell",
+    boundary_nucleus_value: str = "nucleus",
+    cell_id_columns: Optional[str] = None,
 ) -> None:
     """Parallelized version of seg2explorer using pqdm.
 
@@ -514,6 +660,19 @@ def seg2explorer_pqdm(
     polygon_max_vertices : int
         Maximum number of vertices per polygon (including closure).
     """
+    if cell_id_columns is not None:
+        cell_id_column = cell_id_columns
+
+    if boundary_method == "skip":
+        raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+    if boundary_method == "input" and boundaries is not None:
+        raise ValueError(
+            "Parallel Xenium export does not support boundary_method='input'. "
+            "Use seg2explorer (serial) when passing input boundaries."
+        )
+    if boundary_method == "input":
+        boundary_method = "delaunay"
+
     # Convert Polars to pandas
     if isinstance(seg_df, pl.DataFrame):
         seg_df = seg_df.to_pandas()
@@ -524,31 +683,52 @@ def seg2explorer_pqdm(
 
     grouped_by = seg_df.groupby(cell_id_column)
 
-    # Build work items
-    work_iter = (
-        (
-            seg_cell_id,
-            seg_cell,
-            x_column,
-            y_column,
-            z_column,
-            nucleus_column,
-            nucleus_value,
-            area_low,
-            area_high,
-            polygon_max_vertices,
+    def _work_iter():
+        return (
+            (
+                seg_cell_id,
+                seg_cell,
+                x_column,
+                y_column,
+                z_column,
+                nucleus_column,
+                nucleus_value,
+                area_low,
+                area_high,
+                polygon_max_vertices,
+                boundary_method,
+                boundary_voxel_size,
+            )
+            for seg_cell_id, seg_cell in grouped_by
         )
-        for seg_cell_id, seg_cell in grouped_by
-    )
 
-    # Parallel processing
-    results = pqdm(
-        work_iter,
-        _process_one_cell,
-        n_jobs=n_jobs,
-        desc="Processing cells",
-        exception_behaviour="immediate",
-    )
+    # Process backend first for throughput and "whole job" progress visibility.
+    # If the process pool crashes, restart once with thread workers.
+    try:
+        results = pqdm_processes(
+            _work_iter(),
+            _process_one_cell,
+            n_jobs=n_jobs,
+            desc="Processing cells",
+            exception_behaviour="immediate",
+        )
+    except BrokenProcessPool:
+        if pqdm_threads is None:
+            raise RuntimeError(
+                "Process workers crashed and pqdm thread backend is unavailable."
+            )
+        tqdm.write(
+            "Warning: process workers crashed during Xenium export. "
+            "Retrying with thread workers from 0% (completed process results "
+            "cannot be recovered by pqdm)."
+        )
+        results = pqdm_threads(
+            _work_iter(),
+            _process_one_cell,
+            n_jobs=n_jobs,
+            desc="Processing cells (thread fallback)",
+            exception_behaviour="immediate",
+        )
 
     # Collate results
     cell_id2old_id: Dict[int, Any] = {}
@@ -623,10 +803,7 @@ def seg2explorer_pqdm(
         "Segger nucleus boundaries",
         "Segger cell boundaries",
     ]
-    attrs["segmentation_methods"] = [
-        "segger_nucleus_convex_hull",
-        "segger_cell_delaunay",
-    ]
+    attrs["segmentation_methods"] = ["segger_nucleus_convex_hull", f"segger_cell_{boundary_method}"]
     attrs.setdefault("spatial_units", "microns")
     attrs.setdefault("major_version", 4)
     attrs.setdefault("minor_version", 0)

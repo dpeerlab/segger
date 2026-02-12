@@ -151,12 +151,20 @@ class ISTDataModule(LightningDataModule):
         If None, uses platform default.
     alignment_loss : bool, default=False
         Whether to enable alignment loss training with ME gene constraints.
-        When True, requires scrna_reference_path to discover ME gene pairs.
+        When True, requires either precomputed me_gene_pairs or
+        scrna_reference_path to discover ME gene pairs.
     scrna_reference_path : Path or None, default=None
         Path to scRNA-seq reference h5ad file for discovering ME gene pairs.
-        Required when alignment_loss=True.
+        Required when alignment_loss=True and me_gene_pairs is not provided.
     scrna_celltype_column : str, default="celltype"
         Column name in scRNA-seq reference for cell type annotations.
+    me_gene_pairs : list[tuple[str, str]] or None, default=None
+        Optional precomputed mutually exclusive gene pairs. When provided
+        with alignment_loss=True, these pairs are used directly and scRNA-seq
+        loading is skipped. Useful for checkpoint-only prediction.
+    vocab : list[str] or None, default=None
+        Optional fixed gene vocabulary used to preserve transcript encoding
+        consistency (e.g., for checkpoint-only prediction).
     """
     input_directory: Path
     num_workers: int = 8
@@ -189,6 +197,8 @@ class ISTDataModule(LightningDataModule):
     alignment_loss: bool = False
     scrna_reference_path: Optional[Path] = None
     scrna_celltype_column: str = "celltype"
+    me_gene_pairs: Optional[List[Tuple[str, str]]] = None
+    vocab: Optional[List[str]] = None
 
     def __post_init__(self):
         """Initialize the data module after dataclass field assignment.
@@ -215,19 +225,31 @@ class ISTDataModule(LightningDataModule):
         tx_fields = StandardTranscriptFields()
         bd_fields = StandardBoundaryFields()
 
+        # Normalize optional precomputed ME pairs, if provided.
+        if self.me_gene_pairs is not None:
+            self.me_gene_pairs = [
+                (str(gene1), str(gene2))
+                for gene1, gene2 in self.me_gene_pairs
+            ]
+
         # Load ME gene pairs if alignment loss is enabled
-        self.me_gene_pairs: Optional[List[Tuple[str, str]]] = None
         if self.alignment_loss:
-            if self.scrna_reference_path is None:
-                raise ValueError(
-                    "alignment_loss=True requires scrna_reference_path to be set. "
-                    "Provide a path to an scRNA-seq h5ad reference file."
+            if self.me_gene_pairs is None:
+                if self.scrna_reference_path is None:
+                    raise ValueError(
+                        "alignment_loss=True requires either me_gene_pairs "
+                        "or scrna_reference_path to be set."
+                    )
+                from ..validation.me_genes import load_me_genes_from_scrna
+                self.me_gene_pairs, _ = load_me_genes_from_scrna(
+                    scrna_path=Path(self.scrna_reference_path),
+                    cell_type_column=self.scrna_celltype_column,
                 )
-            from ..validation.me_genes import load_me_genes_from_scrna
-            self.me_gene_pairs, _ = load_me_genes_from_scrna(
-                scrna_path=Path(self.scrna_reference_path),
-                cell_type_column=self.scrna_celltype_column,
-            )
+            elif len(self.me_gene_pairs) == 0:
+                raise ValueError(
+                    "alignment_loss=True was provided with empty me_gene_pairs. "
+                    "Provide non-empty ME pairs or disable alignment_loss."
+                )
 
         # Check if input is SpatialData (.zarr)
         input_path = Path(self.input_directory)
@@ -279,7 +301,9 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
+            feature_vocab=self.vocab,
         )
+        self.vocab = [str(gene) for gene in self.ad.var.index]
         self.data = setup_heterodata(
             transcripts=tx,
             boundaries=bd,
@@ -410,7 +434,9 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
+            feature_vocab=self.vocab,
         )
+        self.vocab = [str(gene) for gene in self.ad.var.index]
 
         self.data = setup_heterodata(
             transcripts=tx,

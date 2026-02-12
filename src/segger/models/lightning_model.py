@@ -131,6 +131,8 @@ class LitISTEncoder(LightningModule):
         self._align_weight_start = align_weight_start
         self._align_weight_end = align_weight_end
         self._loss_combination_mode = loss_combination_mode
+        self.vocab: list[str] | None = None
+        self.me_gene_pairs: list[tuple[str, str]] | None = None
 
     def setup(self, stage):
         # LitISTEncoder needs supp. data from ISTDataModule to train
@@ -140,6 +142,21 @@ class LitISTEncoder(LightningModule):
                 f"Expected data module to be `ISTDataModule` but got "
                 f"{type(self.trainer.datamodule).__name__}."
             )
+
+        if hasattr(self.trainer.datamodule, "vocab"):
+            datamodule_vocab = getattr(self.trainer.datamodule, "vocab")
+            if datamodule_vocab is not None:
+                self.vocab = [str(gene) for gene in datamodule_vocab]
+        if hasattr(self.trainer.datamodule, "me_gene_pairs"):
+            datamodule_me_gene_pairs = getattr(
+                self.trainer.datamodule,
+                "me_gene_pairs",
+            )
+            if datamodule_me_gene_pairs is not None:
+                self.me_gene_pairs = [
+                    (str(gene1), str(gene2))
+                    for gene1, gene2 in datamodule_me_gene_pairs
+                ]
 
         # Only set gene embeddings if exist in data module
         if hasattr(self.trainer.datamodule, "gene_embedding"):
@@ -180,6 +197,66 @@ class LitISTEncoder(LightningModule):
                 weight_end=self._align_weight_end,
             )
         return super().setup(stage)
+
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """Persist training vocabulary for checkpoint-only prediction."""
+        if self.vocab is None and hasattr(self.trainer, "datamodule"):
+            datamodule_vocab = getattr(self.trainer.datamodule, "vocab", None)
+            if datamodule_vocab is not None:
+                self.vocab = [str(gene) for gene in datamodule_vocab]
+        if self.me_gene_pairs is None and hasattr(self.trainer, "datamodule"):
+            datamodule_me_gene_pairs = getattr(
+                self.trainer.datamodule,
+                "me_gene_pairs",
+                None,
+            )
+            if datamodule_me_gene_pairs is not None:
+                self.me_gene_pairs = [
+                    (str(gene1), str(gene2))
+                    for gene1, gene2 in datamodule_me_gene_pairs
+                ]
+        if self.vocab is not None:
+            vocab = [str(gene) for gene in self.vocab]
+            checkpoint["segger_vocab"] = vocab
+
+            # Keep legacy fallback path in sync for checkpoints that are read
+            # via datamodule_hyper_parameters.
+            datamodule_hparams = checkpoint.get("datamodule_hyper_parameters")
+            if not isinstance(datamodule_hparams, dict):
+                datamodule_hparams = {}
+            datamodule_hparams["vocab"] = vocab
+            checkpoint["datamodule_hyper_parameters"] = datamodule_hparams
+        if self.me_gene_pairs is not None:
+            me_gene_pairs = [
+                (str(gene1), str(gene2))
+                for gene1, gene2 in self.me_gene_pairs
+            ]
+            checkpoint["segger_me_gene_pairs"] = me_gene_pairs
+            datamodule_hparams = checkpoint.get("datamodule_hyper_parameters")
+            if not isinstance(datamodule_hparams, dict):
+                datamodule_hparams = {}
+            datamodule_hparams["me_gene_pairs"] = me_gene_pairs
+            checkpoint["datamodule_hyper_parameters"] = datamodule_hparams
+
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """Restore persisted vocabulary metadata from checkpoint."""
+        vocab = checkpoint.get("segger_vocab")
+        if vocab is None:
+            datamodule_hparams = checkpoint.get("datamodule_hyper_parameters", {})
+            if isinstance(datamodule_hparams, dict):
+                vocab = datamodule_hparams.get("vocab")
+        if vocab is not None:
+            self.vocab = [str(gene) for gene in vocab]
+        me_gene_pairs = checkpoint.get("segger_me_gene_pairs")
+        if me_gene_pairs is None:
+            datamodule_hparams = checkpoint.get("datamodule_hyper_parameters", {})
+            if isinstance(datamodule_hparams, dict):
+                me_gene_pairs = datamodule_hparams.get("me_gene_pairs")
+        if me_gene_pairs is not None:
+            self.me_gene_pairs = [
+                (str(gene1), str(gene2))
+                for gene1, gene2 in me_gene_pairs
+            ]
 
     def forward(self, batch: Batch) -> torch.Tensor:
         """Forward pass for the batch of data."""
@@ -331,6 +408,12 @@ class LitISTEncoder(LightningModule):
         loss_tx, loss_bd, loss_sg, loss_align, loss = self.get_losses(batch)
 
         self.log(
+            "train:loss",
+            loss,
+            prog_bar=True,
+            batch_size=batch.num_graphs,
+        )
+        self.log(
             "train:loss_tx",
             loss_tx,
             prog_bar=True,
@@ -361,6 +444,12 @@ class LitISTEncoder(LightningModule):
         """Defines the validation step."""
         loss_tx, loss_bd, loss_sg, loss_align, loss = self.get_losses(batch)
 
+        self.log(
+            "val:loss",
+            loss,
+            prog_bar=True,
+            batch_size=batch.num_graphs,
+        )
         self.log(
             "val:loss_tx",
             loss_tx,

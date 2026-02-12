@@ -11,11 +11,36 @@ from ..io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
 
-def threshold(x):
-    return min(
-        threshold_li( x[0].to_numpy()),
-        threshold_yen(x[0].to_numpy()),
-    )
+def _auto_similarity_threshold(similarities: np.ndarray) -> float:
+    """Compute a robust similarity threshold for one feature group."""
+    values = np.asarray(similarities, dtype=np.float64)
+    values = values[np.isfinite(values)]
+
+    if values.size == 0:
+        return 1.0
+    if values.size == 1:
+        return float(values[0])
+
+    value_min = float(np.min(values))
+    value_max = float(np.max(values))
+    if np.isclose(value_min, value_max):
+        return value_min
+
+    candidates: list[float] = []
+    for method in (threshold_li, threshold_yen):
+        try:
+            threshold_value = float(method(values))
+        except Exception:
+            continue
+        if np.isfinite(threshold_value):
+            candidates.append(threshold_value)
+
+    if candidates:
+        return min(candidates)
+
+    return float(np.median(values))
+
+
 class ISTSegmentationWriter(BasePredictionWriter):
     """Writer for segmentation predictions.
 
@@ -172,10 +197,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 if count > n:
                     similarities = similarities.sample(n=n, seed=0)
                 similarities = similarities.to_series().to_numpy()
-                threshold_value = min(
-                    threshold_li(similarities),
-                    threshold_yen(similarities),
-                )
+                threshold_value = _auto_similarity_threshold(similarities)
                 thresholds.append({
                     tx_fields.feature: feature,
                     'similarity_threshold': threshold_value,
@@ -233,8 +255,18 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if not hasattr(trainer.datamodule, 'predict_dataset'):
             return segmentation_df
 
-        dataset = trainer.datamodule.predict_dataset
         datamodule = trainer.datamodule
+
+        # Identify unassigned transcripts once and short-circuit early.
+        unassigned_ids = (
+            segmentation_df
+            .filter(pl.col("segger_cell_id").is_null())
+            .select(tx_fields.row_index)
+            .to_series()
+            .to_numpy()
+        )
+        if unassigned_ids.size == 0:
+            return segmentation_df
 
         # Check if we have gene embeddings for post-hoc similarity computation
         gene_embeddings = None
@@ -256,18 +288,36 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if edge_index.size(1) == 0:
             return segmentation_df
 
-        # Get global transcript indices (identity for base data)
-        src_global = edge_index[0].numpy()
-        dst_global = edge_index[1].numpy()
+        # Filter to edges connecting unassigned transcripts to reduce memory
+        # pressure before creating CPU/Polars objects.
+        edge_index_cpu = edge_index.detach().cpu()
+        unassigned_index = torch.as_tensor(
+            unassigned_ids,
+            dtype=edge_index_cpu.dtype,
+            device=edge_index_cpu.device,
+        )
+        edge_mask = (
+            torch.isin(edge_index_cpu[0], unassigned_index)
+            & torch.isin(edge_index_cpu[1], unassigned_index)
+        )
+        if not bool(edge_mask.any()):
+            return segmentation_df
+
+        src_global = edge_index_cpu[0][edge_mask].numpy()
+        dst_global = edge_index_cpu[1][edge_mask].numpy()
 
         # Get similarities - either from stored edge_attr or compute post-hoc
         if hasattr(tx_tx_store, 'edge_attr') and tx_tx_store.edge_attr is not None:
-            similarities = tx_tx_store.edge_attr.numpy()
+            edge_attr = tx_tx_store.edge_attr.detach().reshape(-1)
+            if edge_attr.device.type == "cpu":
+                similarities = edge_attr[edge_mask].numpy()
+            else:
+                similarities = edge_attr[edge_mask.to(edge_attr.device)].cpu().numpy()
         elif gene_embeddings is not None:
             # Compute similarities post-hoc from gene embeddings
-            gene_indices = base_data['tx']['x']  # gene encoding per transcript
-            src_genes = gene_indices[edge_index[0]]
-            dst_genes = gene_indices[edge_index[1]]
+            gene_indices = base_data['tx']['x'].detach().cpu()  # gene encoding per transcript
+            src_genes = gene_indices[edge_index_cpu[0][edge_mask]]
+            dst_genes = gene_indices[edge_index_cpu[1][edge_mask]]
 
             src_emb = gene_embeddings[src_genes]
             dst_emb = gene_embeddings[dst_genes]
@@ -275,7 +325,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             # Cosine similarity
             similarities = torch.nn.functional.cosine_similarity(
                 src_emb, dst_emb, dim=-1
-            ).numpy()
+            ).detach().cpu().numpy()
         else:
             # No way to compute similarities
             return segmentation_df
