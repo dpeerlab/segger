@@ -6,6 +6,7 @@ from pathlib import Path
 import polars as pl
 import numpy as np
 import torch
+import os
 
 from ..io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
@@ -51,25 +52,37 @@ class ISTSegmentationWriter(BasePredictionWriter):
     min_similarity : float | None, optional
         Minimum similarity threshold for transcript-cell assignment.
         If None (default), uses per-gene auto-thresholding (Li+Yen methods).
+    min_similarity_shift : float, optional
+        Subtractive relaxation applied to the final transcript-cell similarity
+        threshold (default: 0.0). Positive values always make assignment more
+        permissive by lowering the threshold.
     fragment_mode : bool, optional
         Enable fragment mode for grouping unassigned transcripts (default: False).
     fragment_min_transcripts : int, optional
         Minimum transcripts per fragment cell (default: 5).
-    fragment_similarity_threshold : float, optional
-        Similarity threshold for tx-tx edges in fragment mode (default: 0.5).
+    fragment_similarity_threshold : float | None, optional
+        Similarity threshold for tx-tx edges in fragment mode.
+        If None (default), uses Li+Yen auto-thresholding on candidate
+        unassigned tx-tx similarities.
     """
 
     def __init__(
         self,
         output_directory: Path,
         min_similarity: float | None = None,
+        min_similarity_shift: float = 0.0,
         fragment_mode: bool = False,
         fragment_min_transcripts: int = 5,
-        fragment_similarity_threshold: float = 0.5,
+        fragment_similarity_threshold: float | None = None,
     ):
         super().__init__(write_interval="epoch")
+        if not 0.0 <= min_similarity_shift <= 1.0:
+            raise ValueError(
+                "min_similarity_shift must be between 0 and 1 (inclusive)."
+            )
         self.output_directory = Path(output_directory)
         self.min_similarity = min_similarity
+        self.min_similarity_shift = min_similarity_shift
         self.fragment_mode = fragment_mode
         self.fragment_min_transcripts = fragment_min_transcripts
         self.fragment_similarity_threshold = fragment_similarity_threshold
@@ -210,6 +223,16 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 .drop(tx_fields.feature)
             )
 
+        # Relax thresholds in a sign-stable way (always subtractive).
+        if self.min_similarity_shift > 0:
+            output = output.with_columns(
+                (
+                    pl.col("similarity_threshold") - self.min_similarity_shift
+                )
+                .clip(-1.0, 1.0)
+                .alias("similarity_threshold")
+            )
+
         # Apply similarity threshold to determine final assignments
         output = output.with_columns(
             pl.when(pl.col("segger_similarity") >= pl.col("similarity_threshold"))
@@ -248,11 +271,16 @@ class ISTSegmentationWriter(BasePredictionWriter):
         pl.DataFrame
             Updated segmentation with fragment cell assignments.
         """
-        from ..prediction.fragment import apply_fragment_mode
+        from ..prediction.fragment import compute_fragment_assignments
         tx_fields = TrainingTranscriptFields()
+        debug_fragment = os.getenv("SEGGER_DEBUG_FRAGMENT", "").lower() in {
+            "1", "true", "yes", "on",
+        }
 
         # Get tx-tx edges from the dataset
         if not hasattr(trainer.datamodule, 'predict_dataset'):
+            if debug_fragment:
+                print("[segger][fragment] skip: datamodule has no predict_dataset", flush=True)
             return segmentation_df
 
         datamodule = trainer.datamodule
@@ -266,85 +294,256 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .to_numpy()
         )
         if unassigned_ids.size == 0:
+            if debug_fragment:
+                print("[segger][fragment] unassigned transcripts: 0", flush=True)
             return segmentation_df
+        if debug_fragment:
+            print(
+                f"[segger][fragment] unassigned transcripts: {int(unassigned_ids.size)}",
+                flush=True,
+            )
 
         # Check if we have gene embeddings for post-hoc similarity computation
-        gene_embeddings = None
-        if hasattr(datamodule, 'ad') and 'X_corr' in datamodule.ad.varm:
-            gene_embeddings = torch.tensor(
-                datamodule.ad.varm['X_corr'],
-                dtype=torch.float32,
-            )
+        has_gene_embeddings = (
+            hasattr(datamodule, 'ad') and 'X_corr' in datamodule.ad.varm
+        )
 
         # Collect tx-tx edges from the base HeteroData (not tiles)
         # This is more efficient than iterating tiles
         base_data = datamodule.data
         if ('tx', 'neighbors', 'tx') not in base_data.edge_types:
+            if debug_fragment:
+                print("[segger][fragment] skip: no ('tx','neighbors','tx') edges", flush=True)
             return segmentation_df
 
         tx_tx_store = base_data['tx', 'neighbors', 'tx']
         edge_index = tx_tx_store.edge_index
 
         if edge_index.size(1) == 0:
+            if debug_fragment:
+                print("[segger][fragment] tx-tx edges: 0", flush=True)
             return segmentation_df
+        if debug_fragment:
+            print(f"[segger][fragment] tx-tx edges total: {int(edge_index.size(1))}", flush=True)
+
+        # Map local tx node indices to transcript row indices so edge IDs are in
+        # the same ID space as segmentation_df[tx_fields.row_index].
+        device = edge_index.device
+        tx_index = base_data['tx']['index']
+        if tx_index.device != device:
+            tx_index = tx_index.to(device)
+        src_ids = tx_index[edge_index[0]]
+        dst_ids = tx_index[edge_index[1]]
 
         # Filter to edges connecting unassigned transcripts to reduce memory
         # pressure before creating CPU/Polars objects.
-        edge_index_cpu = edge_index.detach().cpu()
         unassigned_index = torch.as_tensor(
             unassigned_ids,
-            dtype=edge_index_cpu.dtype,
-            device=edge_index_cpu.device,
+            dtype=src_ids.dtype,
+            device=device,
         )
         edge_mask = (
-            torch.isin(edge_index_cpu[0], unassigned_index)
-            & torch.isin(edge_index_cpu[1], unassigned_index)
+            torch.isin(src_ids, unassigned_index)
+            & torch.isin(dst_ids, unassigned_index)
         )
-        if not bool(edge_mask.any()):
+        if not bool(edge_mask.any().item()):
+            if debug_fragment:
+                print(
+                    "[segger][fragment] tx-tx edges among unassigned: 0",
+                    flush=True,
+                )
             return segmentation_df
+        candidate_edge_indices = torch.nonzero(edge_mask, as_tuple=False).reshape(-1)
+        candidate_edge_count = int(candidate_edge_indices.numel())
+        if debug_fragment:
+            print(
+                "[segger][fragment] tx-tx edges among unassigned: "
+                f"{candidate_edge_count}",
+                flush=True,
+            )
 
-        src_global = edge_index_cpu[0][edge_mask].numpy()
-        dst_global = edge_index_cpu[1][edge_mask].numpy()
-
-        # Get similarities - either from stored edge_attr or compute post-hoc
+        # Get similarities - either from stored edge_attr or compute post-hoc.
         if hasattr(tx_tx_store, 'edge_attr') and tx_tx_store.edge_attr is not None:
-            edge_attr = tx_tx_store.edge_attr.detach().reshape(-1)
-            if edge_attr.device.type == "cpu":
-                similarities = edge_attr[edge_mask].numpy()
-            else:
-                similarities = edge_attr[edge_mask.to(edge_attr.device)].cpu().numpy()
-        elif gene_embeddings is not None:
-            # Compute similarities post-hoc from gene embeddings
-            gene_indices = base_data['tx']['x'].detach().cpu()  # gene encoding per transcript
-            src_genes = gene_indices[edge_index_cpu[0][edge_mask]]
-            dst_genes = gene_indices[edge_index_cpu[1][edge_mask]]
+            similarities = tx_tx_store.edge_attr.detach().reshape(-1)
+            if similarities.device != device:
+                similarities = similarities.to(device)
+            candidate_similarities = similarities[candidate_edge_indices]
+        elif has_gene_embeddings:
+            # Compute similarities post-hoc in chunks to avoid materializing
+            # per-edge embeddings for the whole graph at once.
+            gene_embeddings = torch.tensor(
+                datamodule.ad.varm['X_corr'],
+                dtype=torch.float32,
+                device=device,
+            )
+            gene_indices = base_data['tx']['x']
+            if gene_indices.device != device:
+                gene_indices = gene_indices.to(device)
 
-            src_emb = gene_embeddings[src_genes]
-            dst_emb = gene_embeddings[dst_genes]
+            chunk_size_env = os.getenv("SEGGER_FRAGMENT_SIM_CHUNK_SIZE", "").strip()
+            chunk_size = 0
+            if chunk_size_env:
+                try:
+                    chunk_size = max(1_024, int(chunk_size_env))
+                except ValueError:
+                    if debug_fragment:
+                        print(
+                            "[segger][fragment] ignoring invalid "
+                            "SEGGER_FRAGMENT_SIM_CHUNK_SIZE",
+                            flush=True,
+                        )
 
-            # Cosine similarity
-            similarities = torch.nn.functional.cosine_similarity(
-                src_emb, dst_emb, dim=-1
-            ).detach().cpu().numpy()
+            if chunk_size <= 0:
+                emb_dim = (
+                    int(gene_embeddings.size(1))
+                    if gene_embeddings.ndim > 1
+                    else 1
+                )
+                bytes_per_edge = max(1, emb_dim) * 2 * (
+                    torch.finfo(torch.float32).bits // 8
+                )
+                target_chunk_bytes = 256 * 1024 * 1024
+                if device.type == "cuda":
+                    try:
+                        free_bytes, _ = torch.cuda.mem_get_info(device=device)
+                        target_chunk_bytes = int(min(
+                            target_chunk_bytes,
+                            max(64 * 1024 * 1024, free_bytes // 8),
+                        ))
+                    except Exception:
+                        pass
+                chunk_size = max(1_024, target_chunk_bytes // max(1, bytes_per_edge))
+
+            chunk_size = min(chunk_size, max(1, candidate_edge_count))
+            if debug_fragment:
+                print(
+                    "[segger][fragment] post-hoc similarity chunking: "
+                    f"chunk_size={int(chunk_size)}",
+                    flush=True,
+                )
+
+            candidate_similarities = torch.empty(
+                candidate_edge_count,
+                dtype=torch.float32,
+                device=device,
+            )
+            for start in range(0, candidate_edge_count, chunk_size):
+                stop = min(start + chunk_size, candidate_edge_count)
+                edge_chunk = candidate_edge_indices[start:stop]
+
+                src_nodes = edge_index[0, edge_chunk]
+                dst_nodes = edge_index[1, edge_chunk]
+                src_genes = gene_indices[src_nodes]
+                dst_genes = gene_indices[dst_nodes]
+                src_emb = gene_embeddings[src_genes]
+                dst_emb = gene_embeddings[dst_genes]
+                candidate_similarities[start:stop] = torch.nn.functional.cosine_similarity(
+                    src_emb,
+                    dst_emb,
+                    dim=-1,
+                )
         else:
             # No way to compute similarities
+            if debug_fragment:
+                print("[segger][fragment] skip: no tx-tx similarities available", flush=True)
             return segmentation_df
 
-        # Create edges DataFrame
-        tx_tx_edges = pl.DataFrame({
-            "source": src_global,
-            "target": dst_global,
-            "similarity": similarities,
-        })
+        fragment_threshold = self.fragment_similarity_threshold
+        if fragment_threshold is None:
+            threshold_values = candidate_similarities
+            # Bound transfer size for very large graphs before CPU thresholding.
+            if threshold_values.numel() > 5_000_000:
+                step = max(1, threshold_values.numel() // 5_000_000)
+                threshold_values = threshold_values[::step]
+            fragment_threshold = _auto_similarity_threshold(
+                threshold_values.detach().cpu().numpy()
+            )
+            if debug_fragment:
+                print(
+                    "[segger][fragment] similarity threshold (auto Li+Yen): "
+                    f"{float(fragment_threshold):.6f}",
+                    flush=True,
+                )
+        elif debug_fragment:
+            print(
+                "[segger][fragment] similarity threshold (fixed): "
+                f"{float(fragment_threshold):.6f}",
+                flush=True,
+            )
 
-        # Apply fragment mode
-        return apply_fragment_mode(
-            segmentation_df=segmentation_df,
-            tx_tx_edges=tx_tx_edges,
+        passing_similarity = candidate_similarities >= fragment_threshold
+        if not bool(passing_similarity.any().item()):
+            if debug_fragment:
+                print(
+                    "[segger][fragment] tx-tx edges passing similarity threshold: 0",
+                    flush=True,
+                )
+            return segmentation_df
+        if debug_fragment:
+            print(
+                "[segger][fragment] tx-tx edges passing similarity threshold: "
+                f"{int(passing_similarity.sum().item())}",
+                flush=True,
+            )
+
+        filtered_edge_indices = candidate_edge_indices[passing_similarity]
+        filtered_src_ids = src_ids[filtered_edge_indices]
+        filtered_dst_ids = dst_ids[filtered_edge_indices]
+
+        # RAPIDS connected-components stays on GPU when tensors are CUDA.
+        fragment_tx_ids, fragment_labels = compute_fragment_assignments(
+            source_ids=filtered_src_ids,
+            target_ids=filtered_dst_ids,
             min_transcripts=self.fragment_min_transcripts,
-            similarity_threshold=self.fragment_similarity_threshold,
-            use_gpu=True,
-            cell_id_column="segger_cell_id",
-            transcript_id_column=tx_fields.row_index,
-            similarity_column="similarity",
+            use_gpu=(device.type == "cuda"),
         )
+        if fragment_tx_ids.size == 0:
+            if debug_fragment:
+                print(
+                    "[segger][fragment] components passing min_transcripts: 0",
+                    flush=True,
+                )
+            return segmentation_df
+
+        unique_components = np.unique(fragment_labels)
+        fragment_id_map = {
+            int(comp): f"fragment-{int(comp)}"
+            for comp in unique_components
+        }
+        update_df = pl.DataFrame({
+            tx_fields.row_index: fragment_tx_ids,
+            "segger_cell_id_fragment": [
+                fragment_id_map[int(comp)] for comp in fragment_labels
+            ],
+        })
+        result = (
+            segmentation_df
+            .join(update_df, on=tx_fields.row_index, how="left")
+            .with_columns(
+                pl.coalesce([
+                    pl.col("segger_cell_id"),
+                    pl.col("segger_cell_id_fragment"),
+                ]).alias("segger_cell_id")
+            )
+            .drop("segger_cell_id_fragment")
+        )
+        if debug_fragment:
+            fragment_count = (
+                result
+                .filter(
+                    pl.col("segger_cell_id")
+                    .cast(pl.Utf8)
+                    .str.starts_with("fragment-")
+                )
+                .height
+            )
+            print(
+                "[segger][fragment] components passing min_transcripts: "
+                f"{int(unique_components.size)}",
+                flush=True,
+            )
+            print(
+                f"[segger][fragment] assigned fragment transcripts: {int(fragment_count)}",
+                flush=True,
+            )
+        return result

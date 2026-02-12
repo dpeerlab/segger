@@ -44,3 +44,17 @@ When deciding version bumps, consider:
 - Model checkpoints and training configs
 
 If a change requires user code or data migration, treat it as breaking.
+
+## Release Note Structure
+
+Each shipped version should include a release note file under `docs/releases/`
+named `vX.Y.Z.md` and use this structure:
+
+1. **High-level**
+   - Short user-facing summary of the release.
+   - Focus on major features, behavior changes, and migration impact.
+2. **Low-level**
+   - Concise technical details grouped by subsystem (CLI, data/model, export, tests/docs).
+   - Include defaults/flags/API details only when they affect behavior or compatibility.
+
+This keeps release communication readable for both users and maintainers.

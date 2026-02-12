@@ -90,6 +90,58 @@ def _resolve_use_3d_flag(use_3d: Literal["auto", "true", "false"]) -> bool | str
     return use_3d == "true"
 
 
+def _configure_runtime_logging_and_warnings() -> None:
+    """Reduce noisy, non-actionable runtime output in CLI flows."""
+    import logging
+    import warnings
+
+    # Silence Lightning informational logs (GPU inventory, cloud tips, etc.).
+    for logger_name in ("lightning", "pytorch_lightning"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+    # CUDA Python deprecation spam from RAPIDS imports.
+    warnings.filterwarnings(
+        "ignore",
+        message="The cuda.cudart module is deprecated",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message="The cuda.cuda module is deprecated",
+        category=FutureWarning,
+    )
+
+    # PyTorch serialization roadmap warning emitted by Lightning checkpoint load.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"You are using `torch.load` with `weights_only=False`",
+        category=FutureWarning,
+    )
+
+    # Lightning dataloader/sampler advisory warnings already accounted for in Segger.
+    warnings.filterwarnings(
+        "ignore",
+        message="The total number of parameters detected may be inaccurate",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message="The 'predict_dataloader' does not have many workers",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message="You are using a custom batch sampler `DynamicBatchSamplerPatch`",
+    )
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return stripped
+
+
 def _normalize_checkpoint_vocab(
     vocab: object,
     source: str,
@@ -479,14 +531,15 @@ def segment(
 
     scrna_reference_path: Annotated[Path | None, Parameter(
         help="Path to scRNA-seq reference h5ad file for ME gene discovery. "
-             "Required when alignment_loss is enabled without pre-computed ME pairs.",
+             "Required when --alignment-loss is enabled.",
         group=group_loss,
-    )] = Path("segger_experiments/data_raw/scrnaseq/breast_cancer_annotated.h5ad"),
+    )] = None,
 
-    scrna_celltype_column: Annotated[str, Parameter(
-        help="Column name in scRNA-seq reference containing cell type annotations.",
+    scrna_celltype_column: Annotated[str | None, Parameter(
+        help="Column name in scRNA-seq reference containing cell type annotations. "
+             "Required when --alignment-loss is enabled.",
         group=group_loss,
-    )] = "celltype_major",
+    )] = None,
 
     loss_combination_mode: Annotated[
         Literal["interpolate", "additive"],
@@ -505,6 +558,13 @@ def segment(
         validator=validators.Number(gte=0, lte=1),
         group=group_prediction,
     )] = None,
+    min_similarity_shift: Annotated[float, Parameter(
+        help="Subtractive relaxation applied to transcript-cell similarity "
+             "thresholds after fixed/auto thresholding. "
+             "Always subtractive; 0 disables shifting.",
+        validator=validators.Number(gte=0, lte=1),
+        group=group_prediction,
+    )] = 0.0,
 
     fragment_mode: Annotated[bool, Parameter(
         help="Enable fragment mode for grouping unassigned transcripts "
@@ -518,11 +578,12 @@ def segment(
         group=group_prediction,
     )] = 5,
 
-    fragment_similarity_threshold: Annotated[float, Parameter(
-        help="Similarity threshold for tx-tx edges in fragment mode.",
+    fragment_similarity_threshold: Annotated[float | None, Parameter(
+        help="Similarity threshold for tx-tx edges in fragment mode. "
+             "If None, uses Li+Yen auto-thresholding on candidate unassigned tx-tx edges.",
         validator=validators.Number(gt=0, lte=1),
         group=group_prediction,
-    )] = 0.5,
+    )] = None,
 
     # Input/Output Format
     input_format: Annotated[
@@ -597,37 +658,24 @@ def segment(
     import os
     from ..utils.optional_deps import require_rapids
 
+    _configure_runtime_logging_and_warnings()
     os.environ.setdefault("SEGGER_DEBUG_ME", "1")
     require_rapids(feature="Segger segmentation")
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False
-    import warnings
-    warnings.filterwarnings(
-        "ignore",
-        message="The cuda.cudart module is deprecated",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="The cuda.cuda module is deprecated",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="The total number of parameters detected may be inaccurate",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="You are using a custom batch sampler `DynamicBatchSamplerPatch`",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="The 'predict_dataloader' does not have many workers",
-    )
 
     # Convert use_3d string to proper type
     use_3d_value = _resolve_use_3d_flag(use_3d)
+    scrna_celltype_column = _normalize_optional_text(scrna_celltype_column)
+    if alignment_loss and scrna_reference_path is None:
+        raise ValueError(
+            "--alignment-loss requires --scrna-reference-path."
+        )
+    if alignment_loss and scrna_celltype_column is None:
+        raise ValueError(
+            "--alignment-loss requires --scrna-celltype-column."
+        )
 
     # Setup Lightning Data Module
     from ..data import ISTDataModule
@@ -694,6 +742,7 @@ def segment(
     writer = ISTSegmentationWriter(
         output_directory,
         min_similarity=min_similarity,
+        min_similarity_shift=min_similarity_shift,
         fragment_mode=fragment_mode,
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,
@@ -825,6 +874,13 @@ def predict(
         validator=validators.Number(gte=0, lte=1),
         group=group_prediction,
     )] = None,
+    min_similarity_shift: Annotated[float, Parameter(
+        help="Subtractive relaxation applied to transcript-cell similarity "
+             "thresholds after fixed/auto thresholding. "
+             "Always subtractive; 0 disables shifting.",
+        validator=validators.Number(gte=0, lte=1),
+        group=group_prediction,
+    )] = 0.0,
     fragment_mode: Annotated[bool, Parameter(
         help="Enable fragment mode for grouping unassigned transcripts "
              "using tx-tx connected components.",
@@ -835,11 +891,12 @@ def predict(
         validator=validators.Number(gt=0),
         group=group_prediction,
     )] = 5,
-    fragment_similarity_threshold: Annotated[float, Parameter(
-        help="Similarity threshold for tx-tx edges in fragment mode.",
+    fragment_similarity_threshold: Annotated[float | None, Parameter(
+        help="Similarity threshold for tx-tx edges in fragment mode. "
+             "If None, uses Li+Yen auto-thresholding on candidate unassigned tx-tx edges.",
         validator=validators.Number(gt=0, lte=1),
         group=group_prediction,
-    )] = 0.5,
+    )] = None,
     output_format: Annotated[
         Literal["segger_raw", "merged", "spatialdata", "anndata", "all"],
         Parameter(
@@ -863,6 +920,29 @@ def predict(
             group=group_boundary,
         )
     ] = "input",
+    tiling_margin_training: Annotated[float | None, Parameter(
+        help=(
+            "Optional override for training tiling margin from checkpoint. "
+            "This is kept for compatibility but not used in prediction stage."
+        ),
+        validator=validators.Number(gte=0),
+        group=group_tiling,
+    )] = None,
+    tiling_margin_prediction: Annotated[float | None, Parameter(
+        help="Optional override for prediction tiling margin from checkpoint.",
+        validator=validators.Number(gte=0),
+        group=group_tiling,
+    )] = None,
+    max_nodes_per_tile: Annotated[int | None, Parameter(
+        help="Optional override for max nodes per tile from checkpoint.",
+        validator=validators.Number(gt=0),
+        group=group_tiling,
+    )] = None,
+    max_edges_per_batch: Annotated[int | None, Parameter(
+        help="Optional override for max edges per batch from checkpoint.",
+        validator=validators.Number(gt=0),
+        group=group_tiling,
+    )] = None,
     use_3d: Annotated[
         Literal["checkpoint", "auto", "true", "false"],
         Parameter(
@@ -880,29 +960,12 @@ def predict(
 
     from ..utils.optional_deps import require_rapids
 
+    _configure_runtime_logging_and_warnings()
     require_rapids(feature="Segger segmentation")
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False
     import warnings
-    warnings.filterwarnings(
-        "ignore",
-        message="The cuda.cudart module is deprecated",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="The cuda.cuda module is deprecated",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="The total number of parameters detected may be inaccurate",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message="The 'predict_dataloader' does not have many workers",
-    )
     print("[segger] Prediction-only mode: running inference without training.")
 
     # Build datamodule from checkpoint metadata when available
@@ -927,6 +990,14 @@ def predict(
     datamodule_kwargs["num_workers"] = num_workers
     if checkpoint_vocab is not None:
         datamodule_kwargs["vocab"] = checkpoint_vocab
+    if tiling_margin_training is not None:
+        datamodule_kwargs["tiling_margin_training"] = tiling_margin_training
+    if tiling_margin_prediction is not None:
+        datamodule_kwargs["tiling_margin_prediction"] = tiling_margin_prediction
+    if max_nodes_per_tile is not None:
+        datamodule_kwargs["tiling_nodes_per_tile"] = max_nodes_per_tile
+    if max_edges_per_batch is not None:
+        datamodule_kwargs["edges_per_batch"] = max_edges_per_batch
     if datamodule_kwargs.get("me_gene_pairs"):
         # In checkpoint mode, precomputed pairs are preferred over recomputing.
         datamodule_kwargs["scrna_reference_path"] = None
@@ -979,6 +1050,7 @@ def predict(
     writer = ISTSegmentationWriter(
         output_directory,
         min_similarity=min_similarity,
+        min_similarity_shift=min_similarity_shift,
         fragment_mode=fragment_mode,
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,

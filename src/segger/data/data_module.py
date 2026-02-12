@@ -156,8 +156,9 @@ class ISTDataModule(LightningDataModule):
     scrna_reference_path : Path or None, default=None
         Path to scRNA-seq reference h5ad file for discovering ME gene pairs.
         Required when alignment_loss=True and me_gene_pairs is not provided.
-    scrna_celltype_column : str, default="celltype"
+    scrna_celltype_column : str or None, default=None
         Column name in scRNA-seq reference for cell type annotations.
+        Required when alignment_loss=True and me_gene_pairs is not provided.
     me_gene_pairs : list[tuple[str, str]] or None, default=None
         Optional precomputed mutually exclusive gene pairs. When provided
         with alignment_loss=True, these pairs are used directly and scRNA-seq
@@ -196,7 +197,7 @@ class ISTDataModule(LightningDataModule):
     # Alignment loss parameters for ME gene constraints
     alignment_loss: bool = False
     scrna_reference_path: Optional[Path] = None
-    scrna_celltype_column: str = "celltype"
+    scrna_celltype_column: Optional[str] = None
     me_gene_pairs: Optional[List[Tuple[str, str]]] = None
     vocab: Optional[List[str]] = None
 
@@ -231,14 +232,21 @@ class ISTDataModule(LightningDataModule):
                 (str(gene1), str(gene2))
                 for gene1, gene2 in self.me_gene_pairs
             ]
+        if self.scrna_celltype_column is not None:
+            stripped = self.scrna_celltype_column.strip()
+            self.scrna_celltype_column = stripped or None
 
         # Load ME gene pairs if alignment loss is enabled
         if self.alignment_loss:
             if self.me_gene_pairs is None:
-                if self.scrna_reference_path is None:
+                if (
+                    self.scrna_reference_path is None
+                    or self.scrna_celltype_column is None
+                ):
                     raise ValueError(
                         "alignment_loss=True requires either me_gene_pairs "
-                        "or scrna_reference_path to be set."
+                        "or both scrna_reference_path and "
+                        "scrna_celltype_column to be set."
                     )
                 from ..validation.me_genes import load_me_genes_from_scrna
                 self.me_gene_pairs, _ = load_me_genes_from_scrna(

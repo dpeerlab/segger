@@ -6,7 +6,7 @@ transcript-transcript edge similarity and connected components to
 create "fragment cells" from spatially proximal unassigned transcripts.
 """
 
-from typing import Optional
+from typing import Optional, Any
 import numpy as np
 import polars as pl
 
@@ -21,6 +21,105 @@ except ImportError:
 
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components as cc_cpu
+
+
+def _to_cupy(array: Any):
+    """Convert numpy/torch/cupy arrays to cupy.ndarray."""
+    if not HAS_RAPIDS:
+        raise RuntimeError("RAPIDS is not available.")
+    if isinstance(array, cp.ndarray):
+        return array
+    try:
+        import torch  # local optional import
+    except Exception:
+        torch = None
+    if torch is not None and isinstance(array, torch.Tensor):
+        tensor = array.detach()
+        if tensor.device.type == "cuda":
+            return cp.from_dlpack(tensor)
+        return cp.asarray(tensor.cpu().numpy())
+    return cp.asarray(array)
+
+
+def compute_fragment_assignments(
+    source_ids: Any,
+    target_ids: Any,
+    min_transcripts: int = 5,
+    use_gpu: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute transcript->component assignments for already filtered edges.
+
+    Parameters
+    ----------
+    source_ids
+        Edge source transcript IDs. May be numpy array, torch tensor, or cupy array.
+    target_ids
+        Edge target transcript IDs. May be numpy array, torch tensor, or cupy array.
+    min_transcripts : int, optional
+        Minimum transcripts per component to be considered a valid fragment.
+    use_gpu : bool, optional
+        Whether to use RAPIDS GPU connected components when available.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Two arrays of equal length:
+        - transcript IDs for valid fragment components
+        - component label for each transcript ID
+    """
+    if use_gpu and HAS_RAPIDS:
+        src = _to_cupy(source_ids)
+        dst = _to_cupy(target_ids)
+        if src.size == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+        unique_ids = cp.unique(cp.concatenate([src, dst]))
+        n_nodes = int(unique_ids.size)
+        if n_nodes == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+        src_idx = cp.searchsorted(unique_ids, src)
+        dst_idx = cp.searchsorted(unique_ids, dst)
+        data = cp.ones(int(src_idx.size) * 2, dtype=cp.float32)
+        rows = cp.concatenate([src_idx, dst_idx])
+        cols = cp.concatenate([dst_idx, src_idx])
+        adj_matrix = cp_csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+        n_components, labels = cc_gpu(adj_matrix, directed=False)
+
+        counts = cp.bincount(labels, minlength=int(n_components))
+        valid_node_mask = counts[labels] >= min_transcripts
+        if not bool(cp.any(valid_node_mask)):
+            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+        valid_ids = unique_ids[valid_node_mask]
+        valid_labels = labels[valid_node_mask]
+        return cp.asnumpy(valid_ids), cp.asnumpy(valid_labels.astype(cp.int64))
+
+    src = np.asarray(source_ids)
+    dst = np.asarray(target_ids)
+    if src.size == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    unique_ids = np.unique(np.concatenate([src, dst]))
+    n_nodes = len(unique_ids)
+    if n_nodes == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    id_to_idx = {id_: idx for idx, id_ in enumerate(unique_ids)}
+    src_idx = np.array([id_to_idx[s] for s in src], dtype=np.int64)
+    dst_idx = np.array([id_to_idx[d] for d in dst], dtype=np.int64)
+    data = np.ones(len(src_idx) * 2, dtype=np.float32)
+    rows = np.concatenate([src_idx, dst_idx])
+    cols = np.concatenate([dst_idx, src_idx])
+    adj_matrix = csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+    n_components, labels = cc_cpu(adj_matrix, directed=False)
+
+    counts = np.bincount(labels, minlength=int(n_components))
+    valid_node_mask = counts[labels] >= min_transcripts
+    if not np.any(valid_node_mask):
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    return unique_ids[valid_node_mask], labels[valid_node_mask].astype(np.int64)
 
 
 def compute_fragment_components(

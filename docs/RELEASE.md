@@ -7,6 +7,9 @@ This checklist standardizes releases and keeps code, docs, and tags in sync.
 - Ensure `main` is green and has the intended changes.
 - Update `pyproject.toml` version.
 - Update `CHANGELOG.md` with release notes and date.
+- Add/update `docs/releases/vX.Y.Z.md` using:
+  1. High-level summary
+  2. Low-level technical details
 - Review docs that mention the version (README, docs, slides if needed).
 
 ## 2. Run Tests

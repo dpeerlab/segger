@@ -128,5 +128,6 @@ segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/ \
 
 - Versioning: `docs/VERSIONING.md`
 - Release process: `docs/RELEASE.md`
+- Release notes: `docs/releases/v0.2.0.md`
 - Installation notes: `docs/INSTALLATION.md`
 - Changelog: `CHANGELOG.md`
