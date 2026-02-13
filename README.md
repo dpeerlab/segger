@@ -75,62 +75,45 @@ This summary is intentionally based on the release baseline comparison (`dd681a8
   - Release snapshot: `2c92b43` (`2026-02-13`)
   - Delta size: `33` commits, `76` files changed, `18,232` insertions, `321` deletions
 
-### Major Changes
+### New CLI workflows
 
-- CLI workflow is broader and more explicit:
-  - Added `segger predict -c <checkpoint>` for checkpoint-only inference.
-  - Added checkpoint metadata validation for vocab and ME-gene pair compatibility.
-  - Added `segger plot` for loss-curve visualization (`--quick` terminal mode and saved figure mode).
-  - Added early stopping and best-checkpoint prediction handoff in `segger segment`.
+- `segger predict`:
+  - Checkpoint-only inference (`-c`) with strict checkpoint/data compatibility checks for `segger_vocab`, `segger_me_gene_pairs`, and `n_genes`.
+  - Supports inference-time graph overrides (`--transcripts-max-k`, `--transcripts-max-dist`, `--prediction-max-k`), assignment controls (`--min-similarity`, `--min-similarity-shift`), fragment controls, and `--use-3d`.
+  - Supports post-predict multi-format output (`--output-format`) with optional overwrite semantics.
+- `segger export`:
+  - Unified export entry point for `xenium_explorer|merged|spatialdata|anndata`.
+  - Handles segmentation inputs from parquet/csv/SpatialData with `--input-format auto|raw|spatialdata`.
+  - Adds explicit boundary policy (`--boundary-method input|convex_hull|delaunay|skip`), worker controls, polygon vertex limits, and cell-id alias resolution.
+- `segger plot`:
+  - Resolves latest or specific Lightning run metrics (`--log-version`) from `lightning_logs/version_*`.
+  - Groups train/val series by metric key, applies rolling smoothing, and renders either terminal pages (`--quick`) or paginated PNG outputs.
 
-- Export capabilities now cover the full post-segmentation path:
-  - Added output formats: `segger_raw`, `merged`, `spatialdata`, `anndata`, `all`.
-  - Added multi-format writer architecture (registry + typed writers).
-  - Added richer Xenium Explorer export handling with safer polygon normalization and metadata flow.
-  - Added boundary strategy control (`input`, `convex_hull`, `delaunay`, `skip` where supported).
+### New capabilities
 
-- SpatialData interoperability is now end-to-end:
-  - Added `.zarr` input detection and loading.
-  - Added SpatialData writing with transcripts + optional shapes + optional cell table embedding.
-  - Added lightweight direct SpatialData Zarr I/O helpers for dependency-constrained environments.
-  - Added SOPA compatibility helpers and conversion utilities.
+- End-to-end SpatialData support:
+  - `.zarr` ingest path in data loading and export path to SpatialData output.
+  - Optional AnnData table embedding in SpatialData output.
+  - Lightweight direct SpatialData Zarr I/O utilities for reduced dependency footprints.
+- Alignment-loss pipeline:
+  - ME-gene constraints integrated into graph/loss flow with scheduled weighting and combination modes.
+  - Checkpoint persistence + restore of `segger_vocab` and `segger_me_gene_pairs`.
+- Fragment-mode segmentation:
+  - Unassigned transcript recovery via tx-tx connected components with similarity thresholding.
+  - GPU-first path with CPU fallback.
 
-- Model/data path evolved for stronger biological constraints:
-  - Added alignment-loss integration with schedule controls and combination modes.
-  - Added mutually exclusive (ME) gene edge generation in heterodata construction.
-  - Added checkpoint persistence for `segger_vocab` and `segger_me_gene_pairs`.
-  - Added fixed-vocabulary/fixed-ME-pair datamodule support for stable checkpoint inference.
+### Stability/performance changes
 
-- Data preprocessing and graph-building became more robust:
-  - Added platform-specific quality filters (Xenium, CosMx, MERSCOPE, SpatialData).
-  - Added `min_qv` controls and quality-filter integration in preprocessing.
-  - Added 3D graph-building controls (`use_3d` with `auto/true/false` semantics).
-  - Added transcript-edge similarity plumbing for fragment-mode post-processing.
-
-- Testing and packaging surface expanded significantly:
-  - Added comprehensive test suite modules covering alignment, fragment mode, export paths, optional deps, and SpatialData I/O.
-  - Added GitHub Actions test workflow and Dependabot configuration.
-  - Added optional dependency groups (`spatialdata`, `spatialdata-io`, `sopa`, `plot`, `spatialdata-all`, `dev`).
-
-### Minor Changes
-
-- Stability and performance refinements:
-  - Improved per-gene auto-thresholding path to be more robust and memory-aware.
-  - Improved Delaunay boundary generation throughput and parallel behavior.
-  - Added process-to-thread fallback for parallel Xenium export worker failures.
-  - Added stronger guards for empty/degenerate polygon and embedding edge cases.
-
-- ME-gene discovery refinements:
-  - Added discovery-result caching keyed to scRNA source metadata and parameters.
-  - Added per-cell-type subsampling for faster discovery on large references.
-  - Added progress and debug messaging controls for ME workflows.
-  - Tuned defaults toward stricter mutual exclusivity and better pair coverage.
-
-- CLI and internal API polish:
-  - Unified worker-count behavior across CLI stages.
-  - Improved help text and format-specific guidance.
-  - Added stronger cell-ID alias handling during export.
-  - Expanded lazy-import coverage to reduce import-time side effects and make optional dependencies clearer.
+- Checkpoint-first inference hardening:
+  - Explicit mismatch failures for vocabulary order and gene-count incompatibility to prevent silent misalignment.
+- Segmentation writer improvements:
+  - More robust auto-thresholding path with safer memory behavior and sign-stable threshold shifting.
+- Boundary/export resilience:
+  - Safer polygon handling and process-to-thread fallback for parallel Xenium export when process pools fail.
+- Optional dependency behavior:
+  - Expanded lazy-loading and explicit install guidance for partial environments.
+- Validation surface:
+  - Significant test/CI expansion across CLI, export, alignment, fragment, and SpatialData paths.
 
 # Usage
 
