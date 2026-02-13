@@ -66,6 +66,72 @@ Common optional dependencies:
 - `sopa` (SOPA export helpers)
 - `geopandas`/`shapely` (geometry utilities)
 
+## v0.2.0 Detailed Delta vs `v0.1.0`
+
+This summary is intentionally based on the release baseline comparison (`dd681a8...release/v2-stable`), not only on the latest commit.
+
+- Comparison snapshot:
+  - `v0.1.0` baseline reference: `dd681a8` (`2025-12-17`, `pyproject.toml` version `0.1.0`)
+  - Release snapshot: `2c92b43` (`2026-02-13`)
+  - Delta size: `33` commits, `76` files changed, `18,232` insertions, `321` deletions
+
+### Major Changes
+
+- CLI workflow is broader and more explicit:
+  - Added `segger predict -c <checkpoint>` for checkpoint-only inference.
+  - Added checkpoint metadata validation for vocab and ME-gene pair compatibility.
+  - Added `segger plot` for loss-curve visualization (`--quick` terminal mode and saved figure mode).
+  - Added early stopping and best-checkpoint prediction handoff in `segger segment`.
+
+- Export capabilities now cover the full post-segmentation path:
+  - Added output formats: `segger_raw`, `merged`, `spatialdata`, `anndata`, `all`.
+  - Added multi-format writer architecture (registry + typed writers).
+  - Added richer Xenium Explorer export handling with safer polygon normalization and metadata flow.
+  - Added boundary strategy control (`input`, `convex_hull`, `delaunay`, `skip` where supported).
+
+- SpatialData interoperability is now end-to-end:
+  - Added `.zarr` input detection and loading.
+  - Added SpatialData writing with transcripts + optional shapes + optional cell table embedding.
+  - Added lightweight direct SpatialData Zarr I/O helpers for dependency-constrained environments.
+  - Added SOPA compatibility helpers and conversion utilities.
+
+- Model/data path evolved for stronger biological constraints:
+  - Added alignment-loss integration with schedule controls and combination modes.
+  - Added mutually exclusive (ME) gene edge generation in heterodata construction.
+  - Added checkpoint persistence for `segger_vocab` and `segger_me_gene_pairs`.
+  - Added fixed-vocabulary/fixed-ME-pair datamodule support for stable checkpoint inference.
+
+- Data preprocessing and graph-building became more robust:
+  - Added platform-specific quality filters (Xenium, CosMx, MERSCOPE, SpatialData).
+  - Added `min_qv` controls and quality-filter integration in preprocessing.
+  - Added 3D graph-building controls (`use_3d` with `auto/true/false` semantics).
+  - Added transcript-edge similarity plumbing for fragment-mode post-processing.
+
+- Testing and packaging surface expanded significantly:
+  - Added comprehensive test suite modules covering alignment, fragment mode, export paths, optional deps, and SpatialData I/O.
+  - Added GitHub Actions test workflow and Dependabot configuration.
+  - Added optional dependency groups (`spatialdata`, `spatialdata-io`, `sopa`, `plot`, `spatialdata-all`, `dev`).
+
+### Minor Changes
+
+- Stability and performance refinements:
+  - Improved per-gene auto-thresholding path to be more robust and memory-aware.
+  - Improved Delaunay boundary generation throughput and parallel behavior.
+  - Added process-to-thread fallback for parallel Xenium export worker failures.
+  - Added stronger guards for empty/degenerate polygon and embedding edge cases.
+
+- ME-gene discovery refinements:
+  - Added discovery-result caching keyed to scRNA source metadata and parameters.
+  - Added per-cell-type subsampling for faster discovery on large references.
+  - Added progress and debug messaging controls for ME workflows.
+  - Tuned defaults toward stricter mutual exclusivity and better pair coverage.
+
+- CLI and internal API polish:
+  - Unified worker-count behavior across CLI stages.
+  - Improved help text and format-specific guidance.
+  - Added stronger cell-ID alias handling during export.
+  - Expanded lazy-import coverage to reduce import-time side effects and make optional dependencies clearer.
+
 # Usage
 
 You can run **segger** from the command line with:
@@ -130,4 +196,6 @@ segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/ \
 - Release process: `docs/RELEASE.md`
 - Release notes: `docs/releases/v0.2.0.md`
 - Installation notes: `docs/INSTALLATION.md`
+- Loss functions: `docs/LOSS_FUNCTIONS.md`
+- Math foundations: `docs/MATH.md`
 - Changelog: `CHANGELOG.md`
