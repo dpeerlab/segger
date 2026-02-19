@@ -45,7 +45,7 @@ def get_quadtree_kwargs(
         y_min=y_min,
         y_max=y_max,
         scale=scale,
-        max_depth=max_depth,
+        max_depth=min(max_depth, 15),
     )
 
 
