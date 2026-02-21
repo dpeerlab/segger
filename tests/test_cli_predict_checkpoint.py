@@ -1,11 +1,12 @@
 from pathlib import Path
+import inspect
 
 import pytest
 
 pytest.importorskip("cyclopts")
 torch = pytest.importorskip("torch")
 
-from segger.cli.main import _load_checkpoint_metadata
+from segger.cli.main import _load_checkpoint_metadata, predict
 
 
 def _write_checkpoint(path: Path, payload: dict) -> Path:
@@ -107,3 +108,9 @@ def test_load_checkpoint_metadata_rejects_conflicting_me_pair_sources(tmp_path: 
 
     with pytest.raises(ValueError, match="ME-gene metadata mismatch"):
         _load_checkpoint_metadata(checkpoint_path)
+
+
+def test_predict_supports_prediction_max_k_and_overwrite_options():
+    signature = inspect.signature(predict)
+    assert "prediction_max_k" in signature.parameters
+    assert "overwrite" in signature.parameters

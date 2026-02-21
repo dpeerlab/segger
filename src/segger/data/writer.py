@@ -12,6 +12,17 @@ from ..io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
 
+_UNASSIGNED_CELL_ID_MARKERS = {
+    "",
+    "UNASSIGNED",
+    "NONE",
+    "NULL",
+    "NAN",
+    "NA",
+    "-1",
+}
+
+
 def _auto_similarity_threshold(similarities: np.ndarray) -> float:
     """Compute a robust similarity threshold for one feature group."""
     values = np.asarray(similarities, dtype=np.float64)
@@ -40,6 +51,32 @@ def _auto_similarity_threshold(similarities: np.ndarray) -> float:
         return min(candidates)
 
     return float(np.median(values))
+
+
+def _debug_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fmt_stat(value: float | None) -> str:
+    if value is None:
+        return "nan"
+    return f"{float(value):.4f}"
+
+
+def _normalize_unassigned_cell_ids(cell_id_column: str) -> pl.Expr:
+    """Map known unassigned cell-ID sentinels to null."""
+    cell_id_str = (
+        pl.col(cell_id_column)
+        .cast(pl.Utf8)
+        .fill_null("")
+        .str.strip_chars()
+        .str.to_uppercase()
+    )
+    return (
+        pl.when(cell_id_str.is_in(_UNASSIGNED_CELL_ID_MARKERS))
+        .then(None)
+        .otherwise(pl.col(cell_id_column))
+    )
 
 
 class ISTSegmentationWriter(BasePredictionWriter):
@@ -113,7 +150,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         """
         tx_fields = TrainingTranscriptFields()
         bd_fields = TrainingBoundaryFields()
-        
+        debug_assignment = _debug_flag("SEGGER_DEBUG_ASSIGNMENT")
+
         # Check datamodule for AnnData input
         if not isinstance(trainer.datamodule, ISTDataModule):
             raise TypeError(
@@ -171,12 +209,55 @@ class ISTSegmentationWriter(BasePredictionWriter):
             )
             .rename({bd_fields.id: "segger_cell_id"})
             .drop(bd_fields.cell_encoding)
+            .with_columns(
+                _normalize_unassigned_cell_ids("segger_cell_id")
+                .alias("segger_cell_id"),
+                pl.col("segger_cell_id").is_not_null().alias("_has_valid_cell"),
+            )
             .sort(
-                by=[tx_fields.row_index, "segger_similarity"],
-                descending=[False, True],
+                by=[tx_fields.row_index, "_has_valid_cell", "segger_similarity"],
+                descending=[False, True, True],
             )
             .unique(tx_fields.row_index, keep="first")
+            .drop("_has_valid_cell")
         )
+        candidate_mask = pl.col("segger_cell_id").is_not_null()
+        n_total = segmentation.height
+        n_candidate = segmentation.filter(candidate_mask).height
+        n_missing_candidates = n_total - n_candidate
+
+        if debug_assignment:
+            sim_stats = segmentation.select(
+                pl.col("segger_similarity").min().alias("sim_min"),
+                pl.col("segger_similarity").median().alias("sim_p50"),
+                pl.col("segger_similarity").quantile(0.9).alias("sim_p90"),
+                pl.col("segger_similarity").quantile(0.99).alias("sim_p99"),
+                pl.col("segger_similarity").max().alias("sim_max"),
+                pl.col("segger_similarity")
+                .filter(candidate_mask)
+                .median()
+                .alias("sim_candidate_p50"),
+            ).row(0, named=True)
+            print(
+                "[segger][assignment] "
+                f"total_transcripts={n_total} "
+                f"with_candidate_cell={n_candidate} "
+                f"without_candidate_cell={n_missing_candidates}",
+                flush=True,
+            )
+            print(
+                "[segger][assignment] "
+                "similarity[min,p50,p90,p99,max]="
+                f"[{_fmt_stat(sim_stats['sim_min'])}, "
+                f"{_fmt_stat(sim_stats['sim_p50'])}, "
+                f"{_fmt_stat(sim_stats['sim_p90'])}, "
+                f"{_fmt_stat(sim_stats['sim_p99'])}, "
+                f"{_fmt_stat(sim_stats['sim_max'])}] "
+                f"candidate_p50={_fmt_stat(sim_stats['sim_candidate_p50'])}",
+                flush=True,
+            )
+
+        thresholds_debug = None
         # Apply thresholding
         if self.min_similarity is not None:
             # Use fixed threshold
@@ -185,13 +266,11 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 .with_columns(
                     pl.lit(self.min_similarity).alias("similarity_threshold")
                 )
-                .drop(tx_fields.feature)
             )
         else:
-            # Per-gene thresholding (iterative to reduce memory usage)
+            # Per-gene thresholding over all transcripts (main-branch behavior).
             feature_counts = (
                 segmentation
-                .filter(pl.col('segger_cell_id').is_not_null())
                 .select(tx_fields.feature)
                 .to_series()
                 .value_counts()
@@ -201,16 +280,16 @@ class ISTSegmentationWriter(BasePredictionWriter):
             for feature, count in feature_counts.iter_rows():
                 similarities = (
                     segmentation
-                    .filter(
-                        (pl.col(tx_fields.feature) == feature) &
-                        (pl.col('segger_cell_id').is_not_null())
-                    )
+                    .filter(pl.col(tx_fields.feature) == feature)
                     .select('segger_similarity')
                 )
                 if count > n:
                     similarities = similarities.sample(n=n, seed=0)
                 similarities = similarities.to_series().to_numpy()
-                threshold_value = _auto_similarity_threshold(similarities)
+                threshold_value = min(
+                    threshold_li(similarities),
+                    threshold_yen(similarities),
+                )
                 thresholds.append({
                     tx_fields.feature: feature,
                     'similarity_threshold': threshold_value,
@@ -220,8 +299,56 @@ class ISTSegmentationWriter(BasePredictionWriter):
             output = (
                 segmentation
                 .join(thresholds, on=tx_fields.feature, how='left')
-                .drop(tx_fields.feature)
             )
+        if debug_assignment:
+            if "similarity_threshold" in output.columns:
+                thr_stats = output.select(
+                    pl.col("similarity_threshold").min().alias("thr_min"),
+                    pl.col("similarity_threshold").median().alias("thr_p50"),
+                    pl.col("similarity_threshold").quantile(0.9).alias("thr_p90"),
+                    pl.col("similarity_threshold").quantile(0.99).alias("thr_p99"),
+                    pl.col("similarity_threshold").max().alias("thr_max"),
+                ).row(0, named=True)
+                print(
+                    "[segger][assignment] "
+                    "threshold[min,p50,p90,p99,max]="
+                    f"[{_fmt_stat(thr_stats['thr_min'])}, "
+                    f"{_fmt_stat(thr_stats['thr_p50'])}, "
+                    f"{_fmt_stat(thr_stats['thr_p90'])}, "
+                    f"{_fmt_stat(thr_stats['thr_p99'])}, "
+                    f"{_fmt_stat(thr_stats['thr_max'])}]",
+                    flush=True,
+                )
+                feature_names = [str(g) for g in trainer.datamodule.ad.var.index]
+                feature_lookup = pl.DataFrame(
+                    {
+                        tx_fields.feature: np.arange(len(feature_names), dtype=np.int64),
+                        "feature_name": feature_names,
+                    }
+                )
+                thresholds_debug = (
+                    output
+                    .filter(candidate_mask)
+                    .with_columns(
+                        (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
+                        .cast(pl.Int64)
+                        .alias("_pass")
+                    )
+                    .group_by(tx_fields.feature)
+                    .agg(
+                        pl.len().alias("n_candidate"),
+                        pl.col("_pass").sum().alias("n_pass"),
+                        pl.col("segger_similarity").median().alias("sim_p50"),
+                        pl.col("segger_similarity").quantile(0.1).alias("sim_p10"),
+                        pl.col("segger_similarity").quantile(0.9).alias("sim_p90"),
+                        pl.col("similarity_threshold").first().alias("similarity_threshold"),
+                    )
+                    .with_columns(
+                        (pl.col("n_pass") / pl.col("n_candidate")).alias("pass_rate")
+                    )
+                    .join(feature_lookup, on=tx_fields.feature, how="left")
+                    .sort("n_candidate", descending=True)
+                )
 
         # Relax thresholds in a sign-stable way (always subtractive).
         if self.min_similarity_shift > 0:
@@ -233,6 +360,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 .alias("similarity_threshold")
             )
 
+        if debug_assignment:
+            # Preserve pre-threshold assignment for debugging.
+            output = output.with_columns(
+                pl.col("segger_cell_id").alias("segger_cell_id_raw")
+            )
+
         # Apply similarity threshold to determine final assignments
         output = output.with_columns(
             pl.when(pl.col("segger_similarity") >= pl.col("similarity_threshold"))
@@ -240,10 +373,58 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .otherwise(None)
             .alias("segger_cell_id")
         )
+        output = output.drop(tx_fields.feature, strict=False)
+
+        if debug_assignment:
+            n_pass_score = output.filter(
+                pl.col("segger_similarity") >= pl.col("similarity_threshold")
+            ).height
+            n_assigned = output.filter(pl.col("segger_cell_id").is_not_null()).height
+            n_threshold_rejected = n_candidate - n_assigned
+            print(
+                "[segger][assignment] "
+                f"passes_similarity_threshold={n_pass_score} "
+                f"final_assigned={n_assigned} "
+                f"rejected_by_threshold={n_threshold_rejected}",
+                flush=True,
+            )
+            if thresholds_debug is not None and thresholds_debug.height > 0:
+                debug_path_env = os.getenv("SEGGER_DEBUG_ASSIGNMENT_PATH", "").strip()
+                debug_path = (
+                    Path(debug_path_env)
+                    if debug_path_env
+                    else self.output_directory / "segger_assignment_thresholds.parquet"
+                )
+                thresholds_debug.write_parquet(debug_path)
+                top_reject = thresholds_debug.sort("pass_rate").head(10).select(
+                    "feature_name",
+                    tx_fields.feature,
+                    "n_candidate",
+                    "n_pass",
+                    "pass_rate",
+                    "similarity_threshold",
+                    "sim_p50",
+                )
+                print(
+                    "[segger][assignment] "
+                    f"wrote per-feature thresholds to {debug_path}",
+                    flush=True,
+                )
+                print(
+                    "[segger][assignment] lowest-pass features:\n"
+                    f"{top_reject}",
+                    flush=True,
+                )
 
         # Apply fragment mode if enabled
         if self.fragment_mode:
             output = self._apply_fragment_mode(output, trainer)
+            if "fragment" not in output.columns:
+                output = output.with_columns(pl.lit(False).alias("fragment"))
+            else:
+                output = output.with_columns(
+                    pl.col("fragment").fill_null(False).cast(pl.Boolean)
+                )
 
         # Write output to file
         output.write_parquet(self.output_directory / 'segger_segmentation.parquet')
@@ -326,25 +507,21 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if debug_fragment:
             print(f"[segger][fragment] tx-tx edges total: {int(edge_index.size(1))}", flush=True)
 
-        # Map local tx node indices to transcript row indices so edge IDs are in
-        # the same ID space as segmentation_df[tx_fields.row_index].
+        # Filter to edges connecting unassigned transcripts to reduce memory
+        # pressure before creating transcript-id tensors.
         device = edge_index.device
         tx_index = base_data['tx']['index']
         if tx_index.device != device:
             tx_index = tx_index.to(device)
-        src_ids = tx_index[edge_index[0]]
-        dst_ids = tx_index[edge_index[1]]
-
-        # Filter to edges connecting unassigned transcripts to reduce memory
-        # pressure before creating CPU/Polars objects.
         unassigned_index = torch.as_tensor(
             unassigned_ids,
-            dtype=src_ids.dtype,
+            dtype=tx_index.dtype,
             device=device,
         )
+        unassigned_node_mask = torch.isin(tx_index, unassigned_index)
         edge_mask = (
-            torch.isin(src_ids, unassigned_index)
-            & torch.isin(dst_ids, unassigned_index)
+            unassigned_node_mask[edge_index[0]]
+            & unassigned_node_mask[edge_index[1]]
         )
         if not bool(edge_mask.any().item()):
             if debug_fragment:
@@ -487,8 +664,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
             )
 
         filtered_edge_indices = candidate_edge_indices[passing_similarity]
-        filtered_src_ids = src_ids[filtered_edge_indices]
-        filtered_dst_ids = dst_ids[filtered_edge_indices]
+        filtered_src_ids = tx_index[edge_index[0, filtered_edge_indices]]
+        filtered_dst_ids = tx_index[edge_index[1, filtered_edge_indices]]
 
         # RAPIDS connected-components stays on GPU when tensors are CUDA.
         fragment_tx_ids, fragment_labels = compute_fragment_assignments(
@@ -520,6 +697,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             segmentation_df
             .join(update_df, on=tx_fields.row_index, how="left")
             .with_columns(
+                pl.col("segger_cell_id_fragment").is_not_null().alias("fragment"),
                 pl.coalesce([
                     pl.col("segger_cell_id"),
                     pl.col("segger_cell_id_fragment"),
@@ -530,11 +708,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if debug_fragment:
             fragment_count = (
                 result
-                .filter(
-                    pl.col("segger_cell_id")
-                    .cast(pl.Utf8)
-                    .str.starts_with("fragment-")
-                )
+                .filter(pl.col("fragment"))
                 .height
             )
             print(

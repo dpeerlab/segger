@@ -237,3 +237,8 @@ lightning_logs/
 .vscode/
 *.swp
 *.swo
+
+# Local artifacts not part of workflow code
+.DS_Store
+**/.DS_Store
+presentation/

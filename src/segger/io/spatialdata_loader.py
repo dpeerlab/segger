@@ -364,6 +364,23 @@ class SpatialDataLoader:
             select_cols = [c for c in select_cols if c in schema.names()]
             lf = lf.select(select_cols)
 
+            # Normalize known unassigned cell sentinels to null.
+            if std.cell_id in select_cols:
+                unassigned_markers = ["", "UNASSIGNED", "NONE", "NULL", "NAN", "NA", "-1"]
+                cell_id_norm = (
+                    pl.col(std.cell_id)
+                    .cast(pl.Utf8)
+                    .fill_null("")
+                    .str.strip_chars()
+                    .str.to_uppercase()
+                )
+                lf = lf.with_columns(
+                    pl.when(cell_id_norm.is_in(unassigned_markers))
+                    .then(None)
+                    .otherwise(pl.col(std.cell_id))
+                    .alias(std.cell_id)
+                )
+
         return lf
 
     def boundaries(

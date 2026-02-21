@@ -7,6 +7,7 @@ import polars as pl
 import pandas as pd
 import numpy as np
 import torch
+import os
 
 def _lazy_imports():
     global gpd, sc, sklearn, cupyx, cuml
@@ -22,6 +23,120 @@ if TYPE_CHECKING:  # pragma: no cover
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
 
+
+def _debug_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_UNASSIGNED_CELL_ID_MARKERS = {
+    "",
+    "UNASSIGNED",
+    "NONE",
+    "NULL",
+    "NAN",
+    "NA",
+    "-1",
+}
+
+
+def _assigned_cell_mask(cell_id_column: str) -> pl.Expr:
+    """Mask for transcripts with valid assigned cell IDs."""
+    cell_id_str = (
+        pl.col(cell_id_column)
+        .cast(pl.Utf8)
+        .fill_null("")
+        .str.strip_chars()
+        .str.to_uppercase()
+    )
+    return pl.col(cell_id_column).is_not_null() & (~cell_id_str.is_in(_UNASSIGNED_CELL_ID_MARKERS))
+
+
+def _to_int_array(values: pd.Series | np.ndarray, missing: int = -1) -> np.ndarray:
+    numeric = pd.to_numeric(pd.Series(values), errors="coerce").fillna(missing)
+    return numeric.astype(np.int64).to_numpy()
+
+
+def _print_clustering_diagnostics(
+    ad,
+    cells_min_counts: int,
+    cells_clusters_n_neighbors: int,
+    cells_clusters_resolution: float,
+    genes_min_counts: int,
+    genes_clusters_n_neighbors: int,
+    genes_clusters_resolution: float,
+) -> None:
+    """Print concise diagnostics for AnnData clustering outputs."""
+    def _safe_sim_stats(values: np.ndarray) -> tuple[tuple[int, ...], float, float]:
+        arr = np.asarray(values)
+        if arr.size == 0:
+            return tuple(arr.shape), float("nan"), float("nan")
+        try:
+            return tuple(arr.shape), float(np.nanmin(arr)), float(np.nanmax(arr))
+        except Exception:
+            return tuple(arr.shape), float("nan"), float("nan")
+
+    filtered = ad.obs["filtered"].to_numpy(dtype=bool)
+    cell_clusters = _to_int_array(ad.obs["phenograph_cluster"], missing=-1)
+    clustered_cells = cell_clusters >= 0
+    filtered_clustered = filtered & clustered_cells
+    cluster_sizes = pd.Series(cell_clusters[filtered_clustered]).value_counts().to_numpy()
+
+    gene_clusters = _to_int_array(ad.var["phenograph_cluster"], missing=-1)
+    valid_gene_clusters = gene_clusters[gene_clusters >= 0]
+    gene_cluster_sizes = pd.Series(valid_gene_clusters).value_counts().to_numpy()
+
+    cell_sim_shape, cell_sim_min, cell_sim_max = _safe_sim_stats(
+        ad.uns.get("cell_cluster_similarities")
+    )
+    gene_sim_shape, gene_sim_min, gene_sim_max = _safe_sim_stats(
+        ad.uns.get("gene_cluster_similarities")
+    )
+
+    print(
+        "[segger][diag][cluster] "
+        f"cells_total={ad.n_obs}, cells_filtered={int(filtered.sum())}, "
+        f"cells_clustered={int(filtered_clustered.sum())}, "
+        f"cells_unclustered_filtered={int((filtered & ~clustered_cells).sum())}",
+        flush=True,
+    )
+    print(
+        "[segger][diag][cluster] "
+        f"cell_clusters={int(np.unique(cell_clusters[clustered_cells]).size)}, "
+        f"cell_cluster_size_min={int(cluster_sizes.min()) if cluster_sizes.size else 0}, "
+        f"cell_cluster_size_med={float(np.median(cluster_sizes)) if cluster_sizes.size else 0.0:.1f}, "
+        f"cell_cluster_size_max={int(cluster_sizes.max()) if cluster_sizes.size else 0}",
+        flush=True,
+    )
+    print(
+        "[segger][diag][cluster] "
+        f"genes_total={ad.n_vars}, genes_clusters={int(np.unique(valid_gene_clusters).size)}, "
+        f"gene_cluster_size_min={int(gene_cluster_sizes.min()) if gene_cluster_sizes.size else 0}, "
+        f"gene_cluster_size_med={float(np.median(gene_cluster_sizes)) if gene_cluster_sizes.size else 0.0:.1f}, "
+        f"gene_cluster_size_max={int(gene_cluster_sizes.max()) if gene_cluster_sizes.size else 0}",
+        flush=True,
+    )
+    print(
+        "[segger][diag][cluster] "
+        f"cell_similarity_shape={cell_sim_shape}, "
+        f"cell_similarity_range=({cell_sim_min:.4f}, {cell_sim_max:.4f}), "
+        f"gene_similarity_shape={gene_sim_shape}, "
+        f"gene_similarity_range=({gene_sim_min:.4f}, {gene_sim_max:.4f})",
+        flush=True,
+    )
+    print(
+        "[segger][diag][cluster] "
+        f"params: cells_min_counts={cells_min_counts}, "
+        f"cells_neighbors={cells_clusters_n_neighbors}, "
+        f"cells_resolution={cells_clusters_resolution}, "
+        f"cells_min_cluster_size=100, "
+        f"genes_min_counts={genes_min_counts}, "
+        f"genes_neighbors={genes_clusters_n_neighbors}, "
+        f"genes_resolution={genes_clusters_resolution}, "
+        f"genes_min_cluster_size=-1",
+        flush=True,
+    )
+
+
 def anndata_from_transcripts(
     tx: pl.DataFrame,
     feature_column: str,
@@ -33,8 +148,8 @@ def anndata_from_transcripts(
     """TODO: Add description.
     """
     _lazy_imports()
-    # Remove non-nuclear transcript
-    tx = tx.filter(pl.col(cell_id_column).is_not_null())
+    # Keep only transcripts with valid assigned cell IDs.
+    tx = tx.filter(_assigned_cell_mask(cell_id_column))
     # Get sparse counts from transcripts
     if feature_vocab is None:
         feature_idx = tx.select(
@@ -282,6 +397,17 @@ def setup_anndata(
     # Add cell and gene numeric encodings to AnnData
     ad.obs[tx_fields.cell_encoding] = np.arange(len(ad.obs)).astype(int)
     ad.var[tx_fields.gene_encoding] = np.arange(len(ad.var)).astype(int)
+
+    if _debug_flag("SEGGER_DEBUG_CLUSTERING"):
+        _print_clustering_diagnostics(
+            ad=ad,
+            cells_min_counts=cells_min_counts,
+            cells_clusters_n_neighbors=cells_clusters_n_neighbors,
+            cells_clusters_resolution=cells_clusters_resolution,
+            genes_min_counts=genes_min_counts,
+            genes_clusters_n_neighbors=genes_clusters_n_neighbors,
+            genes_clusters_resolution=genes_clusters_resolution,
+        )
 
     if compute_morphology:
         from segger.geometry.morphology import get_polygon_props

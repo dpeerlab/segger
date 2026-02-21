@@ -28,6 +28,7 @@ from __future__ import annotations
 import functools
 import importlib
 import importlib.util
+import os
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
@@ -139,7 +140,50 @@ def require_spatialdata() -> "types.ModuleType":
     """
     if not SPATIALDATA_AVAILABLE:
         raise ImportError(SPATIALDATA_INSTALL_MSG)
-    import spatialdata
+
+    # Some spatialdata dependency chains import datashader/xrspatial, which can
+    # trigger RAPIDS/cuDF CUDA initialization during module import. SpatialData
+    # export in segger is CPU-capable; avoid hard-failing import-time CUDA checks.
+    prev_rapids_no_initialize = os.environ.get("RAPIDS_NO_INITIALIZE")
+    if prev_rapids_no_initialize is None:
+        os.environ["RAPIDS_NO_INITIALIZE"] = "1"
+
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="The cuda.cudart module is deprecated",
+                category=FutureWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message="The cuda.cuda module is deprecated",
+                category=FutureWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message="Error getting driver and runtime versions",
+                category=UserWarning,
+                module=r".*cudf\.utils\._ptxcompiler",
+            )
+            import spatialdata
+    except Exception as exc:  # pragma: no cover - depends on external env
+        details = f"{type(exc).__name__}: {exc}"
+        lowered = details.lower()
+        if any(token in lowered for token in ("cuda", "cudf", "rmm", "numba.cuda")):
+            raise ImportError(
+                "Failed to import spatialdata due to GPU dependency initialization "
+                "error (likely cuDF/RMM + CUDA driver mismatch). "
+                "SpatialData export in segger does not require CUDA. "
+                "Use a CPU-only export environment without RAPIDS packages, or "
+                "install matching CUDA driver/runtime for your RAPIDS stack. "
+                f"Original error: {details}"
+            ) from exc
+        raise ImportError(f"Failed to import spatialdata. Original error: {details}") from exc
+    finally:
+        if prev_rapids_no_initialize is None:
+            os.environ.pop("RAPIDS_NO_INITIALIZE", None)
+
     return spatialdata
 
 

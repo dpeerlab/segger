@@ -300,8 +300,8 @@ def toy_spatialdata(toy_transcripts: pl.DataFrame, toy_boundaries):
 
     # Build SpatialData
     sdata = spatialdata.SpatialData.from_elements_dict({
-        "points/transcripts": points,
-        "shapes/cells": shapes,
+        "transcripts": points,
+        "cells": shapes,
     })
 
     return sdata

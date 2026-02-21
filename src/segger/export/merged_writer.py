@@ -139,6 +139,7 @@ class MergedTranscriptsWriter:
         row_index_column: str = "row_index",
         cell_id_column: str = "segger_cell_id",
         similarity_column: str = "segger_similarity",
+        fragment_column: str = "fragment",
         **kwargs,
     ) -> Path:
         """Merge predictions with original transcripts and write to file.
@@ -165,6 +166,9 @@ class MergedTranscriptsWriter:
             Column name for cell ID in predictions. Default 'segger_cell_id'.
         similarity_column
             Column name for similarity in predictions. Default 'segger_similarity'.
+        fragment_column
+            Optional boolean fragment flag column in predictions. If present,
+            it is propagated to the merged output.
 
         Returns
         -------
@@ -195,12 +199,23 @@ class MergedTranscriptsWriter:
         pred_cols = [row_index_column, cell_id_column]
         if self.include_similarity and similarity_column in predictions.columns:
             pred_cols.append(similarity_column)
-
-        pred_subset = predictions.select(pred_cols)
+        if fragment_column in predictions.columns:
+            pred_cols.append(fragment_column)
 
         # Handle missing row_index in original (add if needed)
         if row_index_column not in original.columns:
             original = original.with_row_index(name=row_index_column)
+        pred_subset = predictions.select(pred_cols)
+        original_row_dtype = original.schema.get(row_index_column)
+        pred_row_dtype = pred_subset.schema.get(row_index_column)
+        if (
+            original_row_dtype is not None
+            and pred_row_dtype is not None
+            and original_row_dtype != pred_row_dtype
+        ):
+            pred_subset = pred_subset.with_columns(
+                pl.col(row_index_column).cast(original_row_dtype)
+            )
 
         # Join predictions with original transcripts
         merged = original.join(
@@ -218,6 +233,10 @@ class MergedTranscriptsWriter:
                 merged = merged.with_columns(
                     pl.col(similarity_column).fill_null(0.0)
                 )
+        if fragment_column in merged.columns:
+            merged = merged.with_columns(
+                pl.col(fragment_column).fill_null(False).cast(pl.Boolean)
+            )
 
         # Write output
         output_path = output_dir / output_name
@@ -260,6 +279,7 @@ def merge_predictions_with_transcripts(
     row_index_column: str = "row_index",
     cell_id_column: str = "segger_cell_id",
     similarity_column: str = "segger_similarity",
+    fragment_column: str = "fragment",
     unassigned_marker: Union[int, str, None] = -1,
 ) -> pl.DataFrame:
     """Merge predictions with transcripts (functional interface).
@@ -276,6 +296,9 @@ def merge_predictions_with_transcripts(
         Column name for cell ID in predictions.
     similarity_column
         Column name for similarity in predictions.
+    fragment_column
+        Optional boolean fragment flag column in predictions. If present, it is
+        propagated to the merged output.
     unassigned_marker
         Value for unassigned transcripts.
 
@@ -294,12 +317,23 @@ def merge_predictions_with_transcripts(
     pred_cols = [row_index_column, cell_id_column]
     if similarity_column in predictions.columns:
         pred_cols.append(similarity_column)
-
-    pred_subset = predictions.select(pred_cols)
+    if fragment_column in predictions.columns:
+        pred_cols.append(fragment_column)
 
     # Add row_index if missing
     if row_index_column not in transcripts.columns:
         transcripts = transcripts.with_row_index(name=row_index_column)
+    pred_subset = predictions.select(pred_cols)
+    transcripts_row_dtype = transcripts.schema.get(row_index_column)
+    pred_row_dtype = pred_subset.schema.get(row_index_column)
+    if (
+        transcripts_row_dtype is not None
+        and pred_row_dtype is not None
+        and transcripts_row_dtype != pred_row_dtype
+    ):
+        pred_subset = pred_subset.with_columns(
+            pl.col(row_index_column).cast(transcripts_row_dtype)
+        )
 
     # Join
     merged = transcripts.join(pred_subset, on=row_index_column, how="left")
@@ -313,5 +347,9 @@ def merge_predictions_with_transcripts(
             merged = merged.with_columns(
                 pl.col(similarity_column).fill_null(0.0)
             )
+    if fragment_column in merged.columns:
+        merged = merged.with_columns(
+            pl.col(fragment_column).fill_null(False).cast(pl.Boolean)
+        )
 
     return merged

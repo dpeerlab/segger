@@ -23,9 +23,9 @@ from torchvision.transforms import Compose
 from dataclasses import dataclass, field
 from typing import Literal, Optional, List, Tuple
 from pathlib import Path
+import gc
 import polars as pl
 import torch
-import gc
 import numpy as np
 
 from .tile_dataset import (
@@ -40,6 +40,29 @@ from ..io.fields import (
 from .tiling import QuadTreeTiling, SquareTiling
 from .partition import PartitionSampler
 
+
+
+_UNASSIGNED_CELL_ID_MARKERS = {
+    "",
+    "UNASSIGNED",
+    "NONE",
+    "NULL",
+    "NAN",
+    "NA",
+    "-1",
+}
+
+
+def _assigned_cell_mask(cell_id_column: str) -> pl.Expr:
+    """Mask for transcripts with valid assigned cell IDs."""
+    cell_id_str = (
+        pl.col(cell_id_column)
+        .cast(pl.Utf8)
+        .fill_null("")
+        .str.strip_chars()
+        .str.to_uppercase()
+    )
+    return pl.col(cell_id_column).is_not_null() & (~cell_id_str.is_in(_UNASSIGNED_CELL_ID_MARKERS))
 
 
 class NegativeSampling(BaseTransform):
@@ -127,9 +150,9 @@ class ISTDataModule(LightningDataModule):
         Maximum distance for edges in prediction graphs.
     tiling_mode : {"adaptive", "square"}, default="adaptive"
         Strategy for spatial graph tiling (adaptive quadtree or grid).
-    tiling_margin_training : float, default=20.0
+    tiling_margin_training : float, default=10.0
         Margin width (in µm) added to tiles during training.
-    tiling_margin_prediction : float, default=20.0
+    tiling_margin_prediction : float, default=10.0
         Margin width (in µm) added to tiles during prediction.
     tiling_nodes_per_tile : int, default=50000
         Maximum number of nodes per tile for adaptive tiling.
@@ -185,8 +208,8 @@ class ISTDataModule(LightningDataModule):
     prediction_graph_max_k: int = 3
     prediction_graph_scale_factor: float = 1.2
     tiling_mode: Literal["adaptive", "square"] = "adaptive"  # TODO: Remove (benchmarking only)
-    tiling_margin_training: float = 20.
-    tiling_margin_prediction: float = 20.
+    tiling_margin_training: float = 10.
+    tiling_margin_prediction: float = 10.
     tiling_nodes_per_tile: int = 50_000
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
@@ -293,7 +316,10 @@ class ISTDataModule(LightningDataModule):
                 f"Unrecognized segmentation graph mode: "
                 f"'{self.segmentation_graph_mode}'."
             )
-        tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
+        tx_mask = (
+            pl.col(tx_fields.compartment).is_in(compartments)
+            & _assigned_cell_mask(tx_fields.cell_id)
+        )
         bd_mask = bd[bd_fields.boundary_type] == boundary_type
 
         # Generate reference AnnData
@@ -419,10 +445,13 @@ class ISTDataModule(LightningDataModule):
 
         # Check if compartment column exists
         if tx_fields.compartment in tx.columns:
-            tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
+            tx_mask = (
+                pl.col(tx_fields.compartment).is_in(compartments)
+                & _assigned_cell_mask(tx_fields.cell_id)
+            )
         else:
-            # If no compartment info, use cell_id presence
-            tx_mask = pl.col(tx_fields.cell_id).is_not_null()
+            # If no compartment info, fall back to robust cell assignment IDs.
+            tx_mask = _assigned_cell_mask(tx_fields.cell_id)
 
         if bd is not None and bd_fields.boundary_type in bd.columns:
             bd_mask = bd[bd_fields.boundary_type] == boundary_type

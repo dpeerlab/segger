@@ -195,6 +195,50 @@ def get_indices_indptr(input_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]
     return indices, indptr
 
 
+def _normalize_fragment_series(values: pd.Series) -> pd.Series:
+    """Normalize mixed fragment flags to booleans."""
+    if pd.api.types.is_bool_dtype(values):
+        return values.fillna(False).astype(bool)
+    if pd.api.types.is_numeric_dtype(values):
+        return values.fillna(0).astype(float) != 0
+
+    normalized = values.astype(str).str.strip().str.lower()
+    return normalized.isin({"1", "true", "t", "yes", "y"})
+
+
+def _default_analysis_grouping(
+    seg_df: pd.DataFrame,
+    output_cell_ids: List[Any],
+    cell_id_column: str,
+) -> Tuple[pd.DataFrame, Dict[str, List[str]]]:
+    """Build default analysis annotations for Xenium output."""
+    analysis_df = pd.DataFrame(output_cell_ids, columns=[cell_id_column])
+
+    if "fragment" in seg_df.columns and cell_id_column in seg_df.columns:
+        fragment_lookup_df = seg_df[[cell_id_column, "fragment"]].dropna(
+            subset=[cell_id_column]
+        )
+        if len(fragment_lookup_df) > 0:
+            fragment_lookup_df = fragment_lookup_df.copy()
+            fragment_lookup_df["fragment"] = _normalize_fragment_series(
+                fragment_lookup_df["fragment"]
+            )
+            fragment_by_cell = (
+                fragment_lookup_df
+                .groupby(cell_id_column)["fragment"]
+                .any()
+                .to_dict()
+            )
+            analysis_df["segger"] = [
+                "segger-fragments" if fragment_by_cell.get(cell_id, False) else "segger-cells"
+                for cell_id in output_cell_ids
+            ]
+            return analysis_df, {"segger": ["segger-cells", "segger-fragments"]}
+
+    analysis_df["default"] = "segger"
+    return analysis_df, {}
+
+
 def generate_experiment_file(
     template_path: Path,
     output_path: Path,
@@ -466,11 +510,14 @@ def seg2explorer(
     source_zarr_store.close()
 
     # Create analysis data
+    forced_group_names: Dict[str, List[str]] = {}
     if analysis_df is None:
-        analysis_df = pd.DataFrame(
-            [cell_id2old_id[i] for i in cell_id], columns=[cell_id_column]
+        output_cell_ids = [cell_id2old_id[i] for i in cell_id]
+        analysis_df, forced_group_names = _default_analysis_grouping(
+            seg_df=seg_df,
+            output_cell_ids=output_cell_ids,
+            cell_id_column=cell_id_column,
         )
-        analysis_df["default"] = "segger"
 
     zarr_df = pd.DataFrame(
         [cell_id2old_id[i] for i in cell_id], columns=[cell_id_column]
@@ -481,7 +528,12 @@ def seg2explorer(
     clusters_dict = {
         cluster: {
             label: idx + 1
-            for idx, label in enumerate(sorted(np.unique(clustering_df[cluster].dropna())))
+            for idx, label in enumerate(
+                forced_group_names.get(
+                    cluster,
+                    sorted(np.unique(clustering_df[cluster].dropna())),
+                )
+            )
         }
         for cluster in clusters_names
     }
@@ -812,11 +864,14 @@ def seg2explorer_pqdm(
     source_zarr_store.close()
 
     # Create analysis data
+    forced_group_names: Dict[str, List[str]] = {}
     if analysis_df is None:
-        analysis_df = pd.DataFrame(
-            [cell_id2old_id[i] for i in cell_id], columns=[cell_id_column]
+        output_cell_ids = [cell_id2old_id[i] for i in cell_id]
+        analysis_df, forced_group_names = _default_analysis_grouping(
+            seg_df=seg_df,
+            output_cell_ids=output_cell_ids,
+            cell_id_column=cell_id_column,
         )
-        analysis_df["default"] = "segger"
 
     zarr_df = pd.DataFrame(
         [cell_id2old_id[i] for i in cell_id], columns=[cell_id_column]
@@ -827,7 +882,12 @@ def seg2explorer_pqdm(
     clusters_dict = {
         cluster: {
             label: idx + 1
-            for idx, label in enumerate(sorted(np.unique(clustering_df[cluster].dropna())))
+            for idx, label in enumerate(
+                forced_group_names.get(
+                    cluster,
+                    sorted(np.unique(clustering_df[cluster].dropna())),
+                )
+            )
         }
         for cluster in clusters_names
     }

@@ -21,6 +21,17 @@ from segger.export.output_formats import (
     get_writer,
 )
 
+try:
+    import anndata  # noqa: F401
+    ANNDATA_AVAILABLE = True
+except Exception:
+    ANNDATA_AVAILABLE = False
+
+requires_anndata = pytest.mark.skipif(
+    not ANNDATA_AVAILABLE,
+    reason="anndata not installed",
+)
+
 
 class TestSeggerRawWriter:
     """Tests for SeggerRawWriter (default predictions output)."""
@@ -204,6 +215,28 @@ class TestMergedTranscriptsWriter:
         loaded = pl.read_parquet(output_path)
         assert "row_index" in loaded.columns
 
+    def test_preserves_fragment_column(
+        self,
+        mock_predictions: pl.DataFrame,
+        standardized_transcripts: pl.DataFrame,
+        tmp_output_dir: Path,
+    ):
+        """Test that optional fragment flags are preserved in merged output."""
+        predictions = mock_predictions.with_columns(
+            (pl.col("row_index") % 3 == 0).alias("fragment")
+        )
+        writer = MergedTranscriptsWriter()
+        output_path = writer.write(
+            predictions=predictions,
+            output_dir=tmp_output_dir,
+            transcripts=standardized_transcripts,
+        )
+
+        loaded = pl.read_parquet(output_path)
+        assert "fragment" in loaded.columns
+        assert loaded["fragment"].dtype == pl.Boolean
+        assert loaded["fragment"].null_count() == 0
+
 
 class TestMergePredictionsFunction:
     """Tests for the merge_predictions_with_transcripts function."""
@@ -291,7 +324,31 @@ class TestMergePredictionsFunction:
         null_count = merged["segger_cell_id"].is_null().sum()
         assert null_count == n - (n // 2)
 
+    def test_fragment_column_is_propagated_and_filled(
+        self,
+        standardized_transcripts: pl.DataFrame,
+    ):
+        """Test fragment flag propagation with default False fill."""
+        n = len(standardized_transcripts)
+        predictions = pl.DataFrame({
+            "row_index": list(range(n // 2)),
+            "segger_cell_id": list(range(n // 2)),
+            "segger_similarity": [0.9] * (n // 2),
+            "fragment": [idx % 2 == 0 for idx in range(n // 2)],
+        })
 
+        merged = merge_predictions_with_transcripts(
+            predictions=predictions,
+            transcripts=standardized_transcripts,
+        )
+
+        assert "fragment" in merged.columns
+        assert merged["fragment"].dtype == pl.Boolean
+        assert merged["fragment"].null_count() == 0
+        assert merged.filter(pl.col("row_index") >= n // 2)["fragment"].sum() == 0
+
+
+@requires_anndata
 class TestOutputFormatRegistry:
     """Tests for the output format registry and factory."""
 
@@ -333,6 +390,7 @@ class TestOutputFormatRegistry:
         assert writer.unassigned_marker == -999
 
 
+@requires_anndata
 class TestIntegrationWithToyData:
     """Integration tests using the toy Xenium dataset."""
 

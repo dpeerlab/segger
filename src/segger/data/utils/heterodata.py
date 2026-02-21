@@ -37,6 +37,86 @@ if TYPE_CHECKING:  # pragma: no cover
     import scanpy as sc
 
 
+def _debug_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _print_embedding_diagnostics(
+    transcripts: pl.DataFrame,
+    adata: "sc.AnnData",
+    tx_fields: TrainingTranscriptFields,
+    genes_embedding_key: str,
+) -> None:
+    stats = transcripts.select(
+        pl.len().alias("n_tx"),
+        pl.col(tx_fields.feature).null_count().alias("feature_nulls"),
+        pl.col(tx_fields.feature).n_unique().alias("feature_unique"),
+        pl.col(tx_fields.gene_encoding).null_count().alias("gene_encoding_nulls"),
+        pl.col(tx_fields.gene_encoding).drop_nulls().n_unique().alias("gene_encoding_unique"),
+        pl.col(tx_fields.gene_encoding).drop_nulls().min().alias("gene_encoding_min"),
+        pl.col(tx_fields.gene_encoding).drop_nulls().max().alias("gene_encoding_max"),
+        pl.col(tx_fields.cell_encoding).null_count().alias("cell_encoding_nulls"),
+        pl.col(tx_fields.cell_cluster).eq(-1).sum().alias("tx_cell_cluster_neg1"),
+    ).row(0, named=True)
+
+    out_of_range = transcripts.filter(
+        pl.col(tx_fields.gene_encoding).is_not_null()
+        & (pl.col(tx_fields.gene_encoding) >= adata.n_vars)
+    ).height
+
+    print(
+        "[segger][diag][embedding] "
+        f"transcripts={int(stats['n_tx'])}, "
+        f"feature_nulls={int(stats['feature_nulls'])}, "
+        f"unique_features={int(stats['feature_unique'])}, "
+        f"gene_encoding_nulls={int(stats['gene_encoding_nulls'])}, "
+        f"gene_encoding_out_of_range={int(out_of_range)}",
+        flush=True,
+    )
+    print(
+        "[segger][diag][embedding] "
+        f"gene_encodings_unique={int(stats['gene_encoding_unique'])}, "
+        f"gene_encoding_min={int(stats['gene_encoding_min']) if stats['gene_encoding_min'] is not None else -1}, "
+        f"gene_encoding_max={int(stats['gene_encoding_max']) if stats['gene_encoding_max'] is not None else -1}, "
+        f"vocab_size={int(adata.n_vars)}",
+        flush=True,
+    )
+    print(
+        "[segger][diag][embedding] "
+        f"cell_encoding_nulls={int(stats['cell_encoding_nulls'])}, "
+        f"tx_cell_cluster_neg1={int(stats['tx_cell_cluster_neg1'])}",
+        flush=True,
+    )
+    if genes_embedding_key in adata.varm:
+        emb_shape = tuple(adata.varm[genes_embedding_key].shape)
+        print(
+            "[segger][diag][embedding] "
+            f"gene_embedding_key='{genes_embedding_key}', shape={emb_shape}",
+            flush=True,
+        )
+    else:
+        print(
+            "[segger][diag][embedding] "
+            f"gene_embedding_key='{genes_embedding_key}' missing from adata.varm",
+            flush=True,
+        )
+
+    if int(stats["gene_encoding_nulls"]) > 0:
+        missing = (
+            transcripts
+            .filter(pl.col(tx_fields.gene_encoding).is_null())
+            .group_by(tx_fields.feature)
+            .len()
+            .sort("len", descending=True)
+            .head(10)
+        )
+        print(
+            "[segger][diag][embedding] top unmapped transcript features:\n"
+            f"{missing}",
+            flush=True,
+        )
+
+
 def setup_heterodata(
     transcripts: pl.DataFrame,
     boundaries: gpd.GeoDataFrame,
@@ -232,6 +312,14 @@ def setup_heterodata(
             tx_fields.cell_encoding: pl.UInt32,
         })
     )
+
+    if _debug_flag("SEGGER_DEBUG_EMBEDDING"):
+        _print_embedding_diagnostics(
+            transcripts=transcripts,
+            adata=adata,
+            tx_fields=tx_fields,
+            genes_embedding_key=genes_embedding_key,
+        )
     
     # Sort boundaries by AnnData ordering
     boundaries = (
@@ -327,11 +415,14 @@ def setup_heterodata(
         scale_factor=prediction_graph_scale_factor,
         mode=prediction_graph_mode,
         use_3d=use_3d_actual if prediction_graph_mode == "uniform" else False,
+        uniform_query=(
+            np.asarray(adata.obsm["X_spatial"])[:, :2]
+            if prediction_graph_mode == "uniform"
+            else None
+        ),
     )
 
-    debug_me = os.getenv("SEGGER_DEBUG_ME", "").lower() in {
-        "1", "true", "yes", "on",
-    }
+    debug_me = _debug_flag("SEGGER_DEBUG_ME")
     if debug_me:
         if me_gene_pairs is None:
             print("[segger][me] me_gene_pairs: None", flush=True)

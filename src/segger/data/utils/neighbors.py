@@ -166,7 +166,13 @@ def kdtree_neighbors(
     )
     indices = torch.from_numpy(indices)
     gc.collect()  # make sure numpy copy is gone before conversion
-    edge_index, index_pointer = knn_to_edge_index(indices)
+    # scipy.spatial.KDTree uses `n_points` as the sentinel for missing
+    # neighbors, independent of query size. When query != points (e.g. bd->tx
+    # in uniform prediction graph), this differs from indices.shape[0].
+    edge_index, index_pointer = knn_to_edge_index(
+        indices,
+        padding_value=points.shape[0],
+    )
     del indices   # remove big indices tensor
     gc.collect()
     
@@ -273,6 +279,7 @@ def setup_prediction_graph(
     mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
     use_3d: bool | Literal["auto"] = False,
     max_dist: Optional[float] = None,
+    uniform_query: np.ndarray | None = None,
 ) -> torch.Tensor:
     """Setup prediction graph connecting transcripts to cell boundaries.
 
@@ -295,6 +302,9 @@ def setup_prediction_graph(
         containment checks.
     max_dist : float, optional
         Maximum distance for uniform mode (3D KNN).
+    uniform_query : np.ndarray | None, optional
+        Optional (N_bd, 2) query coordinates for uniform mode. When provided,
+        this defines the exact bd-node index space for returned edges.
 
     Returns
     -------
@@ -325,7 +335,15 @@ def setup_prediction_graph(
             coord_cols.append(tx_fields.z)
 
         points = tx[coord_cols].to_numpy()
-        query = bd.geometry.centroid.get_coordinates().values
+        if uniform_query is not None:
+            query = np.asarray(uniform_query, dtype=np.float64)
+            if query.ndim != 2 or query.shape[1] < 2:
+                raise ValueError(
+                    "uniform_query must have shape (N, 2+) for uniform mode."
+                )
+            query = query[:, :2]
+        else:
+            query = bd.geometry.centroid.get_coordinates().values
 
         # For 3D, add z=0 for boundary centroids (they're 2D polygons)
         if use_3d and len(coord_cols) == 3:
@@ -338,6 +356,22 @@ def setup_prediction_graph(
             max_k=max_k,
             max_dist=max_dist if max_dist is not None else float('inf'),
         )
+        # kdtree_neighbors with `query=bd` returns edges as (bd_idx -> tx_idx).
+        # Segger stores prediction edges under ('tx','neighbors','bd'), so flip
+        # to (tx_idx -> bd_idx) to keep edge_index aligned with node types.
+        edge_index = torch.stack([edge_index[1], edge_index[0]])
+        if edge_index.numel() > 0:
+            n_tx = len(points)
+            n_bd = len(query)
+            if (
+                int(edge_index[0].max().item()) >= n_tx
+                or int(edge_index[1].max().item()) >= n_bd
+            ):
+                raise RuntimeError(
+                    "uniform prediction graph contains out-of-range indices: "
+                    f"max_tx={int(edge_index[0].max().item())}, n_tx={n_tx}, "
+                    f"max_bd={int(edge_index[1].max().item())}, n_bd={n_bd}."
+                )
         return edge_index
 
     # Shape-based graph using scale (supports both expansion and shrinking)

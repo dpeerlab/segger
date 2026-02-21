@@ -125,12 +125,19 @@ def find_mutually_exclusive_genes(
                 continue
 
             gene_expr = adata[:, gene].X
-            cell_type_mask = adata.obs[cell_type_column] == cell_type
+            # SciPy sparse indexing expects NumPy boolean arrays, not pandas Series.
+            cell_type_mask = (
+                adata.obs[cell_type_column] == cell_type
+            ).to_numpy(dtype=bool, copy=False)
             non_cell_type_mask = ~cell_type_mask
 
             # Check expression thresholds
-            expr_in = (gene_expr[cell_type_mask] > 0).mean()
-            expr_out = (gene_expr[non_cell_type_mask] > 0).mean()
+            expr_in = float(
+                np.asarray((gene_expr[cell_type_mask] > 0).mean()).squeeze()
+            )
+            expr_out = float(
+                np.asarray((gene_expr[non_cell_type_mask] > 0).mean()).squeeze()
+            )
 
             if expr_in > expr_threshold_in and expr_out < expr_threshold_out:
                 exclusive_genes[cell_type].append(gene)

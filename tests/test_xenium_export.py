@@ -30,6 +30,8 @@ import pytest
 import zarr
 from zarr.storage import ZipStore
 
+pytest.importorskip("pqdm")
+
 from segger.export.xenium import (
     get_flatten_version,
     get_indices_indptr,
@@ -333,6 +335,43 @@ class TestSeg2ExplorerFormat:
                 area_low=1,
                 area_high=10000,
             )
+        except Exception as e:
+            pytest.skip(f"Export test skipped due to: {e}")
+
+    def test_fragment_column_creates_cell_and_fragment_groups(
+        self,
+        mock_source_dir,
+        sample_seg_df,
+        tmp_path,
+    ):
+        """Test default Xenium grouping splits segger-cells vs segger-fragments."""
+        from segger.export.xenium import seg2explorer
+
+        output_dir = tmp_path / "output_fragments"
+        seg_df = sample_seg_df.copy()
+        fragment_cells = {f"cell_{idx}" for idx in range(0, 10, 2)}
+        seg_df["fragment"] = seg_df["seg_cell_id"].isin(fragment_cells)
+
+        try:
+            seg2explorer(
+                seg_df=seg_df,
+                source_path=mock_source_dir,
+                output_dir=output_dir,
+                area_low=1,
+                area_high=10000,
+            )
+
+            analysis_store = ZipStore(output_dir / "seg_analysis.zarr.zip", mode="r")
+            analysis_zarr = zarr.open(analysis_store, mode="r")
+            attrs = analysis_zarr["cell_groups"].attrs
+
+            grouping_names = list(attrs.get("grouping_names", []))
+            assert "segger" in grouping_names
+            segger_index = grouping_names.index("segger")
+            segger_groups = set(attrs["group_names"][segger_index])
+            assert {"segger-cells", "segger-fragments"}.issubset(segger_groups)
+
+            analysis_store.close()
         except Exception as e:
             pytest.skip(f"Export test skipped due to: {e}")
 

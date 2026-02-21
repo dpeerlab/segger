@@ -1,25 +1,14 @@
-from __future__ import annotations
-
 from functools import cached_property
 from abc import ABC, abstractmethod
 from numpy.typing import ArrayLike
-from typing import TYPE_CHECKING
+from shapely import box
+import geopandas as gpd
 import numpy as np
 import torch
+import cudf
 
-def _lazy_imports():
-    global gpd, cudf, box
-    import geopandas as gpd
-    import cudf
-    from shapely import box
+from ..geometry import *
 
-def _lazy_geometry():
-    from .. import geometry as _geom
-    return _geom
-
-if TYPE_CHECKING:  # pragma: no cover
-    import geopandas as gpd
-    import cudf
 
 class Tiling(ABC):
     """
@@ -121,11 +110,10 @@ class Tiling(ABC):
 
         # Spatial query
         predicate = 'intersects' if inclusive else 'contains'
-        geom = _lazy_geometry()
         if geometry.dim() == 2: # points
-            result = geom.points_in_polygons(geometry, tiles, predicate)
+            result = points_in_polygons(geometry, tiles, predicate)
         else: # polygons
-            result = geom.polygons_in_polygons(geometry, tiles, predicate)
+            result = polygons_in_polygons(geometry, tiles, predicate)
         result = result.drop_duplicates('index_query')
 
         # Format to tensor of indices (-1 where no match found)
@@ -210,14 +198,13 @@ class QuadTreeTiling(Tiling):
         max_tile_size: int,
     ):
         # Calculate QuadTree on points and set as tiles
-        geom = _lazy_geometry()
-        points = geom.points_to_geoseries(positions, backend='cuspatial')
-        _, quadtree = geom.get_quadtree_index(
+        points = points_to_geoseries(positions, backend='cuspatial')
+        _, quadtree = get_quadtree_index(
             points,
             max_tile_size,
             with_bounds=True,
         )
-        self._tiles = geom.quadtree_to_geoseries(quadtree, backend='geopandas')
+        self._tiles = quadtree_to_geoseries(quadtree, backend='geopandas')
 
     @property
     def tiles(self) -> gpd.GeoSeries:
@@ -282,7 +269,6 @@ class SquareTiling(Tiling):
         gpd.GeoSeries
             A GeoSeries of square Polygon tiles.
         """
-        _lazy_imports()
         x, y = np.meshgrid(
             np.arange(self.min_x, self.max_x, self.side_length),
             np.arange(self.min_y, self.max_y, self.side_length),

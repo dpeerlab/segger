@@ -142,6 +142,9 @@ class LitISTEncoder(LightningModule):
                 f"Expected data module to be `ISTDataModule` but got "
                 f"{type(self.trainer.datamodule).__name__}."
             )
+        debug_embedding = os.getenv("SEGGER_DEBUG_EMBEDDING", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
 
         if hasattr(self.trainer.datamodule, "vocab"):
             datamodule_vocab = getattr(self.trainer.datamodule, "vocab")
@@ -158,18 +161,82 @@ class LitISTEncoder(LightningModule):
                     for gene1, gene2 in datamodule_me_gene_pairs
                 ]
 
-        # Only set gene embeddings if exist in data module
-        if hasattr(self.trainer.datamodule, "gene_embedding"):
-            tx_fields = StandardTranscriptFields()
-            embedding_weights = (
-                self.trainer.datamodule.gene_embedding
-                .drop(tx_fields.feature)
-                .to_torch()
-                .to(torch.float)
+        # Initialize transcript embedding layer from datamodule tables when
+        # available. `tx_embedding` is the current datamodule name; keep
+        # `gene_embedding` for backward compatibility.
+        #
+        # Important: only (re)initialize during fit. In predict/test stages we
+        # must preserve learned/checkpoint weights.
+        should_init_tx_embedding = stage in (None, "fit")
+        has_gene_embedding = hasattr(self.trainer.datamodule, "gene_embedding")
+        has_tx_embedding = hasattr(self.trainer.datamodule, "tx_embedding")
+        if debug_embedding:
+            print(
+                "[segger][diag][embedding] "
+                f"datamodule.has_gene_embedding={has_gene_embedding}, "
+                f"datamodule.has_tx_embedding={has_tx_embedding}, "
+                f"setup_stage={stage}, "
+                f"init_tx_embedding={should_init_tx_embedding}",
+                flush=True,
             )
-            self.model.lin_first['tx'] = Embedding.from_pretrained(
-                embedding_weights,
-                freeze=self._freeze_gene_embedding,
+        if should_init_tx_embedding:
+            embedding_table = None
+            embedding_source = None
+            if has_gene_embedding:
+                embedding_table = self.trainer.datamodule.gene_embedding
+                embedding_source = "datamodule.gene_embedding"
+            elif has_tx_embedding:
+                embedding_table = self.trainer.datamodule.tx_embedding
+                embedding_source = "datamodule.tx_embedding"
+
+            if embedding_table is not None:
+                tx_fields = StandardTranscriptFields()
+                if isinstance(embedding_table, pl.DataFrame):
+                    if tx_fields.feature in embedding_table.columns:
+                        embedding_weights = (
+                            embedding_table
+                            .drop(tx_fields.feature)
+                            .to_torch()
+                            .to(torch.float)
+                        )
+                    else:
+                        embedding_weights = embedding_table.to_torch().to(torch.float)
+                else:
+                    raise TypeError(
+                        "Expected embedding table to be a polars.DataFrame, "
+                        f"got {type(embedding_table).__name__}."
+                    )
+                self.model.lin_first['tx'] = Embedding.from_pretrained(
+                    embedding_weights,
+                    freeze=self._freeze_gene_embedding,
+                )
+                if debug_embedding:
+                    print(
+                        "[segger][diag][embedding] "
+                        f"model.tx_embedding_source={embedding_source}, "
+                        f"shape={tuple(embedding_weights.shape)}, "
+                        f"frozen={self._freeze_gene_embedding}",
+                        flush=True,
+                    )
+            elif debug_embedding:
+                print(
+                    "[segger][diag][embedding] "
+                    "model.tx_embedding_source=default_random_initialization",
+                    flush=True,
+                )
+                if has_tx_embedding:
+                    print(
+                        "[segger][diag][embedding] "
+                        "warning: datamodule.tx_embedding exists but datamodule.gene_embedding "
+                        "is missing, so pretrained transcript embeddings are not loaded.",
+                        flush=True,
+                    )
+        elif debug_embedding:
+            print(
+                "[segger][diag][embedding] "
+                "skipping tx embedding reinitialization outside fit stage; "
+                "keeping current model weights.",
+                flush=True,
             )
 
         # Setup loss functions

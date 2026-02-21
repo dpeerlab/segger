@@ -110,6 +110,12 @@ def _configure_runtime_logging_and_warnings() -> None:
         message="The cuda.cuda module is deprecated",
         category=FutureWarning,
     )
+    warnings.filterwarnings(
+        "ignore",
+        message="Error getting driver and runtime versions",
+        category=UserWarning,
+        module=r".*cudf\.utils\._ptxcompiler",
+    )
 
     # PyTorch serialization roadmap warning emitted by Lightning checkpoint load.
     warnings.filterwarnings(
@@ -140,6 +146,67 @@ def _normalize_optional_text(value: str | None) -> str | None:
     if not stripped:
         return None
     return stripped
+
+
+def _split_predictions_by_fragment(
+    predictions,
+    fragment_column: str = "fragment",
+):
+    """Split predictions into (cells, fragments) when a fragment flag exists."""
+    import polars as pl
+
+    if fragment_column not in predictions.columns:
+        return None
+
+    normalized = predictions.with_columns(
+        pl.col(fragment_column).cast(pl.Boolean, strict=False).fill_null(False)
+    )
+    return (
+        normalized.filter(~pl.col(fragment_column)),
+        normalized.filter(pl.col(fragment_column)),
+    )
+
+
+def _write_anndata_outputs(
+    predictions,
+    transcripts,
+    output_dir: Path,
+    overwrite: bool = False,
+    cells_output_name: str = "segger_segmentation.h5ad",
+    fragments_output_name: str = "segger_fragments.h5ad",
+) -> list[Path]:
+    """Write AnnData output(s), splitting fragments when available."""
+    from ..export import AnnDataWriter
+
+    writer = AnnDataWriter()
+    split_predictions = _split_predictions_by_fragment(predictions)
+    if split_predictions is None:
+        return [
+            writer.write(
+                predictions=predictions,
+                output_dir=output_dir,
+                transcripts=transcripts,
+                output_name=cells_output_name,
+                overwrite=overwrite,
+            )
+        ]
+
+    cell_predictions, fragment_predictions = split_predictions
+    cell_path = writer.write(
+        predictions=cell_predictions,
+        output_dir=output_dir,
+        transcripts=transcripts,
+        output_name=cells_output_name,
+        overwrite=overwrite,
+    )
+    fragment_path = writer.write(
+        predictions=fragment_predictions,
+        output_dir=output_dir,
+        transcripts=transcripts,
+        output_name=fragments_output_name,
+        overwrite=overwrite,
+    )
+    return [cell_path, fragment_path]
 
 
 def _normalize_checkpoint_vocab(
@@ -369,25 +436,25 @@ def segment(
         "tiling_margin_training",
         validator=validators.Number(gte=0),
         group=group_tiling,
-    )] = 4,
+    )] = 10,
 
     tiling_margin_prediction: Annotated[float, registry.get_parameter(
         "tiling_margin_prediction",
         validator=validators.Number(gte=0),
         group=group_tiling,
-    )] = 4,
+    )] = 10,
 
     max_nodes_per_tile: Annotated[int, registry.get_parameter(
         "tiling_nodes_per_tile",
         validator=validators.Number(gt=0),
         group=group_tiling,
-    )] = 10_000,
+    )] = 50_000,
 
     max_edges_per_batch: Annotated[int, registry.get_parameter(
         "edges_per_batch",
         validator=validators.Number(gt=0),
         group=group_tiling,
-    )] = 200_000,
+    )] = 1_000_000,
 
     # Model
     n_epochs: Annotated[int, Parameter(
@@ -570,7 +637,7 @@ def segment(
         help="Enable fragment mode for grouping unassigned transcripts "
              "using tx-tx connected components.",
         group=group_prediction,
-    )] = True,
+    )] = False,
 
     fragment_min_transcripts: Annotated[int, Parameter(
         help="Minimum transcripts per fragment cell.",
@@ -630,7 +697,7 @@ def segment(
                  "'skip' omits shapes from output.",
             group=group_boundary,
         )
-    ] = "input",
+    ] = "skip",
 
     # Quality Filtering
     min_qv: Annotated[float | None, Parameter(
@@ -814,17 +881,11 @@ def segment(
             )
 
     # Prediction
-    prediction_ckpt_path = checkpoint_callback.best_model_path or None
-    if prediction_ckpt_path is not None:
-        print(
-            "[segger] Running prediction from best checkpoint: "
-            f"{prediction_ckpt_path}"
-        )
-    else:
-        print(
-            "[segger] No best checkpoint available; using current model "
-            "weights for prediction."
-        )
+    prediction_ckpt_path = None
+    print(
+        "[segger] Running prediction from in-memory model weights "
+        "(no checkpoint reload)."
+    )
     trainer.predict(
         model=model,
         datamodule=datamodule,
@@ -868,6 +929,48 @@ def predict(
         validator=validators.Number(gte=0),
         group=group_io,
     )] = registry.get_default("num_workers"),
+    transcripts_max_k: Annotated[int | None, Parameter(
+        help=(
+            "Maximum number of edges per transcript in the local graph. "
+            "If unset, uses checkpoint value."
+        ),
+        validator=validators.Number(gt=0),
+        group=group_transcripts_graph,
+    )] = None,
+    transcripts_max_dist: Annotated[float | None, Parameter(
+        help=(
+            "Maximum edge distance for transcript graph construction. "
+            "If unset, uses checkpoint value."
+        ),
+        validator=validators.Number(gt=0),
+        group=group_transcripts_graph,
+    )] = None,
+    prediction_max_k: Annotated[int | None, Parameter(
+        help=(
+            "Maximum number of candidate cell edges per transcript in the "
+            "prediction graph. If unset, uses checkpoint value."
+        ),
+        validator=validators.Number(gt=0),
+        group=group_prediction,
+    )] = None,
+    prediction_mode: Annotated[
+        Literal["checkpoint", "nucleus", "cell", "uniform"],
+        Parameter(
+            help=(
+                "Prediction graph mode override. 'checkpoint' (default) keeps "
+                "the mode saved in checkpoint."
+            ),
+            group=group_prediction,
+        ),
+    ] = "checkpoint",
+    prediction_scale_factor: Annotated[float | None, Parameter(
+        help=(
+            "Prediction graph polygon scale-factor override for shape modes "
+            "('nucleus'/'cell'). If unset, uses checkpoint value."
+        ),
+        validator=validators.Number(gt=0),
+        group=group_prediction,
+    )] = None,
     min_similarity: Annotated[float | None, Parameter(
         help="Minimum similarity threshold for transcript-cell assignment. "
              "If None, uses per-gene auto-thresholding (Li+Yen methods).",
@@ -919,7 +1022,15 @@ def predict(
                  "'skip' omits shapes from output.",
             group=group_boundary,
         )
-    ] = "input",
+    ] = "skip",
+    min_qv: Annotated[float | None, Parameter(
+        help=(
+            "Optional quality-threshold override for transcripts. "
+            "If unset, uses checkpoint/datamodule value."
+        ),
+        validator=validators.Number(gte=0),
+        group=group_quality,
+    )] = None,
     tiling_margin_training: Annotated[float | None, Parameter(
         help=(
             "Optional override for training tiling margin from checkpoint. "
@@ -943,6 +1054,10 @@ def predict(
         validator=validators.Number(gt=0),
         group=group_tiling,
     )] = None,
+    overwrite: Annotated[bool, Parameter(
+        help="Overwrite existing outputs for additional formats when supported.",
+        group=group_io,
+    )] = False,
     use_3d: Annotated[
         Literal["checkpoint", "auto", "true", "false"],
         Parameter(
@@ -998,6 +1113,18 @@ def predict(
         datamodule_kwargs["tiling_nodes_per_tile"] = max_nodes_per_tile
     if max_edges_per_batch is not None:
         datamodule_kwargs["edges_per_batch"] = max_edges_per_batch
+    if transcripts_max_k is not None:
+        datamodule_kwargs["transcripts_graph_max_k"] = transcripts_max_k
+    if transcripts_max_dist is not None:
+        datamodule_kwargs["transcripts_graph_max_dist"] = transcripts_max_dist
+    if prediction_max_k is not None:
+        datamodule_kwargs["prediction_graph_max_k"] = prediction_max_k
+    if prediction_mode != "checkpoint":
+        datamodule_kwargs["prediction_graph_mode"] = prediction_mode
+    if prediction_scale_factor is not None:
+        datamodule_kwargs["prediction_graph_scale_factor"] = prediction_scale_factor
+    if min_qv is not None:
+        datamodule_kwargs["min_qv"] = min_qv
     if datamodule_kwargs.get("me_gene_pairs"):
         # In checkpoint mode, precomputed pairs are preferred over recomputing.
         datamodule_kwargs["scrna_reference_path"] = None
@@ -1073,6 +1200,7 @@ def predict(
             datamodule=datamodule,
             boundary_method=boundary_method,
             num_workers=num_workers,
+            overwrite=overwrite,
         )
 
 
@@ -1082,6 +1210,7 @@ def _write_additional_formats(
     datamodule,
     boundary_method: str,
     num_workers: int,
+    overwrite: bool = False,
 ):
     """Write segmentation results in additional output formats.
 
@@ -1097,6 +1226,8 @@ def _write_additional_formats(
         Boundary generation method for SpatialData output.
     num_workers
         Number of workers used for boundary generation where applicable.
+    overwrite
+        Whether to overwrite existing outputs for formats that support it.
     """
     import polars as pl
     from pathlib import Path
@@ -1151,6 +1282,7 @@ def _write_additional_formats(
                     transcripts=transcripts,
                     boundaries=datamodule.bd if hasattr(datamodule, 'bd') else None,
                     output_name="segmentation.zarr",
+                    overwrite=overwrite,
                 )
                 print(f"  Written to: {output_path}")
 
@@ -1161,17 +1293,17 @@ def _write_additional_formats(
                 )
 
         elif fmt == "anndata":
-            from ..export import AnnDataWriter
-
             print(f"Writing AnnData format...")
-            writer = AnnDataWriter()
-            output_path = writer.write(
+            output_paths = _write_anndata_outputs(
                 predictions=predictions,
-                output_dir=output_directory,
                 transcripts=transcripts,
-                output_name="segger_segmentation.h5ad",
+                output_dir=output_directory,
+                overwrite=overwrite,
+                cells_output_name="segger_segmentation.h5ad",
+                fragments_output_name="segger_fragments.h5ad",
             )
-            print(f"  Written to: {output_path}")
+            for output_path in output_paths:
+                print(f"  Written to: {output_path}")
 
 
 # Export parameter group
@@ -1201,6 +1333,10 @@ def export(
         alias="-o",
         group=group_io,
     )],
+    overwrite: Annotated[bool, Parameter(
+        help="Overwrite existing outputs when supported (e.g., segmentation.zarr).",
+        group=group_io,
+    )] = False,
     format: Annotated[
         Literal["xenium_explorer", "xenium", "merged", "spatialdata", "anndata"],
         Parameter(
@@ -1230,7 +1366,7 @@ def export(
                  "'skip' omits shapes from output.",
             group=group_boundary,
         ),
-    ] = "input",
+    ] = "skip",
     boundary_voxel_size: Annotated[float, Parameter(
         help="Voxel size for Xenium boundary downsampling. "
              "Only used for Xenium export with delaunay/voxel-like boundaries.",
@@ -1279,9 +1415,12 @@ def export(
     )] = 25,
 ):
     """Export segmentation results to multiple formats."""
+    import os
     import polars as pl
-    from ..export import seg2explorer, seg2explorer_pqdm
-    from ..export.merged_writer import merge_predictions_with_transcripts
+
+    _configure_runtime_logging_and_warnings()
+    # Export is CPU-capable; prevent transitive RAPIDS imports from probing CUDA.
+    os.environ.setdefault("RAPIDS_NO_INITIALIZE", "1")
 
     def _is_spatialdata_path(path: Path | str) -> bool:
         p = Path(path)
@@ -1376,8 +1515,12 @@ def export(
         format = "xenium_explorer"
 
     if format == "xenium_explorer":
+        from ..export import seg2explorer, seg2explorer_pqdm
+        from ..export.merged_writer import merge_predictions_with_transcripts
+
         if boundary_method == "skip":
-            raise ValueError("boundary_method='skip' is not supported for Xenium export.")
+            print("Warning: boundary_method='skip' is not supported for Xenium export. Using 'convex_hull'.")
+            boundary_method = "convex_hull"
 
         needs_tx = x_column not in seg_df.columns or y_column not in seg_df.columns
         needs_bd = boundary_method == "input"
@@ -1449,17 +1592,17 @@ def export(
         return
 
     if format == "anndata":
-        from ..export import AnnDataWriter
-
         print("Writing AnnData format...")
-        writer = AnnDataWriter()
-        output_path = writer.write(
+        output_paths = _write_anndata_outputs(
             predictions=seg_df,
-            output_dir=output_dir,
             transcripts=tx,
-            output_name="segger_segmentation.h5ad",
+            output_dir=output_dir,
+            overwrite=overwrite,
+            cells_output_name="segger_segmentation.h5ad",
+            fragments_output_name="segger_fragments.h5ad",
         )
-        print(f"  Written to: {output_path}")
+        for output_path in output_paths:
+            print(f"  Written to: {output_path}")
         return
 
     if format == "spatialdata":
@@ -1478,12 +1621,13 @@ def export(
                 transcripts=tx,
                 boundaries=bd,
                 output_name="segmentation.zarr",
+                overwrite=overwrite,
             )
             print(f"  Written to: {output_path}")
-        except ImportError:
+        except ImportError as exc:
             print(
-                "Warning: spatialdata not installed. "
-                "Install with: pip install segger[spatialdata]"
+                "Warning: SpatialData export unavailable.\n"
+                f"{exc}"
             )
         return
 

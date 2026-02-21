@@ -5,6 +5,7 @@ from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
 from typing import TYPE_CHECKING, Iterator
+import os
 import torch
 
 
@@ -271,12 +272,17 @@ class TilePredictDataset(Dataset):
 
 
 class DynamicBatchSamplerPatch(DynamicBatchSampler):
-    """Dynamic batch sampler with an exact length for deterministic prediction.
+    """Dynamic batch sampler with fast default length for prediction.
 
     `torch_geometric.loader.DynamicBatchSampler` does not implement `__len__`
-    because batch counts depend on dynamic packing. In Segger prediction we use
-    `shuffle=False`, so packing is deterministic and the number of yielded
-    batches can be computed exactly.
+    because batch counts depend on dynamic packing. Segger can compute an exact
+    length when needed, but that requires iterating all tiles up front and
+    materializing each sample once before prediction starts.
+
+    By default, this sampler returns a cheap approximate length
+    (`len(dataset)`) to avoid an expensive pre-pass between training and
+    prediction. Set `SEGGER_EXACT_PREDICT_DATALOADER_LEN=1` to restore exact
+    deterministic length computation.
     """
 
     _SKIP = -1
@@ -387,4 +393,7 @@ class DynamicBatchSamplerPatch(DynamicBatchSampler):
         if self.shuffle:
             # Order-dependent packing with random sampling has no stable length.
             return len(self.dataset)
-        return self._compute_num_batches()
+        exact = os.getenv("SEGGER_EXACT_PREDICT_DATALOADER_LEN", "")
+        if exact.strip().lower() in {"1", "true", "yes", "on"}:
+            return self._compute_num_batches()
+        return len(self.dataset)

@@ -232,7 +232,7 @@ def export_for_sopa(
             if "segger_cell_id" in points.columns and SOPA_CELL_ID_COLUMN not in points.columns:
                 points = points.rename(columns={"segger_cell_id": SOPA_CELL_ID_COLUMN})
 
-        elements[f"points/{target_key}"] = points
+        elements[target_key] = points
 
     # Process shapes
     for key in sdata.shapes:
@@ -250,7 +250,7 @@ def export_for_sopa(
                 if shapes.columns[0] != SOPA_CELL_ID_COLUMN:
                     shapes = shapes.rename(columns={shapes.columns[0]: SOPA_CELL_ID_COLUMN})
 
-        elements[f"shapes/{target_key}"] = shapes
+        elements[target_key] = shapes
 
     # Create new SpatialData
     sdata_sopa = spatialdata.SpatialData.from_elements_dict(elements)
