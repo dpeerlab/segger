@@ -555,7 +555,37 @@ class ISTDataModule(LightningDataModule):
 
         # Tile dataset (outer margin) for prediction
         if stage == "predict":
-            self.data = self.data.cuda()
+            # Alignment supervision edges are only used for loss computation
+            # during training and can consume substantial memory at inference.
+            align_edge_type = ('tx', 'attracts', 'tx')
+            if (
+                isinstance(self.data, HeteroData)
+                and align_edge_type in self.data.edge_types
+            ):
+                del self.data[align_edge_type]
+
+            # 3D geometry is only needed for graph construction; prediction
+            # tiling uses 2D `pos` and does not require this duplicate tensor.
+            if (
+                isinstance(self.data, HeteroData)
+                and 'tx' in self.data.node_types
+                and 'geometry_3d' in self.data['tx']
+            ):
+                del self.data['tx']['geometry_3d']
+
+            # Prefer preloading the full graph to GPU for throughput, but fall
+            # back to CPU-backed batches if memory is insufficient.
+            try:
+                self.data = self.data.cuda()
+            except torch.OutOfMemoryError:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print(
+                    "[segger] Warning: full-graph CUDA preload failed due to "
+                    "OOM during prediction setup. Falling back to CPU-backed "
+                    "predict dataset with per-batch device transfer.",
+                    flush=True,
+                )
             self.predict_dataset = TilePredictDataset(
                 data=self.data,
                 tiling=self.tiling,
