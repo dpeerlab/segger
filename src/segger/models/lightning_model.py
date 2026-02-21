@@ -348,6 +348,73 @@ class LitISTEncoder(LightningModule):
         if normalize:
             w /= (w.sum() + 1e-8)
         return w.to(self.device)
+
+    @staticmethod
+    def _sample_random_negative_destinations(
+        dst_pos: torch.Tensor,
+        num_bd: int,
+    ) -> torch.Tensor:
+        """Sample random boundary negatives while avoiding positives."""
+        return (
+            dst_pos
+            + torch.randint(1, num_bd, (dst_pos.size(0),), device=dst_pos.device)
+        ) % num_bd
+
+    def _sample_segmentation_negative_destinations(
+        self,
+        batch: Batch,
+        src_pos: torch.Tensor,
+        dst_pos: torch.Tensor,
+        num_bd: int,
+    ) -> torch.Tensor:
+        """Prefer nearby hard negatives from tx->bd candidates, fallback to random."""
+        dst_neg = torch.full_like(dst_pos, -1)
+        has_prediction_edges = (
+            ('tx', 'neighbors', 'bd') in batch.edge_types
+            and batch['tx', 'neighbors', 'bd'].edge_index.size(1) > 0
+        )
+        if has_prediction_edges:
+            pred_src, pred_dst = batch['tx', 'neighbors', 'bd'].edge_index
+            num_tx = batch['tx'].num_nodes
+
+            positive_dst_by_tx = torch.full(
+                (num_tx,),
+                -1,
+                dtype=dst_pos.dtype,
+                device=dst_pos.device,
+            )
+            positive_dst_by_tx[src_pos] = dst_pos
+
+            valid_candidates = positive_dst_by_tx[pred_src] >= 0
+            valid_candidates &= pred_dst != positive_dst_by_tx[pred_src]
+            if valid_candidates.any():
+                random_scores = torch.rand(pred_src.size(0), device=pred_src.device)
+                random_scores = random_scores.masked_fill(~valid_candidates, -1.0)
+                best_scores, best_edge_idx = scatter_max(
+                    random_scores,
+                    pred_src,
+                    dim_size=num_tx,
+                )
+                best_src_mask = best_scores >= 0
+                if best_src_mask.any():
+                    dst_neg_by_tx = torch.full(
+                        (num_tx,),
+                        -1,
+                        dtype=dst_pos.dtype,
+                        device=dst_pos.device,
+                    )
+                    dst_neg_by_tx[best_src_mask] = pred_dst[
+                        best_edge_idx[best_src_mask]
+                    ]
+                    dst_neg = dst_neg_by_tx[src_pos]
+
+        fallback_mask = dst_neg < 0
+        if fallback_mask.any():
+            dst_neg[fallback_mask] = self._sample_random_negative_destinations(
+                dst_pos[fallback_mask],
+                num_bd,
+            )
+        return dst_neg
     
     def get_losses(self, batch: Batch) -> tuple[torch.Tensor]:
         """Get all training losses and combine."""
@@ -375,10 +442,13 @@ class LitISTEncoder(LightningModule):
             loss_sg = torch.tensor(0.0, device=embeddings['bd'].device, 
                                    requires_grad=True)
         else:
-            # Generate negative destination nodes
-            dst_neg = (
-                dst_pos + torch.randint(1, num_bd, (N,), device=dst_pos.device)
-            ) % num_bd
+            # Prefer nearby hard negatives from prediction candidates.
+            dst_neg = self._sample_segmentation_negative_destinations(
+                batch=batch,
+                src_pos=src_pos,
+                dst_pos=dst_pos,
+                num_bd=num_bd,
+            )
 
             if self._sg_loss_type == 'triplet':
                 anchor   = embeddings['tx'][src_pos]
@@ -567,7 +637,11 @@ class LitISTEncoder(LightningModule):
             dim_size=batch['tx'].num_nodes,
         )
         # Filter by similarity
-        valid = max_idx < dst.shape[0]
+        valid = (
+            (max_idx >= 0)
+            & (max_idx < dst.shape[0])
+            & torch.isfinite(max_sim)
+        )
         if min_similarity is not None:
             valid &= max_sim >= min_similarity
 

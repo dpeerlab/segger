@@ -286,10 +286,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 if count > n:
                     similarities = similarities.sample(n=n, seed=0)
                 similarities = similarities.to_series().to_numpy()
-                threshold_value = min(
-                    threshold_li(similarities),
-                    threshold_yen(similarities),
-                )
+                threshold_value = _auto_similarity_threshold(similarities)
                 thresholds.append({
                     tx_fields.feature: feature,
                     'similarity_threshold': threshold_value,
