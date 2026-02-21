@@ -573,19 +573,8 @@ class ISTDataModule(LightningDataModule):
             ):
                 del self.data['tx']['geometry_3d']
 
-            # Prefer preloading the full graph to GPU for throughput, but fall
-            # back to CPU-backed batches if memory is insufficient.
-            try:
-                self.data = self.data.cuda()
-            except torch.OutOfMemoryError:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                print(
-                    "[segger] Warning: full-graph CUDA preload failed due to "
-                    "OOM during prediction setup. Falling back to CPU-backed "
-                    "predict dataset with per-batch device transfer.",
-                    flush=True,
-                )
+            # Segger is GPU-only: prediction graph must fit in device memory.
+            self.data = self.data.cuda()
             self.predict_dataset = TilePredictDataset(
                 data=self.data,
                 tiling=self.tiling,
