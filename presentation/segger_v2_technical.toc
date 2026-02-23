@@ -1,0 +1,10 @@
+\beamer@sectionintoc {1}{Background}{3}{0}{1}
+\beamer@sectionintoc {2}{Multi-Task Loss (NEW)}{6}{0}{2}
+\beamer@sectionintoc {3}{Fragment Mode (NEW)}{12}{0}{3}
+\beamer@sectionintoc {4}{Adaptive Thresholding (NEW)}{14}{0}{4}
+\beamer@sectionintoc {5}{Delaunay Boundaries (NEW)}{15}{0}{5}
+\beamer@sectionintoc {6}{Engineering Changes}{16}{0}{6}
+\beamer@sectionintoc {7}{Checkpoint \& I/O (NEW)}{19}{0}{7}
+\beamer@sectionintoc {8}{Performance}{21}{0}{8}
+\beamer@sectionintoc {9}{HPO (NEW)}{22}{0}{9}
+\beamer@sectionintoc {10}{Summary}{23}{0}{10}

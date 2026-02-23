@@ -1,0 +1,55 @@
+\frametitle{Backup: Complete CLI Reference}
+
+{\scriptsize
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Segmentation:}
+\begin{lstlisting}[language=bash]
+segger segment -i data/ -o out/ \
+  --min-similarity 0.5 \
+  --prediction-scale-factor 1.2 \
+  --precision 16-mixed \
+  --lr-scheduler cosine \
+  --alignment-loss \
+  --scrna-reference-path ref.h5ad \
+  --loss-combination-mode interpolate \
+  --fragment-mode \
+  --fragment-min-transcripts 10 \
+  --output-format spatialdata \
+  --use-3d auto --min-qv 20
+\end{lstlisting}
+
+\textbf{From checkpoint:}
+\begin{lstlisting}[language=bash]
+segger segment -i data/ -o out/ \
+  --checkpoint-path model.ckpt \
+  --checkpoint-mode predict
+\end{lstlisting}
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\textbf{Export:}
+\begin{lstlisting}[language=bash]
+segger export \
+  -s predictions.parquet \
+  -i /path/to/xenium/ \
+  -o /export/ --num-workers 4
+\end{lstlisting}
+
+\textbf{HPO:}
+\begin{lstlisting}[language=bash]
+segger hpo -i data/ -o hpo/ \
+  --n-trials 50 --sampler nsga3 \
+  --n-objectives 5 \
+  --storage sqlite:///hpo.db \
+  --workflow smart
+\end{lstlisting}
+
+\textbf{Tests:}
+\begin{lstlisting}[language=bash]
+pip install segger[hpo]
+pytest tests/ -v
+\end{lstlisting}
+\end{column}
+\end{columns}
+}

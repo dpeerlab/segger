@@ -16,6 +16,7 @@ detected and loaded using the SpatialDataLoader.
 """
 
 from torch_geometric.loader import DataLoader
+from torch_geometric.data import HeteroData
 from torch_geometric.transforms import BaseTransform
 from torch_geometric.utils import negative_sampling
 from lightning.pytorch import LightningDataModule
