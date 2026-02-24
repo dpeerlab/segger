@@ -5,10 +5,12 @@ from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
 import torch
+from memory_profiler import profile
 
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
+# TODO: import datamodule, not trainer
 
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
@@ -23,6 +25,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
 
+    @profile
     def write_on_epoch_end(
         self,
         trainer: Trainer,
@@ -32,17 +35,36 @@ class ISTSegmentationWriter(BasePredictionWriter):
     ):
         """TODO: Description
         """
-        tx_fields = TrainingTranscriptFields()
-        bd_fields = TrainingBoundaryFields()
         
         # Check datamodule for AnnData input
         if not isinstance(trainer.datamodule, ISTDataModule):
             raise TypeError(
                 f"Expected data module to be `ISTDataModule` but got "
-                f"{type(self.trainer.datamodule).__name__}."
+                f"{type(trainer.datamodule).__name__}."
             )
         if not hasattr(trainer.datamodule, "ad"):
             raise ValueError("Data module has no attribute `ad`.")
+        
+        # segment transcripts
+        obs = trainer.datamodule.ad.obs
+        segmentation = self.assign_transcripts_to_cells(obs, predictions)
+
+        # write transcripts
+        segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+
+    @profile
+    def assign_transcripts_to_cells(
+        self,
+        obs: pl.DataFrame,
+        predictions: Sequence[list],
+    ) -> pl.DataFrame:
+        """TODO: Description
+        """
+        
+        # Get fields
+        tx_fields = TrainingTranscriptFields()
+        bd_fields = TrainingBoundaryFields()
         
         # Create segmentation output
         segmentation = (
@@ -77,7 +99,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .join(
                 (
                     pl
-                    .from_pandas(trainer.datamodule.ad.obs[[
+                    .from_pandas(obs[[
                         bd_fields.id,
                         bd_fields.cell_encoding
                     ]])
@@ -132,10 +154,9 @@ class ISTSegmentationWriter(BasePredictionWriter):
         thresholds = pl.DataFrame(thresholds)
         
         # Join and write output to file
-        (
+        segmentation = (
             segmentation
             .join(thresholds, on=tx_fields.feature, how='left')
             .drop(tx_fields.feature)
-            .write_parquet(
-                self.output_directory / 'segger_segmentation.parquet')
         )
+        return segmentation
