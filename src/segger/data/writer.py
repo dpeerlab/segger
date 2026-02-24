@@ -57,8 +57,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
 
 
-    @profile
     @classmethod
+    @profile
     def assign_transcripts_to_cells(
         cls,
         obs: pl.DataFrame,
@@ -73,7 +73,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         bd_fields = TrainingBoundaryFields()
         
         # Create segmentation output
-        if logger is not None:
+        if logger is None:
             logger = logging.getLogger(__name__)
         logger.debug("Preparing predictions...")
         

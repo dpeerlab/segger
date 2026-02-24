@@ -24,7 +24,10 @@ def run_prediction_only(
         predictions = pickle.load(f)
 
     # Predict and write output
-    writer.write_on_epoch_end(
+    segmentation = writer.assign_transcripts_to_cells(
         obs=adata.obs,
         predictions=predictions,
     )
+
+    segmentation.write_parquet(path_outputs / 'segger_segmentation.parquet')
+
