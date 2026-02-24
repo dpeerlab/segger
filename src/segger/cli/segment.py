@@ -329,7 +329,11 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
-    )        
+    )
+
+    if debug:
+        logger.debug(f"Saving adata to {path_debug / 'adata_debug.h5ad'}")
+        datamodule.ad.write_h5ad(path_debug / "adata_debug.h5ad")
     
     # Setup Lightning Model
     logger.debug("Setting up LitISTEncoder model")
