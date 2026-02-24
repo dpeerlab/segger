@@ -50,7 +50,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         # segment transcripts
         self.logger.debug("Assigning transcripts to cells...")
         obs = trainer.datamodule.ad.obs
-        segmentation = self.assign_transcripts_to_cells(obs, predictions)
+        segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=self.logger)
 
         # write transcripts
         self.logger.debug(f"Writing segmentation output to {self.output_directory}...")
@@ -58,10 +58,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
 
 
     @profile
+    @classmethod
     def assign_transcripts_to_cells(
-        self,
+        cls,
         obs: pl.DataFrame,
         predictions: Sequence[list],
+        logger: logging.Logger = None,
     ) -> pl.DataFrame:
         """TODO: Description
         """
@@ -71,7 +73,10 @@ class ISTSegmentationWriter(BasePredictionWriter):
         bd_fields = TrainingBoundaryFields()
         
         # Create segmentation output
-        self.logger.debug("Preparing predictions...")
+        if logger is not None:
+            logger = logging.getLogger(__name__)
+        logger.debug("Preparing predictions...")
+        
         segmentation = (
             pl
             .concat(
@@ -127,7 +132,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         
         # Per-gene thresholding (iterative to reduce memory usage)
-        self.logger.debug("Calculating per-gene similarity thresholds...")
+        logger.debug("Calculating per-gene similarity thresholds...")
         feature_counts = (
             segmentation
             .filter(pl.col('segger_cell_id').is_not_null())
@@ -160,7 +165,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         thresholds = pl.DataFrame(thresholds)
         
         # Join
-        self.logger.debug("Joining thresholds with segmentation...")
+        logger.debug("Joining thresholds with segmentation...")
         segmentation = (
             segmentation
             .join(thresholds, on=tx_fields.feature, how='left')

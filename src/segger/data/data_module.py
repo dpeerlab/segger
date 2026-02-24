@@ -1,3 +1,4 @@
+import logging
 from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import BaseTransform
 from torch_geometric.utils import negative_sampling
@@ -154,6 +155,7 @@ class ISTDataModule(LightningDataModule):
         """TODO: Description
         """
         super().__init__()
+        self.logger = logging.getLogger(__name__)
         self.save_hyperparameters()
         self.load()
 
@@ -165,6 +167,7 @@ class ISTDataModule(LightningDataModule):
         bd_fields = StandardBoundaryFields()
 
         # Load standardized IST data
+        self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
         pp = get_preprocessor(self.input_directory)
         tx = self.tx = pp.transcripts
         bd = self.bd = pp.boundaries
@@ -188,6 +191,7 @@ class ISTDataModule(LightningDataModule):
         bd_mask = bd[bd_fields.boundary_type] == boundary_type
 
         # Generate reference AnnData
+        self.logger.debug("Generating reference AnnData object...")
         self.ad = setup_anndata(
             transcripts=tx.filter(tx_mask),
             boundaries=bd[bd_mask],
@@ -201,6 +205,8 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
         )
+
+        self.logger.debug("Setting up HeteroData object...")
         self.data = setup_heterodata(
             transcripts=tx,
             boundaries=bd,
@@ -217,7 +223,9 @@ class ISTDataModule(LightningDataModule):
             prediction_graph_max_k=self.prediction_graph_max_k,
             prediction_graph_buffer_ratio=self.prediction_graph_buffer_ratio,
         )
+
         # Tile graph dataset
+        self.logger.debug("Tiling graph dataset...")
         node_positions = torch.vstack([
             self.data['tx']['pos'],
             self.data['bd']['pos'],
@@ -237,6 +245,7 @@ class ISTDataModule(LightningDataModule):
             raise ValueError(
                 f"Unrecognized tiling strategy: '{self.tiling_mode}'."
             )
+        
         # Objects needed by lightning model
         self.tx_embedding = (
             pl
@@ -255,6 +264,8 @@ class ISTDataModule(LightningDataModule):
         """
         # Tile dataset (inner margin) for training
         if stage == "fit":
+            self.logger.debug("Preparing 'training' dataset with tiling margin "
+                              f"{self.tiling_margin_training} µm...")
             self.fit_dataset = TileFitDataset(
                 data=self.data,
                 tiling=self.tiling,
@@ -270,6 +281,8 @@ class ISTDataModule(LightningDataModule):
 
         # Tile dataset (outer margin) for prediction
         if stage == "predict":
+            self.logger.debug("Preparing 'prediction' dataset with tiling margin "
+                              f"{self.tiling_margin_prediction} µm...")
             self.data = self.data.cuda()
             self.predict_dataset = TilePredictDataset(
                 data=self.data,
