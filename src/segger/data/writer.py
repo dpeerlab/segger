@@ -1,3 +1,4 @@
+import logging
 from lightning.pytorch.callbacks import BasePredictionWriter
 from skimage.filters import threshold_li, threshold_yen
 from lightning.pytorch import Trainer, LightningModule
@@ -24,6 +25,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
     def __init__(self, output_directory: Path):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
+        self.logger = logging.getLogger(__name__)
 
     @profile
     def write_on_epoch_end(
@@ -46,10 +48,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
             raise ValueError("Data module has no attribute `ad`.")
         
         # segment transcripts
+        self.logger.debug("Assigning transcripts to cells...")
         obs = trainer.datamodule.ad.obs
         segmentation = self.assign_transcripts_to_cells(obs, predictions)
 
         # write transcripts
+        self.logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
 
 
@@ -67,6 +71,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         bd_fields = TrainingBoundaryFields()
         
         # Create segmentation output
+        self.logger.debug("Preparing predictions...")
         segmentation = (
             pl
             .concat(
@@ -122,6 +127,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         
         # Per-gene thresholding (iterative to reduce memory usage)
+        self.logger.debug("Calculating per-gene similarity thresholds...")
         feature_counts = (
             segmentation
             .filter(pl.col('segger_cell_id').is_not_null())
@@ -153,7 +159,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
             })
         thresholds = pl.DataFrame(thresholds)
         
-        # Join and write output to file
+        # Join
+        self.logger.debug("Joining thresholds with segmentation...")
         segmentation = (
             segmentation
             .join(thresholds, on=tx_fields.feature, how='left')

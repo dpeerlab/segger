@@ -1,8 +1,14 @@
+import os
+import logging
+from ..utils import setup_logging
+setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"))
+
 from cyclopts import App, Parameter, Group, validators
 from typing import Annotated, Literal
 from pathlib import Path
 
 from .registry import ParameterRegistry
+
 
 # Register defaults and descriptions from files directly
 # This is to avoid needing to import all requirements before calling CLI
@@ -283,16 +289,27 @@ def segment(
         group=group_loss,
     )] = registry.get_default("sg_weight_end"),
 
-    debug_mode: Annotated[str, Parameter(
-        help="Whether to save additional debug information. If `predict`, saves trainer and predictions. If `all`, saves trainer, predictions, and also intermediate outputs at the end of each epoch (this can consume a lot of disk space).",
+    debug: Annotated[bool, Parameter(
+        help="Whether to save additional debug information (trainer, predictions).",
     )] = "none",
 ):
     """Run cell segmentation on spatial transcriptomics data."""
+
+    # Setup logger and debug directory
+    path_debug = None
+    if debug:
+        logging.getLogger("segger").setLevel(os.environ.get("SEGGER_LOG_LEVEL", "INFO"))
+        path_debug = output_directory / "debug"
+        path_debug.mkdir(exist_ok=True)
+    
+    logger = logging.getLogger(__name__)
+
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False
 
     # Setup Lightning Data Module
+    logger.debug(f"Setting up ISTDataModule | Input Directory: '{input_directory}'")
     from ..data import ISTDataModule
     datamodule = ISTDataModule(
         input_directory=input_directory,
@@ -312,9 +329,10 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
-    )
+    )        
     
     # Setup Lightning Model
+    logger.debug("Setting up LitISTEncoder model")
     from ..models import LitISTEncoder
     n_genes = datamodule.ad.shape[1]
     model = LitISTEncoder(
@@ -339,38 +357,35 @@ def segment(
     )
 
     # Setup Lightning Trainer
+    logger.debug("Setting up Lightning Trainer and CSVLogger")
+
     from lightning.pytorch.loggers import CSVLogger
-    from ..data import ISTSegmentationWriter
     from lightning.pytorch import Trainer
-    logger = CSVLogger(output_directory)
+    from ..data import ISTSegmentationWriter
+    
+    csvlogger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(output_directory)
     trainer = Trainer(
-        logger=logger,
+        logger=csvlogger,
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
         callbacks=[writer],
     )
 
     # Training
+    logger.debug("Starting training")
     trainer.fit(model=model, datamodule=datamodule)
 
+    if debug:
+        logger.debug(f"Saving trainer state to {path_debug / 'trainer_state_final.ckpt'}")
+        trainer.save_checkpoint(path_debug / "trainer_state_final.ckpt")
+
     # Prediction
+    logger.debug("Predicting segmentation")
     predictions = trainer.predict(model=model, datamodule=datamodule)
 
-    # Save intermediaries (trainer, predictions) if debug mode is "predict" or "all"
-    if debug_mode in ("predict", "all"):
+    if debug:
         import pickle
-        debug_dir = output_directory / "debug"
-        debug_dir.mkdir(exist_ok=True)
-        trainer.save_checkpoint(debug_dir / "trainer.ckpt")
-        with open(debug_dir / "predictions.pkl", "wb") as f:
+        logger.debug(f"Saving predictions to {path_debug / 'predictions.pkl'}")
+        with open(path_debug / "predictions.pkl", "wb") as f:
             pickle.dump(predictions, f)
-
-    writer.write_on_epoch_end(
-        trainer=trainer,
-        pl_module=model,
-        predictions=predictions,
-        batch_indices=[],
-    )
-
-
