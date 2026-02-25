@@ -1,6 +1,9 @@
+import gc
 import logging
+import numpy as np
 from lightning.pytorch.callbacks import BasePredictionWriter
-from skimage.filters import threshold_li, threshold_yen
+from skimage.filters import threshold_yen
+from .utils.threshold import threshold_li_custom
 from lightning.pytorch import Trainer, LightningModule
 from typing import Sequence, Any
 from pathlib import Path
@@ -31,7 +34,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if debug:
             logging.getLogger("segger").setLevel("DEBUG")
             self.path_debug = output_directory / "debug"
-            self.path_debug.mkdir(exist_ok=True)
+            self.path_debug.mkdir(exist_ok=True, parents=True)
 
     def write_on_epoch_end(
         self,
@@ -145,41 +148,56 @@ class ISTSegmentationWriter(BasePredictionWriter):
         
         # Per-gene thresholding (iterative to reduce memory usage)
         logger.debug(f"Calculating per-gene similarity thresholds, using {segmentation.shape[0]/1e6:.1f}M transcripts...")
-        feature_counts = (
+        
+        segmentation_group = (
             segmentation
             .filter(pl.col('segger_cell_id').is_not_null())
-            .select(tx_fields.feature)
-            .to_series()
-            .value_counts()
+            .group_by(tx_fields.feature)
         )
-        thresholds = []
+
         n = 10_000_000
-        
-        logger.debug(f"Starting per-gene thresholding for {feature_counts.shape[0]} genes...")
-        for feature, count in feature_counts.iter_rows():
-            similarities = (
-                segmentation
-                .filter(
-                    (pl.col(tx_fields.feature) == feature) &
-                    (pl.col('segger_cell_id').is_not_null())
-                )
-                .select('segger_similarity')
-            )
-            if count > n:
-                similarities = similarities.sample(n=n, seed=0)
-            similarities = similarities.to_series().to_numpy()
-            threshold_value = min(
-                threshold_li( similarities),
-                threshold_yen(similarities),
-            )
-            thresholds.append({
-                tx_fields.feature: feature,
-                'similarity_threshold': threshold_value,
-            })
-        thresholds = pl.DataFrame(thresholds)
-        
+        thresholds = []
+        failed_to_converge = []
+
+        n_groups = segmentation_group.len().height
+        for i, (feature, group) in enumerate(segmentation_group):
+
+            # log step
+            if i % 50 == 0:
+                logger.debug(f"Processing gene {i+1}/{n_groups} (feature {feature[0]} | transcripts {group.shape[0]/1e3:.1f}K)...")
+
+            # sample if too many
+            arr = group["segger_similarity"]
+            if arr.shape[0] > n:
+                arr = arr.sample(n=n, seed=0)
+            arr = arr.to_numpy()
+
+            # threshold
+            try:
+                tye = threshold_yen(arr)
+                tli = threshold_li_custom(arr, max_iter=100)
+                threshold = min(tye, tli)
+            except StopIteration:
+                logger.debug(f"Failed to converge {feature[0]}. Using mean similarity of other genes as cutoff.")
+                failed_to_converge.append(feature[0])
+                continue
+
+            # append threshold
+            thresholds.append({tx_fields.feature: feature[0], "similarity_threshold": threshold.item()})
+            
+            # cleanup
+            del arr
+            gc.collect()
+
+        # backfill failed features in using the mean
+        mean_threshold = np.mean([t["similarity_threshold"] for t in thresholds])
+        for feature in failed_to_converge:
+            thresholds.append({tx_fields.feature: feature, "similarity_threshold": mean_threshold})
+        logger.debug(f"Mean Threshold: {mean_threshold} | Used this to backfill {len(failed_to_converge)} features.")
+
         # Join
         logger.debug("Joining thresholds with segmentation...")
+        thresholds = pl.DataFrame(thresholds)
         segmentation = (
             segmentation
             .join(thresholds, on=tx_fields.feature, how='left')
