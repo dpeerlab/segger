@@ -13,7 +13,7 @@ from ..debug.prediction import run_prediction_only
 debug = App(name="debug", help="Utilities for debugging and testing individual components.")
 
 @debug.command(name="segment-only")
-def predict_only(
+def segment_only_cli(
     path_adata: Annotated[Path, Parameter(
         help="Path to input AnnData object.",
     )],
