@@ -1,5 +1,3 @@
-from copyreg import pickle
-import os
 import logging
 from lightning.pytorch.callbacks import BasePredictionWriter
 from skimage.filters import threshold_li, threshold_yen
@@ -8,11 +6,8 @@ from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
 import torch
-
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
-
-# TODO: import datamodule, not trainer
 
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
@@ -32,6 +27,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         # setup debugging
         self.debug = debug
         self.path_debug = None
+        self.n_tx_predicted = 0
         if debug:
             logging.getLogger("segger").setLevel("DEBUG")
             self.path_debug = output_directory / "debug"
@@ -148,7 +144,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         
         # Per-gene thresholding (iterative to reduce memory usage)
-        logger.debug("Calculating per-gene similarity thresholds...")
+        logger.debug(f"Calculating per-gene similarity thresholds, using {segmentation.shape[0]/1e6:.1f}M transcripts...")
         feature_counts = (
             segmentation
             .filter(pl.col('segger_cell_id').is_not_null())
@@ -158,6 +154,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         thresholds = []
         n = 10_000_000
+        
+        logger.debug(f"Starting per-gene thresholding for {feature_counts.shape[0]} genes...")
         for feature, count in feature_counts.iter_rows():
             similarities = (
                 segmentation
@@ -187,17 +185,21 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .join(thresholds, on=tx_fields.feature, how='left')
             .drop(tx_fields.feature)
         )
+
+        logger.debug("Segmentation complete.")
         return segmentation
 
     
     # Debugging callbacks
     def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        mask = batch['tx']['predict_mask']
+        self.n_tx_predicted += mask.sum().item()
         if not self.debug:
             return
         log_every = 50
         if batch_idx % log_every == 0:
             self.segger_logger.info(
-                f"Finished prediction batch '{batch_idx}'."
+                f"Finished prediction batch '{batch_idx}'. # TX so far {self.n_tx_predicted / 1e6:.1f}M"
             )
     
     def on_fit_start(self, trainer, pl_module):
