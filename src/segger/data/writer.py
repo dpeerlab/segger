@@ -56,6 +56,13 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if not hasattr(trainer.datamodule, "ad"):
             raise ValueError("Data module has no attribute `ad`.")
         
+        # write predictions as pickle
+        if self.debug:
+            import pickle
+            self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
+            with open(self.path_debug / "predictions.pkl", "wb") as f:
+                pickle.dump(predictions, f)
+
         # segment transcripts
         self.segger_logger.debug("Assigning transcripts to cells...")
         obs = trainer.datamodule.ad.obs
@@ -64,14 +71,6 @@ class ISTSegmentationWriter(BasePredictionWriter):
         # write transcripts
         self.segger_logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
-
-        # write predictions as pickle
-        if self.debug:
-            import pickle
-            self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
-            with open(self.path_debug / "predictions.pkl", "wb") as f:
-                pickle.dump(predictions, f)
-
 
     @classmethod
     def assign_transcripts_to_cells(
