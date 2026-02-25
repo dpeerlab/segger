@@ -192,7 +192,7 @@ class AnnDataWriter:
         x_column: Optional[str] = "x",
         y_column: Optional[str] = "y",
         z_column: Optional[str] = "z",
-        overwrite: bool = False,
+        overwrite: bool = None,
         **kwargs,
     ) -> Path:
         """Write segmentation results to AnnData (.h5ad).
@@ -214,6 +214,9 @@ class AnnDataWriter:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / output_name
+
+        # If overwrite is not passed explicitly, set based on path existence
+        overwrite = output_path.exists() if overwrite is None else overwrite
 
         if output_path.exists() and not overwrite:
             raise FileExistsError(
