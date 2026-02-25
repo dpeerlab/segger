@@ -358,7 +358,10 @@ def segment(
     from ..data import ISTSegmentationWriter
     
     csvlogger = CSVLogger(output_directory)
-    writer = ISTSegmentationWriter(output_directory)
+    writer = ISTSegmentationWriter(
+        output_directory,
+        debug=debug,
+    )
     trainer = Trainer(
         logger=csvlogger,
         max_epochs=n_epochs,

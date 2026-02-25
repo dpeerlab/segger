@@ -1,3 +1,4 @@
+from copyreg import pickle
 import os
 import logging
 from lightning.pytorch.callbacks import BasePredictionWriter
@@ -24,6 +25,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
     """
 
     def __init__(self, output_directory: Path, debug: bool = False):
+        # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
         self.segger_logger = logging.getLogger(__name__)
@@ -64,6 +66,13 @@ class ISTSegmentationWriter(BasePredictionWriter):
         # write transcripts
         self.segger_logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+        # write predictions as pickle
+        if self.debug:
+            import pickle
+            self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
+            with open(self.path_debug / "predictions.pkl", "wb") as f:
+                pickle.dump(predictions, f)
 
 
     @classmethod
@@ -208,10 +217,3 @@ class ISTSegmentationWriter(BasePredictionWriter):
             self.segger_logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
             trainer.save_checkpoint(self.path_debug / "trainer_state_final.ckpt")
 
-    def on_predict_end(self, trainer, pl_module, outputs):
-        if not self.debug:
-            return
-        import pickle
-        self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
-        with open(self.path_debug / "predictions.pkl", "wb") as f:
-            pickle.dump(outputs, f)
