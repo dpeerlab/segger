@@ -178,7 +178,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 tli = threshold_li_custom(arr, max_iter=250)
                 threshold = min(tye, tli)
             except StopIteration:
-                logger.debug(f"Failed to converge {feature[0]}. Will use 80% quantile of segger similarities of other genes as cutoff.")
+                logger.debug(f"Failed to converge {feature[0]}. Will use 50% quantile of segger similarities of other genes as cutoff.")
                 failed_to_converge.append(feature[0])
                 continue
 
@@ -190,7 +190,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             gc.collect()
 
         # backfill failed features in using the 80% quantile of thresholds
-        global_threshold = np.quantile([t["similarity_threshold"] for t in thresholds], .8)
+        global_threshold = np.quantile([t["similarity_threshold"] for t in thresholds], .5)
         for feature in failed_to_converge:
             thresholds.append({tx_fields.feature: feature, "similarity_threshold": global_threshold, "converged": False})
         logger.debug(f"Global Threshold: {global_threshold} | Used this to backfill {len(failed_to_converge)} features.")
