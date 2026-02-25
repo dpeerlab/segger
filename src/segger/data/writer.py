@@ -175,7 +175,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             # threshold
             try:
                 tye = threshold_yen(arr)
-                tli = threshold_li_custom(arr, max_iter=100)
+                tli = threshold_li_custom(arr, max_iter=500)
                 threshold = min(tye, tli)
             except StopIteration:
                 logger.debug(f"Failed to converge {feature[0]}. Using mean similarity of other genes as cutoff.")
