@@ -25,7 +25,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
     def __init__(self, output_directory: Path):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
-        self.logger = logging.getLogger(__name__)
+        self.segger_logger = logging.getLogger(__name__)
 
     @profile
     def write_on_epoch_end(
@@ -48,12 +48,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
             raise ValueError("Data module has no attribute `ad`.")
         
         # segment transcripts
-        self.logger.debug("Assigning transcripts to cells...")
+        self.segger_logger.debug("Assigning transcripts to cells...")
         obs = trainer.datamodule.ad.obs
-        segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=self.logger)
+        segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=self.segger_logger)
 
         # write transcripts
-        self.logger.debug(f"Writing segmentation output to {self.output_directory}...")
+        self.segger_logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
 
 
@@ -66,6 +66,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         logger: logging.Logger = None,
     ) -> pl.DataFrame:
         """TODO: Description
+
+        `logger` is a parameter here to allow this function to be called independently.
         """
         
         # Get fields
@@ -172,3 +174,11 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .drop(tx_fields.feature)
         )
         return segmentation
+
+
+    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        log_every = 50
+        if batch_idx % log_every == 0:
+            self.segger_logger.info(
+                f"Finished prediction batch '{batch_idx}'."
+            )
