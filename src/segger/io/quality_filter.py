@@ -206,7 +206,10 @@ class XeniumQualityFilter(BaseQualityFilter):
         qv_col = quality_column or self.quality_column
 
         # Filter control probes
-        df = self._filter_by_patterns(df, feature_column)
+        if 'is_gene' in df.collect_schema():
+            df = df.filter(pl.col('is_gene'))  # use ad-hoc column (more robust)
+        else:
+            df = self._filter_by_patterns(df, feature_column)  # fallback to filter by patterns
 
         # Apply QV threshold
         if min_threshold is not None and min_threshold > 0:

@@ -35,6 +35,7 @@ class XeniumTranscriptFields:
         'DeprecatedCodeword_*',
         'UnassignedCodeword_*',
     ])
+    is_gene: str = 'is_gene'  # filter field in newer Xenium outputs
 
 @dataclass
 class XeniumBoundaryFields:
