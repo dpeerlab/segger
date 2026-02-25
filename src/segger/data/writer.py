@@ -8,7 +8,6 @@ from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
 import torch
-from memory_profiler import profile
 
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
@@ -34,11 +33,10 @@ class ISTSegmentationWriter(BasePredictionWriter):
         self.debug = debug
         self.path_debug = None
         if debug:
-            logging.getLogger("segger").setLevel(os.environ.get("SEGGER_LOG_LEVEL", "INFO"))
+            logging.getLogger("segger").setLevel("DEBUG")
             self.path_debug = output_directory / "debug"
             self.path_debug.mkdir(exist_ok=True)
 
-    @profile
     def write_on_epoch_end(
         self,
         trainer: Trainer,
@@ -76,7 +74,6 @@ class ISTSegmentationWriter(BasePredictionWriter):
 
 
     @classmethod
-    @profile
     def assign_transcripts_to_cells(
         cls,
         obs: pl.DataFrame,
