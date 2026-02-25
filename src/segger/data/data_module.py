@@ -258,14 +258,16 @@ class ISTDataModule(LightningDataModule):
             self.ad.uns['gene_cluster_similarities'])
         self.bd_similarity = torch.tensor(
             self.ad.uns['cell_cluster_similarities'])
+        
+        self.logger.debug("Data loading is complete.")
 
     def setup(self, stage: str):
         """TODO: Description
         """
         # Tile dataset (inner margin) for training
+        self.logger.debug(f"Preparing '{stage}' dataset with tiling margin "
+                          f"{self.tiling_margin_training} µm...")
         if stage == "fit":
-            self.logger.debug("Preparing 'training' dataset with tiling margin "
-                              f"{self.tiling_margin_training} µm...")
             self.fit_dataset = TileFitDataset(
                 data=self.data,
                 tiling=self.tiling,
@@ -281,15 +283,18 @@ class ISTDataModule(LightningDataModule):
 
         # Tile dataset (outer margin) for prediction
         if stage == "predict":
-            self.logger.debug("Preparing 'prediction' dataset with tiling margin "
-                              f"{self.tiling_margin_prediction} µm...")
             self.data = self.data.cuda()
             self.predict_dataset = TilePredictDataset(
                 data=self.data,
                 tiling=self.tiling,
                 margin=self.tiling_margin_prediction,
             )
-        return super().setup(stage)
+        
+        # Setup
+        setup = super().setup(stage)
+        self.logger.debug(f"Tiling '{stage}' is complete.")
+
+        return setup
 
     def teardown(self, stage):
         """TODO: Description
@@ -346,6 +351,8 @@ class ISTDataModule(LightningDataModule):
             shuffle=False,
             skip_too_big=False,
         )
+        # TODO: Add num_workers, this could be a bottleneck
+        # TODO: Consider pinning memory: https://docs.pytorch.org/docs/stable/data.html#memory-pinning
         return DataLoader(
             self.predict_dataset,
             batch_sampler=sampler,
