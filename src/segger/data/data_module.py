@@ -39,6 +39,8 @@ from ..io.fields import (
 )
 from .tiling import QuadTreeTiling, SquareTiling
 from .partition import PartitionSampler
+from .utils.anndata import setup_anndata
+from .utils.heterodata import setup_heterodata
 
 
 
@@ -266,8 +268,6 @@ class ISTDataModule(LightningDataModule):
             return
 
         from ..io.preprocessor import get_preprocessor
-        from .utils.anndata import setup_anndata
-        from .utils.heterodata import setup_heterodata
 
         # Load standardized IST data with quality filtering
         pp = get_preprocessor(
@@ -376,32 +376,13 @@ class ISTDataModule(LightningDataModule):
         ImportError
             If spatialdata is not installed.
         """
-        from ..io.spatialdata_loader import SpatialDataLoader, load_from_spatialdata
-        from ..io.quality_filter import get_quality_filter
+        from ..io.spatialdata_loader import SpatialDataLoader
+        from ..io.quality_filter import SpatialDataQualityFilter
 
         tx_fields = StandardTranscriptFields()
         bd_fields = StandardBoundaryFields()
 
-        # Load from SpatialData
-        loader = SpatialDataLoader(path)
-        transcripts_lf = loader.transcripts(normalize=True)
-        boundaries = loader.boundaries(boundary_type="all")
-
-        # Apply quality filtering if needed
-        if self.min_qv is not None and loader.platform:
-            qf = get_quality_filter(loader.platform)
-            transcripts_lf = qf.filter(
-                transcripts_lf,
-                min_threshold=self.min_qv,
-                feature_column=tx_fields.feature,
-            )
-
-        # Collect to DataFrame
-        tx = self.tx = transcripts_lf.collect()
-        bd = self.bd = boundaries
-
-        # Continue with standard processing
-        # Mask transcripts to reference segmentation
+        # Set compartments and boundary type according to segmentation mode
         if self.segmentation_graph_mode == "nucleus":
             compartments = [tx_fields.nucleus_value]
             boundary_type = bd_fields.nucleus_value
@@ -417,13 +398,31 @@ class ISTDataModule(LightningDataModule):
                 f"'{self.segmentation_graph_mode}'."
             )
 
-        # Check if compartment column exists
+        # Load from SpatialData
+        loader = SpatialDataLoader(path)
+        transcripts_lf = loader.transcripts(normalize=True, platform=loader.platform)
+        boundaries = loader.boundaries(boundary_type=boundary_type)
+
+       # Apply quality filtering
+        qf = SpatialDataQualityFilter(loader.platform)
+        transcripts_lf = qf.filter(
+            transcripts_lf,
+            min_threshold=self.min_qv,
+            feature_column=tx_fields.feature,
+        )
+
+        # Collect to DataFrame
+        tx = self.tx = transcripts_lf.collect()
+        bd = self.bd = boundaries
+
+        # Mask trasncripts on the compartment
         if tx_fields.compartment in tx.columns:
             tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
         else:
             # If no compartment info, use cell_id presence
             tx_mask = pl.col(tx_fields.cell_id).is_not_null()
 
+        # Mask boundaries on type
         if bd is not None and bd_fields.boundary_type in bd.columns:
             bd_mask = bd[bd_fields.boundary_type] == boundary_type
         else:

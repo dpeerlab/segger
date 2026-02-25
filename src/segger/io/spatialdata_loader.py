@@ -39,7 +39,7 @@ from segger.utils.optional_deps import (
     require_spatialdata,
     warn_spatialdata_io_unavailable,
 )
-from segger.io.fields import StandardTranscriptFields, StandardBoundaryFields
+from segger.io.fields import StandardTranscriptFields, StandardBoundaryFields, XeniumTranscriptFields, XeniumBoundaryFields
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -258,6 +258,7 @@ class SpatialDataLoader:
         gene_column: Optional[str] = None,
         quality_column: Optional[str] = None,
         normalize: bool = True,
+        platform: str = None,
     ) -> pl.LazyFrame:
         """Extract transcripts as a normalized Polars LazyFrame.
 
@@ -269,6 +270,8 @@ class SpatialDataLoader:
             Column name for quality scores. Auto-detected if None.
         normalize
             If True, rename columns to standard field names.
+        platfrom
+            Platform to perform complete preprocessing as in preprocessor.py
 
         Returns
         -------
@@ -279,6 +282,10 @@ class SpatialDataLoader:
             - feature_name: Gene symbol
             - qv (optional): Quality score
             - cell_id (optional): Assigned cell
+
+        NOTE: Differently from XeniumPreprocessor.transcripts(), this method does not implement 
+        qv filtering because the parameter 'min_qv' is not visible. 
+        Qv filtering is implemented directly in ISTDataModule._load_from_spatialdata().
         """
         # Get points DataFrame from SpatialData
         points = self.sdata.points[self.points_key]
@@ -328,6 +335,24 @@ class SpatialDataLoader:
         # Build lazy frame with row index
         lf = df.lazy().with_row_index(name=std.row_index)
 
+        # If SD object comes from Xenium
+        if platform == 'xenium':
+            # Load technology-specific fields
+            raw = XeniumTranscriptFields()
+
+            # Standardize compartment labels
+            lf = lf.with_columns(
+                pl.when(pl.col(raw.compartment) ==  pl.lit(raw.nucleus_value, dtype=pl.UInt8))
+                .then(std.nucleus_value)
+                .when(
+                    (pl.col(raw.compartment) !=  pl.lit(raw.nucleus_value, dtype=pl.UInt8)) &
+                    (pl.col(raw.cell_id).cast(pl.Utf8) != raw.null_cell_id)
+                )
+                .then(std.cytoplasmic_value)
+                .otherwise(std.extracellular_value)
+                .alias(std.compartment)
+            )
+
         if normalize:
             # Build rename mapping
             rename_map = {
@@ -358,11 +383,31 @@ class SpatialDataLoader:
                 select_cols.append(std.quality)
             if cell_id_col:
                 select_cols.append(std.cell_id)
+            # Xenium columns
+            if platform == 'xenium':
+                select_cols.append(std.compartment)  # integrated only in Xenium
+                select_cols.append(raw.is_gene)  # for filtering
 
             # Only select columns that exist after renaming
             schema = lf.collect_schema()
             select_cols = [c for c in select_cols if c in schema.names()]
             lf = lf.select(select_cols)
+            # Turn categorical columns into strings
+            lf = lf.with_columns(
+                [
+                    pl.col(c).cast(pl.String) if lf.schema[c] == pl.Categorical
+                    else pl.col(c)
+                    for c in select_cols
+                ]
+            )
+
+            # Standardize cell IDs (this allows the filtering in setup_anndata() to catch 'UNASSIGNED' properly
+            lf = lf.with_columns(
+                pl.col(raw.cell_id)
+                .cast(pl.Utf8)
+                .replace(raw.null_cell_id, None)
+                .alias(std.cell_id)
+            )
 
         return lf
 
@@ -425,7 +470,7 @@ class SpatialDataLoader:
             if std.id not in gdf.columns:
                 if "index" in gdf.columns:
                     gdf[std.id] = gdf["index"]
-                elif gdf.index.name:
+                elif gdf.index.name or gdf.index.all():
                     gdf[std.id] = gdf.index
                 else:
                     gdf[std.id] = range(len(gdf))

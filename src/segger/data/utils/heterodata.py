@@ -161,6 +161,11 @@ def setup_heterodata(
         tx_fields.cell_cluster,
         tx_fields.gene_cluster,
     ]
+    
+    # Convert feature_name to string for joining
+    if transcripts[tx_fields.feature].dtype != pl.Utf8:
+        transcripts = transcripts.with_columns(pl.col(tx_fields.feature).cast(pl.Utf8))
+    
     # Update transcripts with fields for training
     
     transcripts = (

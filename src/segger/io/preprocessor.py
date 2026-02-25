@@ -469,6 +469,12 @@ class XeniumPreprocessor(ISTPreprocessor):
             .with_row_index(name=std.row_index)
         )
 
+        # Force UTF8 if parquet stored it as Binary (Xenium 1.0.0)
+        if lf.collect_schema()[raw.feature] == pl.Binary:
+            lf = lf.with_columns(
+                pl.col(raw.feature).cast(pl.String)
+            )
+
         # Apply quality filtering using quality_filter module
         qf = XeniumQualityFilter()
         lf = qf.filter(
@@ -480,12 +486,11 @@ class XeniumPreprocessor(ISTPreprocessor):
 
         # Standardize compartment labels
         lf = lf.with_columns(
-            pl.when(pl.col(raw.compartment) == raw.nucleus_value)
+            pl.when(pl.col(raw.compartment) ==  pl.lit(raw.nucleus_value, dtype=pl.UInt8))
             .then(std.nucleus_value)
             .when(
-                (pl.col(raw.compartment) != raw.nucleus_value) &
-                (pl.col(raw.cell_id) != raw.null_cell_id)
-            )
+                (pl.col(raw.compartment) !=  pl.lit(raw.nucleus_value, dtype=pl.UInt8)) &
+                ~pl.col(raw.cell_id).cast(pl.Utf8).is_in(raw.null_cell_id)            )
             .then(std.cytoplasmic_value)
             .otherwise(std.extracellular_value)
             .alias(std.compartment)
@@ -494,6 +499,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         # Standardize cell IDs
         lf = lf.with_columns(
             pl.col(raw.cell_id)
+            .cast(pl.Utf8)
             .replace(raw.null_cell_id, None)
             .alias(std.cell_id)
         )
@@ -574,10 +580,13 @@ class XeniumPreprocessor(ISTPreprocessor):
             nuclei.reset_index(drop=False, names=std.id),
         ])
         # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
+        bd.index = bd[std.id].astype(str) + '_' + bd[std.boundary_type].map({
             std.nucleus_value: '0',
             std.cell_value: '1',
         })
+        # Convert std.id to string type (to join on AnnData)
+        if bd[std.id].dtype != "object":
+            bd[std.id] = bd[std.id].astype(str)
 
         return bd
 

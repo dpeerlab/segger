@@ -23,7 +23,7 @@ class XeniumTranscriptFields:
     z: str = 'z_location'  # Z-coordinate (microns)
     feature: str = 'feature_name'
     cell_id: str = 'cell_id'
-    null_cell_id: str = 'UNASSIGNED'
+    null_cell_id: tuple = ('-1', 'UNASSIGNED')
     compartment: str = 'overlaps_nucleus'
     nucleus_value: int = 1
     quality: str = 'qv'  # Phred-scaled quality value (0-40)

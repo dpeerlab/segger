@@ -33,7 +33,7 @@ def anndata_from_transcripts(
     """TODO: Add description.
     """
     _lazy_imports()
-    # Remove non-nuclear transcript
+    # Remove transcripts without cell assignment
     tx = tx.filter(pl.col(cell_id_column).is_not_null())
     # Get sparse counts from transcripts
     if feature_vocab is None:
