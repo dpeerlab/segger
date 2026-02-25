@@ -163,8 +163,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         for i, (feature, group) in enumerate(segmentation_group):
 
             # log step
-            if i % 50 == 0:
-                logger.debug(f"Processing gene {i+1}/{n_groups} (feature {feature[0]} | transcripts {group.shape[0]/1e3:.1f}K)...")
+            if (i + 1) % 50 == 0:
+                logger.debug(f"Processing feature {i+1}/{n_groups} (feature {feature[0]} | transcripts {group.shape[0]/1e3:.1f}K)...")
 
             # sample if too many
             arr = group["segger_similarity"]
