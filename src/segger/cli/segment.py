@@ -296,12 +296,6 @@ def segment(
     """Run cell segmentation on spatial transcriptomics data."""
 
     # Setup logger and debug directory
-    path_debug = None
-    if debug:
-        logging.getLogger("segger").setLevel(os.environ.get("SEGGER_LOG_LEVEL", "INFO"))
-        path_debug = output_directory / "debug"
-        path_debug.mkdir(exist_ok=True)
-    
     logger = logging.getLogger(__name__)
 
     # Remove SLURM environment autodetect
@@ -330,10 +324,6 @@ def segment(
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
     )
-
-    if debug:
-        logger.debug(f"Saving adata to {path_debug / 'adata_debug.h5ad'}")
-        datamodule.ad.write_h5ad(path_debug / "adata_debug.h5ad")
     
     # Setup Lightning Model
     logger.debug("Setting up LitISTEncoder model")
@@ -380,16 +370,6 @@ def segment(
     logger.debug("Starting training")
     trainer.fit(model=model, datamodule=datamodule)
 
-    if debug:
-        logger.debug(f"Saving trainer state to {path_debug / 'trainer_state_final.ckpt'}")
-        trainer.save_checkpoint(path_debug / "trainer_state_final.ckpt")
-
     # Prediction
     logger.debug("Predicting segmentation")
     predictions = trainer.predict(model=model, datamodule=datamodule)
-
-    if debug:
-        import pickle
-        logger.debug(f"Saving predictions to {path_debug / 'predictions.pkl'}")
-        with open(path_debug / "predictions.pkl", "wb") as f:
-            pickle.dump(predictions, f)

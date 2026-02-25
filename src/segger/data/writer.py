@@ -1,3 +1,4 @@
+import os
 import logging
 from lightning.pytorch.callbacks import BasePredictionWriter
 from skimage.filters import threshold_li, threshold_yen
@@ -22,10 +23,18 @@ class ISTSegmentationWriter(BasePredictionWriter):
         Path to write outputs.
     """
 
-    def __init__(self, output_directory: Path):
+    def __init__(self, output_directory: Path, debug: bool = False):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
         self.segger_logger = logging.getLogger(__name__)
+
+        # setup debugging
+        self.debug = debug
+        self.path_debug = None
+        if debug:
+            logging.getLogger("segger").setLevel(os.environ.get("SEGGER_LOG_LEVEL", "INFO"))
+            self.path_debug = output_directory / "debug"
+            self.path_debug.mkdir(exist_ok=True)
 
     @profile
     def write_on_epoch_end(
@@ -175,10 +184,34 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         return segmentation
 
-
+    
+    # Debugging callbacks
     def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        if not self.debug:
+            return
         log_every = 50
         if batch_idx % log_every == 0:
             self.segger_logger.info(
                 f"Finished prediction batch '{batch_idx}'."
             )
+    
+    def on_fit_start(self, trainer, pl_module):
+        if not self.debug:
+            return
+        self.segger_logger.debug(f"Saving adata to {self.path_debug / 'adata_debug.h5ad'}")
+        trainer.datamodule.ad.write_h5ad(self.path_debug / "adata_debug.h5ad")
+
+    def on_fit_end(self, trainer, pl_module):
+        if not self.debug:
+            return
+        if self.debug:
+            self.segger_logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
+            trainer.save_checkpoint(self.path_debug / "trainer_state_final.ckpt")
+
+    def on_predict_end(self, trainer, pl_module, outputs):
+        if not self.debug:
+            return
+        import pickle
+        self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
+        with open(self.path_debug / "predictions.pkl", "wb") as f:
+            pickle.dump(outputs, f)
