@@ -18,7 +18,7 @@ def run_segmentation_only(
     SLURMEnvironment.detect = lambda: False
 
     # Load data
-    writer = ISTSegmentationWriter(path_outputs)
+    writer = ISTSegmentationWriter(path_outputs, debug=True)
     adata = ad.read_h5ad(path_adata)
     with open(path_predictions, "rb") as f:
         predictions = pickle.load(f)
