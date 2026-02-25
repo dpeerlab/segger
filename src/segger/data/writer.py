@@ -1,3 +1,6 @@
+from copyreg import pickle
+import os
+import logging
 from lightning.pytorch.callbacks import BasePredictionWriter
 from skimage.filters import threshold_li, threshold_yen
 from lightning.pytorch import Trainer, LightningModule
@@ -9,6 +12,7 @@ import torch
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 
+# TODO: import datamodule, not trainer
 
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
@@ -19,9 +23,19 @@ class ISTSegmentationWriter(BasePredictionWriter):
         Path to write outputs.
     """
 
-    def __init__(self, output_directory: Path):
+    def __init__(self, output_directory: Path, debug: bool = False):
+        # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
+        self.segger_logger = logging.getLogger(__name__)
+
+        # setup debugging
+        self.debug = debug
+        self.path_debug = None
+        if debug:
+            logging.getLogger("segger").setLevel("DEBUG")
+            self.path_debug = output_directory / "debug"
+            self.path_debug.mkdir(exist_ok=True)
 
     def write_on_epoch_end(
         self,
@@ -32,19 +46,53 @@ class ISTSegmentationWriter(BasePredictionWriter):
     ):
         """TODO: Description
         """
-        tx_fields = TrainingTranscriptFields()
-        bd_fields = TrainingBoundaryFields()
         
         # Check datamodule for AnnData input
         if not isinstance(trainer.datamodule, ISTDataModule):
             raise TypeError(
                 f"Expected data module to be `ISTDataModule` but got "
-                f"{type(self.trainer.datamodule).__name__}."
+                f"{type(trainer.datamodule).__name__}."
             )
         if not hasattr(trainer.datamodule, "ad"):
             raise ValueError("Data module has no attribute `ad`.")
         
+        # write predictions as pickle
+        if self.debug:
+            import pickle
+            self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
+            with open(self.path_debug / "predictions.pkl", "wb") as f:
+                pickle.dump(predictions, f)
+
+        # segment transcripts
+        self.segger_logger.debug("Assigning transcripts to cells...")
+        obs = trainer.datamodule.ad.obs
+        segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=self.segger_logger)
+
+        # write transcripts
+        self.segger_logger.debug(f"Writing segmentation output to {self.output_directory}...")
+        segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+    @classmethod
+    def assign_transcripts_to_cells(
+        cls,
+        obs: pl.DataFrame,
+        predictions: Sequence[list],
+        logger: logging.Logger = None,
+    ) -> pl.DataFrame:
+        """TODO: Description
+
+        `logger` is a parameter here to allow this function to be called independently.
+        """
+        
+        # Get fields
+        tx_fields = TrainingTranscriptFields()
+        bd_fields = TrainingBoundaryFields()
+        
         # Create segmentation output
+        if logger is None:
+            logger = logging.getLogger(__name__)
+        logger.debug("Preparing predictions...")
+        
         segmentation = (
             pl
             .concat(
@@ -77,7 +125,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .join(
                 (
                     pl
-                    .from_pandas(trainer.datamodule.ad.obs[[
+                    .from_pandas(obs[[
                         bd_fields.id,
                         bd_fields.cell_encoding
                     ]])
@@ -100,6 +148,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         
         # Per-gene thresholding (iterative to reduce memory usage)
+        logger.debug("Calculating per-gene similarity thresholds...")
         feature_counts = (
             segmentation
             .filter(pl.col('segger_cell_id').is_not_null())
@@ -131,11 +180,36 @@ class ISTSegmentationWriter(BasePredictionWriter):
             })
         thresholds = pl.DataFrame(thresholds)
         
-        # Join and write output to file
-        (
+        # Join
+        logger.debug("Joining thresholds with segmentation...")
+        segmentation = (
             segmentation
             .join(thresholds, on=tx_fields.feature, how='left')
             .drop(tx_fields.feature)
-            .write_parquet(
-                self.output_directory / 'segger_segmentation.parquet')
         )
+        return segmentation
+
+    
+    # Debugging callbacks
+    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        if not self.debug:
+            return
+        log_every = 50
+        if batch_idx % log_every == 0:
+            self.segger_logger.info(
+                f"Finished prediction batch '{batch_idx}'."
+            )
+    
+    def on_fit_start(self, trainer, pl_module):
+        if not self.debug:
+            return
+        self.segger_logger.debug(f"Saving adata to {self.path_debug / 'adata_debug.h5ad'}")
+        trainer.datamodule.ad.write_h5ad(self.path_debug / "adata_debug.h5ad")
+
+    def on_fit_end(self, trainer, pl_module):
+        if not self.debug:
+            return
+        if self.debug:
+            self.segger_logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
+            trainer.save_checkpoint(self.path_debug / "trainer_state_final.ckpt")
+
