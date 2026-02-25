@@ -158,8 +158,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         n = 10_000_000
         thresholds = []
         failed_to_converge = []
-
         n_groups = segmentation_group.len().height
+
         for i, (feature, group) in enumerate(segmentation_group):
 
             # log step
@@ -175,25 +175,25 @@ class ISTSegmentationWriter(BasePredictionWriter):
             # threshold
             try:
                 tye = threshold_yen(arr)
-                tli = threshold_li_custom(arr, max_iter=500)
+                tli = threshold_li_custom(arr, max_iter=250)
                 threshold = min(tye, tli)
             except StopIteration:
-                logger.debug(f"Failed to converge {feature[0]}. Using mean similarity of other genes as cutoff.")
+                logger.debug(f"Failed to converge {feature[0]}. Will use 80% quantile of segger similarities of other genes as cutoff.")
                 failed_to_converge.append(feature[0])
                 continue
 
             # append threshold
-            thresholds.append({tx_fields.feature: feature[0], "similarity_threshold": threshold.item()})
+            thresholds.append({tx_fields.feature: feature[0], "similarity_threshold": threshold.item(), "converged": True})
             
             # cleanup
             del arr
             gc.collect()
 
-        # backfill failed features in using the mean
-        mean_threshold = np.mean([t["similarity_threshold"] for t in thresholds])
+        # backfill failed features in using the 80% quantile of thresholds
+        global_threshold = np.quantile([t["similarity_threshold"] for t in thresholds], .8)
         for feature in failed_to_converge:
-            thresholds.append({tx_fields.feature: feature, "similarity_threshold": mean_threshold})
-        logger.debug(f"Mean Threshold: {mean_threshold} | Used this to backfill {len(failed_to_converge)} features.")
+            thresholds.append({tx_fields.feature: feature, "similarity_threshold": global_threshold, "converged": False})
+        logger.debug(f"Global Threshold: {global_threshold} | Used this to backfill {len(failed_to_converge)} features.")
 
         # Join
         logger.debug("Joining thresholds with segmentation...")
