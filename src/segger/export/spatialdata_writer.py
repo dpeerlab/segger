@@ -112,7 +112,7 @@ class SpatialDataWriter:
         x_column: str = "x",
         y_column: str = "y",
         z_column: Optional[str] = "z",
-        overwrite: bool = True,
+        overwrite: bool = None,
         **kwargs,
     ) -> Path:
         """Write segmentation results to SpatialData Zarr store.
@@ -170,6 +170,9 @@ class SpatialDataWriter:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / output_name
+
+        # If overwrite is not passed explicitly, set based on path existence
+        overwrite = output_path.exists() if overwrite is None else overwrite
 
         # Check if exists
         if output_path.exists() and not overwrite:
