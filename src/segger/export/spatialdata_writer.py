@@ -112,7 +112,7 @@ class SpatialDataWriter:
         x_column: str = "x",
         y_column: str = "y",
         z_column: Optional[str] = "z",
-        overwrite: bool = False,
+        overwrite: bool = None,
         **kwargs,
     ) -> Path:
         """Write segmentation results to SpatialData Zarr store.
@@ -170,6 +170,9 @@ class SpatialDataWriter:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / output_name
+
+        # If overwrite is not passed explicitly, set based on path existence
+        overwrite = output_path.exists() if overwrite is None else overwrite
 
         # Check if exists
         if output_path.exists() and not overwrite:
@@ -294,7 +297,7 @@ class SpatialDataWriter:
                 **({"z": z_column} if has_z else {}),
             },
         )
-        elements[f"points/{self.points_key}"] = points
+        elements[self.points_key] = points
 
         # Shapes element (if boundaries provided or generated)
         if self.include_boundaries and self.boundary_method != "skip":
@@ -307,14 +310,14 @@ class SpatialDataWriter:
             )
             if shapes is not None and len(shapes) > 0:
                 shapes_parsed = ShapesModel.parse(shapes)
-                elements[f"shapes/{self.shapes_key}"] = shapes_parsed
+                elements[self.shapes_key] = shapes_parsed
 
         # Create SpatialData
-        sdata = spatialdata.SpatialData.from_elements_dict(elements)
+        sdata = spatialdata.SpatialData.init_from_elements(elements)
 
         # Optional AnnData table
         if self.include_table:
-            region = self.shapes_key if f"shapes/{self.shapes_key}" in elements else None
+            region = self.shapes_key if self.shapes_key in elements else None
             region_key = self.table_region_key if region is not None else None
             table = build_anndata_table(
                 transcripts=transcripts,

@@ -21,6 +21,30 @@ Comparison scope for this release note (relative to `v0.1.0`):
 - Branch snapshot used for this summary: `2c92b43` (`2026-02-13`)
 - Delta size at that snapshot: `33` commits, `76` files changed, `18,232` insertions, `321` deletions.
 
+### 0. Technical Summary (concise)
+
+#### New CLI workflows
+- `segger predict`:
+  - Checkpoint-only inference with strict checkpoint/data compatibility checks (`segger_vocab`, `segger_me_gene_pairs`, `n_genes`).
+  - Supports inference-time graph overrides, assignment threshold controls, fragment controls, and `--use-3d`.
+- `segger export`:
+  - Unified format conversion (`xenium_explorer|merged|spatialdata|anndata`) from parquet/csv/SpatialData segmentation inputs.
+  - Adds explicit input resolution (`--input-format`) and boundary policy controls (`--boundary-method`).
+- `segger plot`:
+  - Resolves Lightning metrics automatically (or via `--log-version`), groups train/val curves by metric key, and renders terminal or PNG outputs.
+
+#### New capabilities
+- End-to-end SpatialData support (ingest + export), including optional AnnData table embedding.
+- Alignment-loss pipeline with ME-gene constraints, scheduled weighting, and checkpoint metadata persistence.
+- Fragment-mode assignment for unassigned transcripts via tx-tx connected components with GPU-first/CPU-fallback execution.
+
+#### Stability/performance changes
+- Strong checkpoint-first safety checks to prevent silent inference mismatches.
+- Improved thresholding and memory behavior in segmentation writing.
+- Hardened boundary generation and parallel Xenium export fallback (process -> thread retry).
+- Expanded lazy optional-dependency handling with clearer failure modes.
+- Broader tests/CI coverage across CLI, export, alignment, fragment, and SpatialData paths.
+
 ### 1. High-level (major changes)
 
 #### 1.1 CLI and workflow expansion
