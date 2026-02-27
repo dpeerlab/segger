@@ -20,6 +20,7 @@ import anndata as ad
 import scanpy as sc
 import pandas as pd
 from itertools import combinations
+from collections import Counter
 
 
 def find_markers(
@@ -137,11 +138,12 @@ def find_mutually_exclusive_genes(
                 all_exclusive.append(gene)
 
     # Get unique exclusive genes
-    unique_genes = list(set(all_exclusive))
+    gene_counts = Counter(all_exclusive)
+    duplicate_genes = {g for g, c in gene_counts.items() if c > 1}
     filtered_exclusive_genes = {
-        ct: [g for g in genes if g in unique_genes]
+        ct: [g for g in genes if g not in duplicate_genes]
         for ct, genes in exclusive_genes.items()
-    }
+        }
 
     # Create pairs from different cell types
     mutually_exclusive_gene_pairs = [
