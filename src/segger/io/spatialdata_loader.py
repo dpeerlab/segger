@@ -39,7 +39,7 @@ from segger.utils.optional_deps import (
     require_spatialdata,
     warn_spatialdata_io_unavailable,
 )
-from segger.io.fields import StandardTranscriptFields, StandardBoundaryFields, XeniumTranscriptFields, XeniumBoundaryFields
+from segger.io.fields import StandardTranscriptFields, StandardBoundaryFields, XeniumTranscriptFields, CosMxTranscriptFields
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -346,11 +346,48 @@ class SpatialDataLoader:
                 .then(std.nucleus_value)
                 .when(
                     (pl.col(raw.compartment) !=  pl.lit(raw.nucleus_value, dtype=pl.UInt8)) &
-                    (pl.col(raw.cell_id).cast(pl.Utf8) != raw.null_cell_id)
+                    (pl.col(raw.cell_id).cast(pl.Utf8).is_in(raw.null_cell_id))
                 )
                 .then(std.cytoplasmic_value)
                 .otherwise(std.extracellular_value)
                 .alias(std.compartment)
+            )
+
+            # Standardize cell IDs
+            lf = lf.with_columns(
+                pl.col(raw.cell_id)
+                .cast(pl.Utf8)
+                .replace({v: None for v in raw.null_cell_id})
+                .alias(std.cell_id)
+            )
+
+        # If SD object comes from CosMx
+        if platform == 'cosmx':
+            # Load technology-specific fields
+            raw = CosMxTranscriptFields()
+
+            # Standardize compartment labels
+            lf = lf.with_columns(
+                pl.col(raw.compartment)
+                .replace_strict(
+                    {
+                        raw.nucleus_value: std.nucleus_value,
+                        raw.membrane_value: std.cytoplasmic_value,
+                        raw.cytoplasmic_value: std.cytoplasmic_value,
+                        raw.extracellular_value: std.extracellular_value,
+                        None: std.extracellular_value,
+                    },
+                    return_dtype=pl.Int8,
+                )
+                .alias(std.compartment)
+            )
+
+            # Standardize cell IDs
+            lf = lf.with_columns(
+                pl.when(pl.col(std.compartment) != std.extracellular_value)
+                .then(pl.col(raw.cell_id))
+                .otherwise(None)
+                .alias(std.cell_id)
             )
 
         if normalize:
@@ -383,10 +420,10 @@ class SpatialDataLoader:
                 select_cols.append(std.quality)
             if cell_id_col:
                 select_cols.append(std.cell_id)
-            # Xenium columns
-            if platform == 'xenium':
-                select_cols.append(std.compartment)  # integrated only in Xenium
-                select_cols.append(raw.is_gene)  # for filtering
+            if platform in ['xenium', 'cosmx']:
+                select_cols.append(std.compartment)
+                if platform == 'xenium':
+                    select_cols.append(raw.is_gene)  # for filtering
 
             # Only select columns that exist after renaming
             schema = lf.collect_schema()
@@ -399,14 +436,6 @@ class SpatialDataLoader:
                     else pl.col(c)
                     for c in select_cols
                 ]
-            )
-
-            # Standardize cell IDs (this allows the filtering in setup_anndata() to catch 'UNASSIGNED' properly
-            lf = lf.with_columns(
-                pl.col(raw.cell_id)
-                .cast(pl.Utf8)
-                .replace(raw.null_cell_id, None)
-                .alias(std.cell_id)
             )
 
         return lf
@@ -474,6 +503,8 @@ class SpatialDataLoader:
                     gdf[std.id] = gdf.index
                 else:
                     gdf[std.id] = range(len(gdf))
+
+                gdf[std.id] = gdf[std.id].astype(str)  # uniform dtype
 
             # Add boundary type
             gdf[std.boundary_type] = bt
