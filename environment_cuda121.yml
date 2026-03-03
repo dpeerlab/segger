@@ -1,0 +1,26 @@
+channels:
+  - pytorch
+  - nvidia
+  - rapidsai
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  # PyTorch with CUDA 12.1
+  - pytorch=2.5.0
+  - torchvision=0.20.0
+  - pytorch-cuda=12.1
+  # RAPIDS (conda wheels from rapidsai channel)
+  - cuspatial
+  - cudf
+  - cuml
+  - cugraph
+  - cupy
+
+  - pip
+  - pip:
+      # torch_scatter: not on PyPI, must use find-links page
+      - --find-links https://data.pyg.org/whl/torch-2.5.0+cu121.html
+      - torch_scatter
+      # segger: editable local install
+      - --editable .
