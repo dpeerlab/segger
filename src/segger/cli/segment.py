@@ -289,6 +289,11 @@ def segment(
         group=group_loss,
     )] = registry.get_default("sg_weight_end"),
 
+    save_anndata: Annotated[bool, registry.get_parameter(
+        "save_anndata",
+        group=group_io,
+    )] = registry.get_default("save_anndata"),
+    
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = "none",
@@ -360,6 +365,7 @@ def segment(
     csvlogger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(
         output_directory,
+        save_anndata=save_anndata,
         debug=debug,
     )
     trainer = Trainer(
