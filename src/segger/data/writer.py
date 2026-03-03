@@ -11,6 +11,7 @@ import polars as pl
 import torch
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
+from .utils.anndata import anndata_from_transcripts
 
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
@@ -20,11 +21,16 @@ class ISTSegmentationWriter(BasePredictionWriter):
     output_directory : Path
         Path to write outputs.
     """
-
-    def __init__(self, output_directory: Path, debug: bool = False):
+    def __init__(
+            self,
+            output_directory: Path,
+            save_anndata: bool = True,
+            debug: bool = False
+        ):
         # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
+        self.save_anndata = save_anndata
         self.segger_logger = logging.getLogger(__name__)
 
         # setup debugging
@@ -70,6 +76,53 @@ class ISTSegmentationWriter(BasePredictionWriter):
         # write transcripts
         self.segger_logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
+
+        # write anndata
+        self.segger_logger.debug("Writing AnnData output...")
+        if self.save_anndata:
+            self.write_anndata(trainer, segmentation)
+
+    def write_anndata(
+            self,
+            trainer: Trainer,
+            segmentation: pl.DataFrame
+        ):
+        # Get fields
+        tx_fields = TrainingTranscriptFields()
+
+        tx = trainer.datamodule.tx
+        transcripts = (
+            segmentation
+            .join(
+                tx.select([
+                    tx_fields.row_index,
+                    tx_fields.x,
+                    tx_fields.y,
+                    tx_fields.feature,
+                ]),
+                on=tx_fields.row_index,
+                how='left',
+            )
+            .rename({tx_fields.feature: "segger_gene"})
+            .select([
+                tx_fields.row_index,
+                "segger_gene",
+                "segger_cell_id",
+                "segger_similarity",
+                "similarity_threshold",
+                tx_fields.x,
+                tx_fields.y,
+            ])
+        )
+
+        adata = anndata_from_transcripts(
+            transcripts,
+            feature_column="segger_gene",
+            cell_id_column="segger_cell_id",
+            score_column="segger_similarity",
+            coordinate_columns=[tx_fields.x, tx_fields.y],
+        )
+        adata.write_h5ad(self.output_directory / 'segger_anndata.h5ad')
 
     @classmethod
     def assign_transcripts_to_cells(
