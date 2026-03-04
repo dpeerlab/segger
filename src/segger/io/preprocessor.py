@@ -405,6 +405,8 @@ class XeniumPreprocessor(ISTPreprocessor):
             )
             # Add numeric index at beginning
             .with_row_index(name=std.row_index)
+            # Cast binary columns to string (Some Xenium parquet stores these as binary)
+            .with_columns(pl.col(raw.feature).cast(pl.Utf8))
             # Filter data
             .filter(pl.col(raw.quality) >= 20)
             .filter(pl.col(raw.feature).str.contains(
