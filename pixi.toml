@@ -2,37 +2,21 @@
 channels = ["pytorch", "nvidia", "rapidsai", "conda-forge"]
 platforms = ["linux-64"]
 
-# System requirement is global (Pixi design)
 [system-requirements]
 cuda = "12"
 
-# =========================
-# Base (no Python here)
-# =========================
 [dependencies]
-
-[pypi-options]
-index-url = "https://pypi.org/simple"
-extra-index-urls = []
+python = ">=3.11,<3.12"
 
 [pypi-dependencies]
 segger = { path = ".", editable = true }
 
-# =========================
-# Feature: CUDA 12.1 (Python 3.11 only)
-# =========================
-[feature.cuda121.dependencies]
-python = ">=3.11,<3.12"
+# --- CUDA 12.1 feature ---
 
 [feature.cuda121.pypi-options]
 index-url = "https://pypi.org/simple"
-extra-index-urls = [
-  "https://download.pytorch.org/whl/cu121",
-  "https://pypi.nvidia.com"
-]
-find-links = [
-  { url = "https://data.pyg.org/whl/torch-2.5.0+cu121.html" }
-]
+extra-index-urls = ["https://download.pytorch.org/whl/cu121", "https://pypi.nvidia.com"]
+find-links = [{ url = "https://data.pyg.org/whl/torch-2.5.0+cu121.html" }]
 
 [feature.cuda121.pypi-dependencies]
 torch = "==2.5.0"
@@ -44,37 +28,5 @@ cuml-cu12 = "*"
 cugraph-cu12 = "*"
 cupy-cuda12x = "*"
 
-# =========================
-# Feature: CUDA 12.4 (Python 3.12+)
-# =========================
-[feature.cuda124.dependencies]
-python = ">=3.12,<3.14"
-
-[feature.cuda124.pypi-options]
-index-url = "https://pypi.org/simple"
-extra-index-urls = [
-  "https://download.pytorch.org/whl/cu124",
-  "https://pypi.nvidia.com"
-]
-
-[feature.cuda124.pypi-dependencies]
-# torch = "..."
-# torchvision = "..."
-# torch_scatter = "*"
-# etc.
-
-# =========================
-# Feature: CUDA 12.6 (future example)
-# =========================
-[feature.cuda126.dependencies]
-python = ">=3.12,<3.14"
-
-[feature.cuda126.pypi-options]
-index-url = "https://pypi.org/simple"
-extra-index-urls = [
-  "https://download.pytorch.org/whl/cu126",
-  "https://pypi.nvidia.com"
-]
-
-[feature.cuda126.pypi-dependencies]
-# add deps when available
+[environments]
+cuda121 = ["cuda121"]
