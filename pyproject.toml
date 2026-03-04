@@ -29,6 +29,7 @@ dependencies = [
     "scikit-learn",
     "tifffile",
     "torch_geometric",
+    "json",
 ]
 
 [build-system]

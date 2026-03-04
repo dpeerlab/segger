@@ -7,6 +7,7 @@ from pathlib import Path
 import geopandas as gpd
 import polars as pl
 import pandas as pd
+import json
 import warnings
 import logging
 import sys
@@ -21,7 +22,8 @@ from .fields import (
     MerscopeBoundaryFields,
     StandardTranscriptFields,
     StandardBoundaryFields,
-    XeniumTranscriptFields, 
+    XeniumTranscriptFields,
+    XeniumTranscriptFieldsV1,
     XeniumBoundaryFields,
     CosMxTranscriptFields,
     CosMxBoundaryFields,
@@ -372,16 +374,46 @@ class XeniumPreprocessor(ISTPreprocessor):
     """
     Preprocessor for 10x Genomics Xenium datasets.
     """
-    @staticmethod
-    def _validate_directory(data_dir: Path):
 
+    tx_fields = XeniumTranscriptFields()
+    bd_fields = XeniumBoundaryFields()
+    sw_version = lambda version: version[0] > 1
+
+    @staticmethod
+    def _get_analysis_sw_version(data_dir: Path) -> str:
+        """
+        Get 10x xenium analysis software version. Example experiment.xenium file:
+        {
+            ...,
+            "analysis_sw_version": "xenium-3.3.1.1"
+        }
+        Return:
+            version : list of ints representing major, minor, and patch version numbers (e.g. [3, 3, 1, 1])
+        """
+
+        # get version
+        path_meta = data_dir / "experiment.xenium"
+        with open(path_meta) as f:
+            meta = json.load(f)
+        version = meta["analysis_sw_version"].replace("xenium-", "").split(".")
+        return version
+
+    @classmethod
+    def _validate_directory(cls, data_dir: Path):
+
+        # Apply xenium software version 2 or higher (when cell id "Unassigned" was introduced. Previously -1)
+        version = XeniumPreprocessor._get_analysis_sw_version(data_dir)
+        if not cls.sw_version(version):
+            raise ValueError(
+                f"Xenium analysis software version must be 2.0.0 or higher, "
+                f"but found version {'.'.join(version)}."
+            )
+        
         # Check required files/directories
-        bd_fields = XeniumBoundaryFields()
-        tx_fields = XeniumTranscriptFields()
         for pat in [
-            tx_fields.filename,
-            bd_fields.cell_filename,
-            bd_fields.nucleus_filename,
+            cls.tx_fields.filename,
+            cls.bd_fields.cell_filename,
+            cls.bd_fields.nucleus_filename,
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
@@ -394,7 +426,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     def transcripts(self) -> pl.DataFrame:
 
         # Field names
-        raw = XeniumTranscriptFields()
+        raw = self.tx_fields
         std = StandardTranscriptFields()
 
         return (
@@ -439,15 +471,16 @@ class XeniumPreprocessor(ISTPreprocessor):
             .collect()
         )
 
-    @staticmethod
+    @classmethod
     def _get_boundaries(
+        cls,
         filepath: Path,
         boundary_type: str
     ) -> gpd.GeoDataFrame:
         # TODO: Add documentation
 
         # Field names
-        raw = XeniumBoundaryFields()
+        raw = cls.bd_fields
         std = StandardBoundaryFields()
 
         # Read in flat vertices and convert to geometries
@@ -465,7 +498,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
         # TODO: Add documentation
-        raw = XeniumBoundaryFields()
+        raw = self.bd_fields
         std = StandardBoundaryFields()
 
         # Join boundary datasets
@@ -505,6 +538,15 @@ class XeniumPreprocessor(ISTPreprocessor):
         })
 
         return bd
+
+class XeniumPreprocessorV1(XeniumPreprocessor):
+    """
+    Preprocessor for 10x Genomics Xenium datasets analyzed with software version 1.x.
+    """
+
+    tx_fields = XeniumTranscriptFieldsV1()
+    bd_fields = XeniumBoundaryFields()
+    sw_version = lambda version: version[0] == 1
 
 
 @register_preprocessor("vizgen_merscope")
