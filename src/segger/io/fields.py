@@ -30,7 +30,7 @@ class XeniumTranscriptFieldsV1:
     y: str = 'y_location'
     feature: str = 'feature_name'
     cell_id: str = 'cell_id'
-    null_cell_id: int = -1
+    null_cell_id: str = "-1"
     compartment: str = 'overlaps_nucleus'
     nucleus_value: int = 1
     quality: str = 'qv'

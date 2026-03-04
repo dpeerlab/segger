@@ -396,6 +396,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         with open(path_meta) as f:
             meta = json.load(f)
         version = meta["analysis_sw_version"].replace("xenium-", "").split(".")
+        version = [int(v) for v in version]
         return version
 
     @classmethod
@@ -404,7 +405,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         # Apply xenium software version 2 or higher (when cell id "Unassigned" was introduced. Previously -1)
         version = XeniumPreprocessor._get_analysis_sw_version(data_dir)
         if not cls.sw_version(version):
-            raise ValueError(
+            raise IOError(
                 f"Xenium analysis software version must be 2.0.0 or higher, "
                 f"but found version {'.'.join(version)}."
             )
@@ -539,6 +540,7 @@ class XeniumPreprocessor(ISTPreprocessor):
 
         return bd
 
+@register_preprocessor("10x_xenium_v1")
 class XeniumPreprocessorV1(XeniumPreprocessor):
     """
     Preprocessor for 10x Genomics Xenium datasets analyzed with software version 1.x.
