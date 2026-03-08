@@ -256,7 +256,7 @@ class SpatialDataWriter:
     ) -> "SpatialData":
         """Create SpatialData object from transcripts and boundaries."""
         import spatialdata
-        from spatialdata.models import PointsModel, ShapesModel
+        from spatialdata.models import PointsModel, ShapesModel, TableModel
         import geopandas as gpd
         import pandas as pd
         import dask.dataframe as dd
@@ -319,7 +319,8 @@ class SpatialDataWriter:
         if self.include_table:
             region = self.shapes_key if self.shapes_key in elements else None
             region_key = self.table_region_key if region is not None else None
-            table = build_anndata_table(
+            instance_key = cell_id_column
+            table_data = build_anndata_table(
                 transcripts=transcripts,
                 cell_id_column=cell_id_column,
                 feature_column=feature_column,
@@ -330,6 +331,7 @@ class SpatialDataWriter:
                 region=region,
                 region_key=region_key,
             )
+            table = TableModel.parse(table_data, region, region_key, instance_key, overwrite_metadata=True)
             sdata.tables[self.table_key] = table
 
         return sdata
