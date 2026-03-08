@@ -1484,7 +1484,7 @@ def export(
             print(
                 "Warning: spatialdata not installed. "
                 "Install with: pip install segger[spatialdata]"
-            )
+            )  # triggered whenever the SpatialDataWrite import fails
         return
 
     raise ValueError(f"Unsupported export format: {format}")

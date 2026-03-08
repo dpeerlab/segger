@@ -303,6 +303,10 @@ class DynamicBatchSamplerPatch(DynamicBatchSampler):
                 f"'{self.__class__.__name__}' expected {self.mode} <= "
                 f"{self.max_num}, but found {num}. Increase 'max_num' or set "
                 f"'skip_too_big=True'"
+                # for final user the message should be something like:
+                # "Graph is too large for current batch size: increase '--max-nodes-per-batch"  or 
+                #  decrease '--max-nodes-per-tile' and adjust
+                #  '--tiling-margin-training', '--tiling-margin-prediction' accordingly."
             )
         return num
 
