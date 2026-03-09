@@ -395,7 +395,8 @@ class XeniumPreprocessor(ISTPreprocessor):
         path_meta = data_dir / "experiment.xenium"
         with open(path_meta) as f:
             meta = json.load(f)
-        version = meta["analysis_sw_version"].replace("xenium-", "").split(".")
+        # version can be xenium-x.y.z or Xenium-x.y.z, ...
+        version = meta["analysis_sw_version"].split("-")[-1].split(".")
         version = [int(v) for v in version]
         return version
 
@@ -439,7 +440,10 @@ class XeniumPreprocessor(ISTPreprocessor):
             # Add numeric index at beginning
             .with_row_index(name=std.row_index)
             # Cast binary columns to string (Some Xenium parquet stores these as binary)
-            .with_columns(pl.col(raw.feature).cast(pl.Utf8))
+            .with_columns(
+                pl.col(raw.feature).cast(pl.Utf8),
+                pl.col(raw.cell_id).cast(pl.Utf8),
+            )
             # Filter data
             .filter(pl.col(raw.quality) >= 20)
             .filter(pl.col(raw.feature).str.contains(
@@ -532,8 +536,8 @@ class XeniumPreprocessor(ISTPreprocessor):
             cells.reset_index(drop=False, names=std.id), 
             nuclei.reset_index(drop=False, names=std.id),
         ])
-        # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
+        # cell_id is string in later 10x versions, but int in earlier versions.
+        bd.index = bd[std.id].astype(str) + '_' + bd[std.boundary_type].map({
             std.nucleus_value: '0',
             std.cell_value: '1',
         })
