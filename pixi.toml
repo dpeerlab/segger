@@ -6,12 +6,15 @@ platforms = ["linux-64"]
 cuda = "12"
 
 [dependencies]
-python = ">=3.11,<3.12"
+python = ">=3.11"
 
 [pypi-dependencies]
 segger = { path = ".", editable = true }
 
 # --- CUDA 12.1 feature ---
+
+[feature.cuda121.dependencies]
+python = ">=3.11,<3.12"
 
 [feature.cuda121.pypi-options]
 index-url = "https://pypi.org/simple"
@@ -28,5 +31,33 @@ cuml-cu12 = "*"
 cugraph-cu12 = "*"
 cupy-cuda12x = "*"
 
+
+# --- CUDA 13.1 feature ---
+# NOTE: No cu131 wheels are published yet by upstream (PyTorch, PyG) as of 2026-03
+#       cu130 wheels (PyTorch 2.9.1) are used instead — they run on CUDA 13.x
+#       drivers (including 13.1) via CUDA backward compatibility.
+
+[feature.cuda131.dependencies]
+python = ">=3.13,<3.14"
+
+[feature.cuda131.system-requirements]
+cuda = "13"
+#
+# [feature.cuda131.pypi-options]
+# index-url = "https://pypi.org/simple"
+# extra-index-urls = ["https://download.pytorch.org/whl/cu130", "https://pypi.nvidia.com"]
+# find-links = [{ url = "https://data.pyg.org/whl/torch-2.9.1+cu130.html" }]
+#
+[feature.cuda131.pypi-dependencies]
+#torch = "==2.10.0"
+# torchvision = "==0.24.1"
+# torch_scatter = "*"
+# cuspatial-cu13 = "*"
+# cudf-cu13 = "*"
+# cuml-cu13 = "*"
+# cugraph-cu13 = "*"
+# cupy-cuda13x = "*"
+
 [environments]
 cuda121 = ["cuda121"]
+cuda131 = ["cuda131"]
