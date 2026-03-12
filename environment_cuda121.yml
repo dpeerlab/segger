@@ -5,22 +5,25 @@ channels:
   - conda-forge
 
 dependencies:
-  - python=3.11
-  # PyTorch with CUDA 12.1
-  - pytorch=2.5.0
-  - torchvision=0.20.0
-  - pytorch-cuda=12.1
-  # RAPIDS (conda wheels from rapidsai channel)
-  - cuspatial
-  - cudf
-  - cuml
-  - cugraph
+  - python>=3.11,<3.12
+
+  # RAPIDS 24.10 — last release compatible with CUDA 12.1 runtime
+  - cuspatial=24.10
+  - cudf=24.10
+  - cuml=24.10
+  - cugraph=24.10
   - cupy
 
   - pip
   - pip:
-      # torch_scatter: not on PyPI, must use find-links page
+      - --extra-index-url https://pypi.nvidia.com
+      - --extra-index-url https://download.pytorch.org/whl/cu121
       - --find-links https://data.pyg.org/whl/torch-2.5.0+cu121.html
-      - torch_scatter
-      # segger: editable local install
+      - torch==2.5.*
+      - torchvision==0.20.*
+      - lightning
+      - torch-geometric
+      - torch-scatter
+      - torch-sparse
+      - cupy-cuda12x>=12.2,<13.0
       - --editable .
