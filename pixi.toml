@@ -8,13 +8,8 @@ python = ">=3.11"
 [pypi-dependencies]
 segger = { path = ".", editable = true }
 
-# --- CUDA 12.1 feature ---
-# PyPI-only approach (conda RAPIDS no longer supports CUDA 12 + Python 3.11).
-# Uses index-strategy = "unsafe-best-match" to resolve cross-index deps.
-
 [feature.cuda121.dependencies]
 python = ">=3.11,<3.12"
-pytorch-cuda = "12.1.*"
 
 [feature.cuda121.system-requirements]
 cuda = "12"
@@ -22,50 +17,29 @@ cuda = "12"
 [feature.cuda121.pypi-options]
 index-strategy = "unsafe-best-match"
 index-url = "https://pypi.org/simple"
-extra-index-urls = ["https://pypi.nvidia.com"]
-find-links = [{ url = "https://data.pyg.org/whl/torch-2.5.0+cu121.html" }]
+extra-index-urls = [
+    "https://pypi.nvidia.com",
+    "https://download.pytorch.org/whl/cu121"
+]
+find-links = [
+    { url = "https://data.pyg.org/whl/torch-2.5.0+cu121.html" }
+]
 
 [feature.cuda121.pypi-dependencies]
-torch = "==2.5.0"
-torchvision = "==0.20.0"
+torch = "==2.5.*"
+torchvision = "==0.20.*"
+lightning = "*"
 torch_geometric = "*"
-cuspatial-cu12 = ">=25.2"
-cudf-cu12 = ">=25.2"
-cuml-cu12 = ">=25.2"
-cugraph-cu12 = ">=25.2"
-torch_scatter = "*"
+torch-scatter = "*"
+torch-sparse = "*"
+cuspatial-cu12 = "==24.10.*"
+cudf-cu12 = "==24.10.*"
+cuml-cu12 = "==24.10.*"
+cugraph-cu12 = "==24.10.*"
+cupy-cuda12x = ">=12.2,<13.0"
 
-
-# --- CUDA 13.1 feature ---
-# NOTE: No cu131 wheels are published yet by upstream (PyTorch, PyG) as of 2026-03
-#       cu130 wheels (PyTorch 2.9.1) are used instead — they run on CUDA 13.x
-#       drivers (including 13.1) via CUDA backward compatibility.
-
-[feature.cuda131.dependencies]
-python = ">=3.13,<3.14"
-cuda = "13.0.*"
-
-[feature.cuda131.system-requirements]
-cuda = "13.0"
-
-[feature.cuda131.pypi-options]
-index-url = "https://pypi.org/simple"
-extra-index-urls = ["https://pypi.nvidia.com", "https://download.pytorch.org/whl/cu130"]
-find-links = [{ url = "https://data.pyg.org/whl/torch-2.9.1+cu130.html" }]
-index-strategy = "unsafe-best-match"
-
-[feature.cuda131.pypi-dependencies]
-torch = "==2.9.1"
-torchvision = "==0.24.1"
-torch_scatter = "*"
-cuspatial-cu13 = "*"
-cuda-python = ">=13.0.1,<14.0"
-cudf-cu13 = ">=26.2.0,<26.3.0"
-cuml-cu13 = ">=26.2.0,<26.3.0"
-cugraph-cu13 = ">=26.2.0,<26.3.0"
-nx-cugraph-cu13 = ">=26.2.0,<26.3.0"
-cupy-cuda13x = "*"
+[tool.uv.extra-build-dependencies]
+torch-scatter = ["torch"]
 
 [environments]
 cuda121 = ["cuda121"]
-cuda131 = ["cuda131"]

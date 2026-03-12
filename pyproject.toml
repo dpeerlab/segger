@@ -15,7 +15,6 @@ dependencies = [
     "anndata",
     "cyclopts",
     "geopandas",
-    "lightning",
     "numba",
     "numpy",
     "opencv-python",
