@@ -57,13 +57,13 @@ def platform_feature_filter_patterns(platform: str | None) -> list[str]:
         return list(MerscopeTranscriptFields.filter_substrings)
     return []
 
-
 def glob_patterns_to_regex(patterns: Sequence[str]) -> str:
-    """Convert glob-like patterns (``*``) to a regex union."""
-    return "|".join(
-        f"^{re.escape(pattern).replace(r'\\*', '.*')}$"
-        for pattern in patterns
-    )
+    """Convert glob-like patterns (`*`) to a regex union."""
+    regexes = []
+    for pattern in patterns:
+        regex_pattern = re.escape(pattern).replace(r"\*", ".*")
+        regexes.append(f"^{regex_pattern}$")
+    return "|".join(regexes)
 
 
 def apply_feature_filters(
