@@ -314,7 +314,7 @@ class SpatialDataLoader:
 
         cell_id_col = self._detect_column(
             columns,
-            ["cell_id", "cell", "segger_cell_id", "segmentation_cell_id", "instance_id"],
+            ["cell_id", "cell", "segger_cell_id", "segmentation_cell_id", "instance_id", "cell_ID"],
             optional=True,
         )
 
