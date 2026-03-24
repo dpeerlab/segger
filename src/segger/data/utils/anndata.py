@@ -98,7 +98,7 @@ def anndata_from_transcripts(
         coords = (
             centroids
             .to_pandas()
-            .set_index(cell_id_column)
+            .set_index(centroids.to_pandas()[cell_id_column].astype(str))
             .loc[adata.obs.index, coordinate_columns]
         )
         adata.obsm["X_spatial"] = coords.values
@@ -150,6 +150,11 @@ def setup_anndata(
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
+
+    # Ensure cell_id col is string
+    transcripts = transcripts.with_columns(
+        pl.col(tx_fields.cell_id).cast(pl.Utf8)
+    )
 
     # Build AnnData from transcript counts
     ad = anndata_from_transcripts(
