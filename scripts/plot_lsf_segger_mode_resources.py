@@ -32,6 +32,8 @@ from matplotlib.lines import Line2D
 from matplotlib.font_manager import FontProperties
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 
+from plot_reference_aesthetics import apply_reference_rcparams
+
 
 # Fallback transcript counts (used only if segbench overview values are unavailable).
 FALLBACK_DATASET_TRANSCRIPTS = {
@@ -43,7 +45,6 @@ FALLBACK_DATASET_TRANSCRIPTS = {
     "xenium_mouse_brain": 186_756_695.0,
     "xenium_mouse_liver": 178_711_670.0,
     "merscope_mouse_brain": 70_514_304.0,
-    "merscope_mouse_liver": 419_524_961.0,
     "cosmx_human_pancreas": 64_960_677.0,
 }
 
@@ -56,7 +57,6 @@ DATASET_LABELS = {
     "xenium_mouse_brain": "Xenium 5K Mouse Brain",
     "xenium_mouse_liver": "Xenium Mouse Liver",
     "merscope_mouse_brain": "MERSCOPE Mouse Brain",
-    "merscope_mouse_liver": "MERSCOPE Mouse Liver",
     "cosmx_human_pancreas": "CosMX Human Pancreas",
 }
 
@@ -169,7 +169,6 @@ DATASET_ICON_FILES = {
     "xenium_mouse_brain": "icon_brain_small.png",
     "xenium_mouse_liver": "icon_liver_small.png",
     "merscope_mouse_brain": "icon_brain_small.png",
-    "merscope_mouse_liver": "icon_liver_small.png",
     "cosmx_human_pancreas": "icon_pancreas_small.png",
 }
 
@@ -187,7 +186,6 @@ DATASET_ICON_PLATFORM_COLORS = {
     "xenium_v1_breast": "#B8A3D4",      # xenium_prime5k
     "xenium_mouse_brain": "#B8A3D4",    # xenium_prime5k
     "merscope_mouse_brain": "#D47B8A",  # merscope
-    "merscope_mouse_liver": "#D47B8A",  # merscope
     "cosmx_human_pancreas": "#D4A574",  # cosmx
 }
 
@@ -858,11 +856,9 @@ def write_summary_tsv(rows: list[dict[str, str]], out_path: Path) -> None:
 
 
 def _configure_plot_style() -> tuple[str, str]:
+    apply_reference_rcparams()
     plt.rcParams.update(
         {
-            "font.family": "Helvetica Neue",
-            "font.sans-serif": ["Helvetica Neue", "Arial", "Helvetica", "DejaVu Sans"],
-            "font.weight": "light",
             "axes.titlesize": 14,
             "axes.titleweight": "bold",
             "axes.labelsize": 20,

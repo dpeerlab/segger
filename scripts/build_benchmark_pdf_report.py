@@ -35,7 +35,7 @@ METRIC_SPECS = [
     ("assigned_pct", "assigned_ci95", "Assigned %", "up"),
     ("mecr", "mecr_ci95", "MECR", "down"),
     ("contamination_pct", "contamination_ci95", "Contamination %", "down"),
-    ("tco", "tco_ci95", "TCO", "up"),
+    ("eau", "eau_ci95", "EAU", "up"),
     ("doublet_pct", "doublet_ci95", "Doublet %", "down"),
     ("gpu_time_min", None, "GPU time (min)", "down"),
 ]
@@ -44,7 +44,7 @@ OVERALL_RANK_METRICS = [
     ("assigned_pct", True),
     ("mecr", False),
     ("contamination_pct", False),
-    ("tco", True),
+    ("eau", True),
     ("doublet_pct", False),
 ]
 
@@ -459,7 +459,7 @@ def _plot_heatmap_page(pdf: PdfPages, df: pd.DataFrame) -> None:
         ("assigned_pct", True),
         ("mecr", False),
         ("contamination_pct", False),
-        ("tco", True),
+        ("eau", True),
         ("doublet_pct", False),
         ("gpu_time_min", False),
     ]

@@ -8,11 +8,11 @@ import polars as pl
 from anndata import AnnData
 
 from segger.validation.quick_metrics import (
-    compute_center_border_ncv_fast,
+    compute_border_expression_integrity_fast,
     compute_positive_marker_recall_fast,
-    compute_reference_morphology_match_fast,
-    compute_resolvi_contamination_fast,
-    compute_signal_hotspot_doublet_fast,
+    compute_morphological_match_fast,
+    compute_contamination_fast,
+    compute_vertical_doublet_fast,
     compute_spurious_coexpression_fast,
 )
 
@@ -59,10 +59,13 @@ def _make_reference_like_transcripts() -> tuple[pl.DataFrame, pl.DataFrame]:
     cell_specs = [
         ("cell_a1", 0.0, 0.0, "ga", "ga2"),
         ("cell_a2", 10.0, 0.0, "ga", "ga2"),
+        ("cell_a3", 20.0, 0.0, "ga", "ga2"),
         ("cell_b1", 0.0, 100.0, "gb", "gb2"),
         ("cell_b2", 10.0, 100.0, "gb", "gb2"),
+        ("cell_b3", 20.0, 100.0, "gb", "gb2"),
     ]
     offsets = [
+        # Inner cluster (center transcripts)
         (0.0, 0.0, 1, "ga"),
         (0.0, 2.0, 1, "ga2"),
         (0.0, 4.0, 1, "hx1"),
@@ -75,6 +78,15 @@ def _make_reference_like_transcripts() -> tuple[pl.DataFrame, pl.DataFrame]:
         (1.5, 2.5, 2, "hx2"),
         (2.5, 1.5, 2, "hx3"),
         (2.5, 2.5, 2, "ga"),
+        # Outer ring (border transcripts for BEI center/border split)
+        (-2.0, 2.0, 1, "ga"),
+        (6.0, 2.0, 1, "ga2"),
+        (2.0, -2.0, 1, "hx1"),
+        (2.0, 6.0, 1, "hx2"),
+        (-1.0, -1.0, 1, "hx3"),
+        (5.0, 5.0, 1, "ga"),
+        (-1.0, 5.0, 1, "ga2"),
+        (5.0, -1.0, 1, "hx1"),
     ]
 
     for cell_id, base_x, base_y, major_gene, minor_gene in cell_specs:
@@ -145,7 +157,7 @@ def _make_source_transcripts() -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def test_signal_hotspot_doublet_returns_empty_without_z() -> None:
+def test_vertical_doublet_returns_empty_without_z() -> None:
     source_tx = pl.DataFrame(
         {
             "feature_name": ["A", "A"],
@@ -162,15 +174,15 @@ def test_signal_hotspot_doublet_returns_empty_without_z() -> None:
         }
     )
 
-    result = compute_signal_hotspot_doublet_fast(source_tx, assigned_tx)
+    result = compute_vertical_doublet_fast(source_tx, assigned_tx)
 
-    assert math.isnan(result["signal_hotspot_doublet_fraction_fast"])
-    assert result["signal_hotspot_candidate_cells_fast"] == 0
-    assert result["signal_hotspot_metric_cells_used_fast"] == 0
-    assert result["signal_hotspot_cells_scored_fast"] == 0
+    assert math.isnan(result["vertical_doublet_pct_fast"])
+    assert result["vertical_doublet_candidate_cells_fast"] == 0
+    assert result["vertical_doublet_metric_cells_used_fast"] == 0
+    assert result["vertical_doublet_cells_scored_fast"] == 0
 
 
-def test_signal_hotspot_doublet_flags_merged_hotspot_cell() -> None:
+def test_vertical_doublet_flags_merged_hotspot_cell() -> None:
     source_tx = _make_source_transcripts()
     assigned_tx = (
         source_tx.filter(pl.col("x") >= 10.0)
@@ -178,7 +190,7 @@ def test_signal_hotspot_doublet_flags_merged_hotspot_cell() -> None:
         .select(["segger_cell_id", "feature_name", "x", "y", "z"])
     )
 
-    result = compute_signal_hotspot_doublet_fast(
+    result = compute_vertical_doublet_fast(
         source_tx,
         assigned_tx,
         grid_size=1.0,
@@ -186,14 +198,14 @@ def test_signal_hotspot_doublet_flags_merged_hotspot_cell() -> None:
         min_side_transcripts=5,
     )
 
-    assert result["signal_hotspot_candidate_cells_fast"] == 1
-    assert result["signal_hotspot_metric_cells_used_fast"] == 1
-    assert result["signal_hotspot_cells_scored_fast"] == 1
-    assert result["signal_hotspot_pixels_used_fast"] == 10
-    assert result["signal_hotspot_doublet_fraction_fast"] > 0.9
+    assert result["vertical_doublet_candidate_cells_fast"] == 1
+    assert result["vertical_doublet_metric_cells_used_fast"] == 1
+    assert result["vertical_doublet_cells_scored_fast"] == 1
+    assert result["vertical_doublet_pixels_used_fast"] == 10
+    assert result["vertical_doublet_pct_fast"] > 90.0
 
 
-def test_signal_hotspot_doublet_treats_one_sided_cell_as_non_doublet() -> None:
+def test_vertical_doublet_treats_one_sided_cell_as_non_doublet() -> None:
     source_tx = _make_source_transcripts()
     assigned_tx = (
         source_tx.filter((pl.col("x") >= 10.0) & (pl.col("z") == 0.0))
@@ -201,7 +213,7 @@ def test_signal_hotspot_doublet_treats_one_sided_cell_as_non_doublet() -> None:
         .select(["segger_cell_id", "feature_name", "x", "y", "z"])
     )
 
-    result = compute_signal_hotspot_doublet_fast(
+    result = compute_vertical_doublet_fast(
         source_tx,
         assigned_tx,
         grid_size=1.0,
@@ -209,10 +221,10 @@ def test_signal_hotspot_doublet_treats_one_sided_cell_as_non_doublet() -> None:
         min_side_transcripts=5,
     )
 
-    assert result["signal_hotspot_candidate_cells_fast"] == 1
-    assert result["signal_hotspot_metric_cells_used_fast"] == 1
-    assert result["signal_hotspot_cells_scored_fast"] == 0
-    assert result["signal_hotspot_doublet_fraction_fast"] == 0.0
+    assert result["vertical_doublet_candidate_cells_fast"] == 1
+    assert result["vertical_doublet_metric_cells_used_fast"] == 1
+    assert result["vertical_doublet_cells_scored_fast"] == 0
+    assert result["vertical_doublet_pct_fast"] == 0.0
 
 
 def test_reference_guided_fast_metrics_return_sane_scores(tmp_path) -> None:
@@ -229,10 +241,10 @@ def test_reference_guided_fast_metrics_return_sane_scores(tmp_path) -> None:
         n_markers_per_type=2,
         min_specificity_ratio=1.1,
     )
-    assert marker["positive_marker_cells_used_fast"] == 4
+    assert marker["positive_marker_cells_used_fast"] == 6
     assert marker["positive_marker_recall_fast"] >= 99.0
 
-    resolvi = compute_resolvi_contamination_fast(
+    contamination = compute_contamination_fast(
         assigned_tx,
         scrna_reference_path=reference_path,
         scrna_celltype_column="cell_type",
@@ -241,21 +253,21 @@ def test_reference_guided_fast_metrics_return_sane_scores(tmp_path) -> None:
         k_neighbors=1,
         max_neighbor_distance=20.0,
     )
-    assert resolvi["resolvi_metric_cells_used"] == 4
-    assert resolvi["resolvi_contamination_pct_fast"] <= 1.0
+    assert contamination["contamination_cells_used"] == 6
+    assert contamination["contamination_pct_fast"] <= 1.0
 
-    center_border = compute_center_border_ncv_fast(
+    bei = compute_border_expression_integrity_fast(
         assigned_tx,
         min_transcripts_per_cell=10,
         max_cells=10,
         n_neighbors=1,
     )
-    assert center_border["center_border_ncv_cells_used_fast"] == 4
-    assert 0.75 <= center_border["center_border_ncv_score_fast"] <= 1.0
+    assert bei["border_expression_integrity_cells_used_fast"] == 6
+    assert 0.75 <= bei["border_expression_integrity_fast"] <= 1.0
 
-    morphology = compute_reference_morphology_match_fast(source_tx, assigned_tx)
-    assert morphology["reference_morphology_cells_used_fast"] == 4
-    assert morphology["reference_morphology_match_fast"] >= 0.99
+    mm = compute_morphological_match_fast(source_tx, assigned_tx)
+    assert mm["morphological_match_cells_used_fast"] == 6
+    assert mm["morphological_match_fast"] >= 0.99
 
 
 def test_reference_guided_fast_metrics_fallback_to_feature_name_and_celltype_alias(tmp_path) -> None:
@@ -272,10 +284,10 @@ def test_reference_guided_fast_metrics_fallback_to_feature_name_and_celltype_ali
         n_markers_per_type=2,
         min_specificity_ratio=1.1,
     )
-    assert marker["positive_marker_cells_used_fast"] == 4
+    assert marker["positive_marker_cells_used_fast"] == 6
     assert marker["positive_marker_recall_fast"] >= 99.0
 
-    resolvi = compute_resolvi_contamination_fast(
+    contamination = compute_contamination_fast(
         assigned_tx,
         scrna_reference_path=reference_path,
         scrna_celltype_column="cell_type",
@@ -284,34 +296,37 @@ def test_reference_guided_fast_metrics_fallback_to_feature_name_and_celltype_ali
         k_neighbors=1,
         max_neighbor_distance=20.0,
     )
-    assert resolvi["resolvi_metric_cells_used"] == 4
-    assert resolvi["resolvi_contamination_pct_fast"] <= 1.0
+    assert contamination["contamination_cells_used"] == 6
+    assert contamination["contamination_pct_fast"] <= 1.0
 
 
 def test_spurious_coexpression_fast_detects_merged_pair() -> None:
-    source_rows = (
-        [
-            {
-                "cell_id": "nuc_a",
+    """Two genes that are mutually exclusive in nuclei (A only in nuc_a,
+    B only in nuc_b) get merged into one segmented cell — the metric
+    should detect this as spurious co-expression."""
+    # Build source data: 50 nuclei with gene A, 50 with gene B, never both.
+    source_rows: list[dict[str, object]] = []
+    for i in range(50):
+        for _ in range(6):
+            source_rows.append({
+                "cell_id": f"nuc_a_{i}",
                 "feature_name": "A",
-                "x": 0.0,
+                "x": float(i),
                 "y": 0.0,
                 "cell_compartment": 2,
-            }
-            for _ in range(6)
-        ]
-        + [
-            {
-                "cell_id": "nuc_b",
+            })
+    for i in range(50):
+        for _ in range(6):
+            source_rows.append({
+                "cell_id": f"nuc_b_{i}",
                 "feature_name": "B",
-                "x": 0.0,
+                "x": float(50 + i),
                 "y": 0.0,
                 "cell_compartment": 2,
-            }
-            for _ in range(6)
-        ]
-    )
+            })
     source_tx = pl.DataFrame(source_rows)
+
+    # Segmentation merges everything into one cell — both A and B together.
     assigned_tx = source_tx.select(["feature_name", "x", "y"]).with_columns(
         pl.lit("merged").alias("segger_cell_id")
     )
@@ -320,14 +335,105 @@ def test_spurious_coexpression_fast_detects_merged_pair() -> None:
         source_tx,
         assigned_tx,
         min_transcripts_per_cell=1,
-        max_cells=10,
-        spatial_radius=1.0,
-        max_spatial_transcripts=0,
         min_gene_count=1,
-        min_support=1,
-        ratio_cutoff=1.1,
-        nuclear_max=0.01,
-        min_spatial_score=0.01,
+        min_nuclei=5,
+        nuclear_coexpr_max=0.05,
+    )
+
+    assert result["spurious_pairs_used_fast"] == 1
+    assert result["spurious_coexpression_fast"] > 0.9
+
+
+def test_spurious_coexpression_fast_clean_segmentation() -> None:
+    """When segmentation correctly separates cells, spurious score should
+    be near zero."""
+    source_rows: list[dict[str, object]] = []
+    for i in range(50):
+        for _ in range(6):
+            source_rows.append({
+                "cell_id": f"nuc_a_{i}",
+                "feature_name": "A",
+                "x": float(i),
+                "y": 0.0,
+                "cell_compartment": 2,
+            })
+    for i in range(50):
+        for _ in range(6):
+            source_rows.append({
+                "cell_id": f"nuc_b_{i}",
+                "feature_name": "B",
+                "x": float(50 + i),
+                "y": 0.0,
+                "cell_compartment": 2,
+            })
+    source_tx = pl.DataFrame(source_rows)
+
+    # Correct segmentation: each cell has only one gene type.
+    assigned_rows: list[dict[str, object]] = []
+    for i in range(50):
+        for _ in range(6):
+            assigned_rows.append({
+                "segger_cell_id": f"seg_a_{i}",
+                "feature_name": "A",
+                "x": float(i),
+                "y": 0.0,
+            })
+    for i in range(50):
+        for _ in range(6):
+            assigned_rows.append({
+                "segger_cell_id": f"seg_b_{i}",
+                "feature_name": "B",
+                "x": float(50 + i),
+                "y": 0.0,
+            })
+    assigned_tx = pl.DataFrame(assigned_rows)
+
+    result = compute_spurious_coexpression_fast(
+        source_tx,
+        assigned_tx,
+        min_transcripts_per_cell=1,
+        min_gene_count=1,
+        min_nuclei=5,
+        nuclear_coexpr_max=0.05,
+    )
+
+    assert result["spurious_pairs_used_fast"] == 1
+    assert result["spurious_coexpression_fast"] < 0.01
+
+
+def test_spurious_coexpression_fast_no_compartment_fallback() -> None:
+    """Works without compartment column by falling back to all assigned
+    transcripts."""
+    source_rows: list[dict[str, object]] = []
+    for i in range(50):
+        for _ in range(6):
+            source_rows.append({
+                "cell_id": f"nuc_a_{i}",
+                "feature_name": "A",
+                "x": float(i),
+                "y": 0.0,
+            })
+    for i in range(50):
+        for _ in range(6):
+            source_rows.append({
+                "cell_id": f"nuc_b_{i}",
+                "feature_name": "B",
+                "x": float(50 + i),
+                "y": 0.0,
+            })
+    source_tx = pl.DataFrame(source_rows)
+
+    assigned_tx = source_tx.select(["feature_name", "x", "y"]).with_columns(
+        pl.lit("merged").alias("segger_cell_id")
+    )
+
+    result = compute_spurious_coexpression_fast(
+        source_tx,
+        assigned_tx,
+        min_transcripts_per_cell=1,
+        min_gene_count=1,
+        min_nuclei=5,
+        nuclear_coexpr_max=0.05,
     )
 
     assert result["spurious_pairs_used_fast"] == 1

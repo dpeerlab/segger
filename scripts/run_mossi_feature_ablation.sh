@@ -889,7 +889,7 @@ build_delta_summary() {
       assigned[job] = $(col["assigned_pct"])
       fragments[job] = $(col["fragments"])
       mecr[job] = $(col["mecr"])
-      resolvi[job] = $(col["resolvi_contamination_pct"])
+      resolvi[job] = $(col["contamination_pct"])
       tco[job] = $(col["tco"])
       doublet[job] = $(col["doublet_pct"])
       status[job] = $(col["validate_status"])
@@ -910,7 +910,7 @@ build_delta_summary() {
         "assigned_pct", "assigned_delta_vs_base", \
         "fragments", "fragments_delta_vs_base", \
         "mecr", "mecr_delta_vs_base", \
-        "resolvi_contamination_pct", "resolvi_delta_vs_base", \
+        "contamination_pct", "resolvi_delta_vs_base", \
         "tco", "tco_delta_vs_base", \
         "doublet_pct", "doublet_delta_vs_base", \
         "validate_status"

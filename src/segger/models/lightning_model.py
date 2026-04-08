@@ -148,6 +148,24 @@ class LitISTEncoder(LightningModule):
             batch.batch_dict,
         )
 
+    def on_predict_start(self) -> None:
+        """Enable per-transcript embedding caching only when fragment mode is active."""
+        use_tx_last_layer = os.getenv("SEGGER_FRAGMENT_USE_TX_LAST_LAYER", "").lower() not in {
+            "0", "false", "no", "off",
+        }
+        callbacks = getattr(self.trainer, "callbacks", [])
+        cache_fragment_embeddings = any(
+            bool(getattr(callback, "fragment_mode", False))
+            for callback in callbacks
+        ) and use_tx_last_layer
+        self._cache_fragment_tx_embeddings = cache_fragment_embeddings
+        if cache_fragment_embeddings:
+            self._fragment_tx_node_index_chunks: list[torch.Tensor] = []
+            self._fragment_tx_embedding_chunks: list[torch.Tensor] = []
+        else:
+            self._fragment_tx_node_index_chunks = []
+            self._fragment_tx_embedding_chunks = []
+
     def _scheduled_weights(
         self,
         w_start: torch.Tensor,
@@ -352,7 +370,7 @@ class LitISTEncoder(LightningModule):
         batch: Batch,
         batch_idx: int,
         min_similarity: float | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Prediction pass for the batch of data."""
 
         # Compute embeddings on full dataset
@@ -380,6 +398,18 @@ class LitISTEncoder(LightningModule):
         seg_idx[valid] = dst_idx[dst[max_idx[valid]]]
         gen_idx = batch['tx']['x']
         mask = batch['tx']['predict_mask']
+
+        # Cache last-layer tx embeddings for fragment-mode tx-tx similarities.
+        if bool(getattr(self, "_cache_fragment_tx_embeddings", False)):
+            tx_store = batch['tx']
+            if 'global_index' in tx_store:
+                tx_global_index = tx_store['global_index']
+                self._fragment_tx_node_index_chunks.append(
+                    tx_global_index[mask].detach().to(torch.long).cpu()
+                )
+                self._fragment_tx_embedding_chunks.append(
+                    embeddings['tx'][mask].detach().to(torch.float16).cpu()
+                )
 
         return src_idx[mask], seg_idx[mask], max_sim[mask], gen_idx[mask]
 

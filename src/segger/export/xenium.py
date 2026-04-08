@@ -367,6 +367,10 @@ def seg2explorer(
             boundary_nucleus_value=boundary_nucleus_value,
         )
 
+    # Filter by keep column when present (GMM threshold)
+    if "keep" in seg_df.columns:
+        seg_df = seg_df[seg_df["keep"].fillna(False)]
+
     # Drop unassigned cells if numeric
     if cell_id_column in seg_df.columns:
         if pd.api.types.is_numeric_dtype(seg_df[cell_id_column]):
@@ -724,6 +728,10 @@ def seg2explorer_pqdm(
     source_path = Path(source_path)
     storage = Path(output_dir)
     storage.mkdir(parents=True, exist_ok=True)
+
+    # Filter by keep column when present (GMM threshold)
+    if "keep" in seg_df.columns:
+        seg_df = seg_df[seg_df["keep"].fillna(False)]
 
     # Drop unassigned cells if numeric
     if cell_id_column in seg_df.columns:

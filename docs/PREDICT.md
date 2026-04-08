@@ -32,13 +32,6 @@ segger predict -c model.ckpt -i /path/to/data -o /path/to/output
 | `-i` / `--input-directory` | (required) | Path to spatial transcriptomics dataset |
 | `-o` / `--output-directory` | `./segger_output` | Output directory |
 
-### Similarity Thresholding
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--min-similarity` | None | Fixed threshold [0,1]. None = auto per-gene |
-| `--min-similarity-shift` | 0.0 | Subtractive relaxation applied after thresholding |
-
 ### Fragment Mode
 
 | Flag | Default | Description |
@@ -62,37 +55,36 @@ segger predict -c model.ckpt -i /path/to/data -o /path/to/output
 The `predict` command does not train — it uses the embedding space learned during `segment`. The loss configuration used during training directly shapes prediction quality:
 
 - **Segmentation loss type** (`triplet` vs `bce`): Triplet-trained models tend to produce similarity distributions with clearer separation between positive and negative edges, making auto-thresholding more reliable. BCE-trained models may need `--min-similarity` to be set explicitly.
-- **Segmentation margin**: Models trained with higher margins produce more confident (but potentially fewer) assignments. If a checkpoint underassigns transcripts, use `--min-similarity-shift` to relax thresholds at prediction time without retraining.
+- **Segmentation margin**: Models trained with higher margins produce more confident (but potentially fewer) assignments. If a checkpoint underassigns transcripts, use `--min-similarity-shift` on `segger export` to relax thresholds without retraining or re-predicting.
 - **Alignment loss**: Models trained with alignment loss produce embeddings where ME-gene transcripts are pushed apart, which reduces MECR in the final segmentation. This effect is baked into the checkpoint — no prediction-time flag is needed.
 - **Weight schedule**: If segmentation loss was ramped too aggressively (high `sg_weight_start`), the model may have poor gene embeddings, which shows up as noisy per-gene auto-thresholds. Consider retraining with the default schedule.
 
 ---
 
-## Auto-Thresholding
+## Similarity Thresholding and the `keep` Column
 
-Same algorithm as `segment`. When `--min-similarity` is not set:
+Per-gene similarity thresholds are computed using Li+Yen (same as `segment`) but **assignments are never filtered**. Instead, a `keep` column is written:
 
-1. For each gene, collect all similarities from assigned transcripts
-2. Compute `threshold_li` (Li's iterative minimum cross-entropy)
-3. Compute `threshold_yen` (Yen's multi-level method)
-4. Take `min(Li, Yen)` as the per-gene threshold
-5. Fall back to median if both methods fail
+1. For each gene, collect all similarities from assigned transcripts.
+2. Compute `min(threshold_li, threshold_yen)` as the per-gene threshold.
+3. Write `similarity_threshold` column.
+4. Set `keep = True` if `segger_cell_id` is not null **and** `segger_similarity >= similarity_threshold`.
 
-If `--min-similarity-shift` is set, the threshold is relaxed:
-
-$$\theta_{\text{final}} = \text{clip}(\theta - \text{shift},\; -1,\; 1)$$
+The `segger_cell_id` is preserved for all transcripts. Filtering by `keep` happens at **export time**, where `--min-similarity` and `--min-similarity-shift` can override or relax the threshold (see [EXPORT.md](EXPORT.md)).
 
 ## Fragment Mode Pipeline
 
-When `--fragment-mode` is enabled, unassigned transcripts are grouped into "fragment cells" via connected components:
+When `--fragment-mode` is enabled, both truly unassigned transcripts (`segger_cell_id` is null) and threshold-rejected transcripts (`keep=False`) are candidates for fragment recovery:
 
-1. **Identify unassigned**: Transcripts where `segger_cell_id` is null after thresholding
-2. **Filter edges**: Keep only tx-tx edges where both endpoints are unassigned
+1. **Identify candidates**: Transcripts where `segger_cell_id` is null OR `keep` is False
+2. **Filter edges**: Keep only tx-tx edges where both endpoints are candidates
 3. **Compute similarities**: Using learned gene embeddings (priority) or X_corr fallback
 4. **Threshold**: Apply `--fragment-similarity-threshold` (or auto Li+Yen) to filter edges
 5. **Connected components**: Build adjacency matrix, compute components (RAPIDS GPU or SciPy CPU)
 6. **Filter by size**: Keep components with $\geq$ `--fragment-min-transcripts` transcripts
-7. **Assign IDs**: Label transcripts with `fragment-{component_id}`
+7. **Assign IDs**: For recovered transcripts, replace `segger_cell_id` with `fragment-{component_id}` and set `keep=True`
+
+Each transcript gets exactly one assignment — no duplicates. Transcripts with `keep=True` are never reassigned to fragments.
 
 ## Empirical Parameter Guide
 
@@ -102,7 +94,7 @@ The following observations apply specifically to prediction-time parameters (sca
 
 The `predict` command can override the scale factor used during training. This is the primary lever for adjusting the coverage-specificity tradeoff without retraining.
 
-| Scale Factor | Typical Assignment | MECR | TCO |
+| Scale Factor | Typical Assignment | MECR | AES |
 |:---:|:---:|:---:|:---:|
 | 1.2 | 36–58% | Low (best) | High (best) |
 | 2.2 | 56–86% | Moderate | Good |
@@ -119,11 +111,11 @@ Fragment mode is a prediction-time only decision — it doesn't affect training.
 
 **VRAM warning**: Fragment mode materializes tx-tx edges for all unassigned transcripts at once. On large datasets (>100M transcripts) with low scale factors (many unassigned), this can spike VRAM to 50–100 GB. If you hit OOM, set `SEGGER_FRAGMENT_SIM_CHUNK_SIZE=1000000` or increase `--prediction-scale-factor` to reduce the unassigned pool.
 
-### Similarity Shift (`--min-similarity-shift`)
+### Similarity Shift (at export time)
 
-This is a post-hoc relaxation: it subtracts a constant from all thresholds, making assignment more permissive. Unlike scale factor changes, it doesn't change which transcripts are *candidates* — it only changes which candidates pass the threshold.
+`--min-similarity-shift` has moved to `segger export`. It subtracts a constant from all per-gene thresholds, making the `keep` column more permissive. Unlike scale factor changes, it doesn't change which transcripts are *candidates* — it only changes which candidates pass the threshold.
 
-Use `--min-similarity-shift 0.05–0.15` when a checkpoint produces good embeddings but auto-thresholds are too conservative (low assignment but high similarity scores).
+Use `segger export ... --min-similarity-shift 0.05–0.15` when a checkpoint produces good embeddings but auto-thresholds are too conservative (low assignment but high similarity scores). You can also use `segger export ... --min-similarity 0.3` to set a fixed global threshold, overriding per-gene thresholds entirely.
 
 ### Runtime
 
@@ -147,8 +139,9 @@ The output `segger_segmentation.parquet` contains:
 |--------|-------------|
 | `row_index` | Original transcript row index |
 | `segger_similarity` | Max similarity score to any boundary |
-| `segger_cell_id` | Assigned cell ID (null if unassigned), or `fragment-N` |
-| `similarity_threshold` | Applied threshold (fixed or per-gene) |
+| `segger_cell_id` | Assigned cell ID (null if no boundary edge), or `fragment-N` |
+| `similarity_threshold` | Per-gene Li+Yen threshold |
+| `keep` | `True` if assignment passes threshold (used by `segger export`) |
 
 ---
 
@@ -157,9 +150,6 @@ The output `segger_segmentation.parquet` contains:
 ```bash
 # Basic prediction from checkpoint
 segger predict -c checkpoints/last.ckpt -i data/ -o predictions/
-
-# With fixed similarity threshold
-segger predict -c model.ckpt -i data/ -o output/ --min-similarity 0.5
 
 # With fragment mode
 segger predict -c model.ckpt -i data/ -o output/ \
@@ -171,7 +161,7 @@ segger predict -c model.ckpt -i data/ -o output/ \
     --prediction-scale-factor 1.5 \
     --use-3d auto
 
-# Relax thresholds for higher assignment rate
-segger predict -c model.ckpt -i data/ -o output/ \
-    --min-similarity-shift 0.1
+# Relax thresholds at export time (not prediction)
+segger export -s output/segger_segmentation.parquet \
+    -i data/ -o export/ --min-similarity-shift 0.1
 ```

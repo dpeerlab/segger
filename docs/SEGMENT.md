@@ -127,14 +127,31 @@ The three primary weights ($w_{\text{tx}}, w_{\text{bd}}, w_{\text{sg}}$) are **
 - If embeddings collapse (all cells look the same), decrease `--segmentation-loss-weight-end` or increase `--cells-loss-weight-end`.
 - For alignment loss, keep the weight small (0.01-0.1). It's additive and not normalized with the other three.
 
-### Auto-Thresholding
+### Similarity Thresholding and the `keep` Column
 
-When `--min-similarity` is not set, per-gene thresholds are computed:
+Segger computes per-gene similarity thresholds but **does not filter transcript assignments** in the segmentation output. Instead, it writes a `keep` column that downstream exports use to decide which transcripts to include.
 
-1. Compute `threshold_li` (Li's iterative minimum cross-entropy)
-2. Compute `threshold_yen` (Yen's multi-level method)
-3. Take `min(Li, Yen)` as the threshold
-4. Fall back to median if both methods fail
+**How it works:**
+
+1. For each gene, collect all similarities from assigned transcripts (those inside at least one scaled boundary polygon).
+2. Compute `threshold_li` (Li's iterative minimum cross-entropy).
+3. Compute `threshold_yen` (Yen's multi-level method).
+4. Take `min(Li, Yen)` as the per-gene threshold. Fall back to median if both methods fail.
+5. Write the threshold to the `similarity_threshold` column.
+6. Set `keep = True` if `segger_cell_id` is not null **and** `segger_similarity >= similarity_threshold`, otherwise `keep = False`.
+
+**The `segger_cell_id` is never nulled out by thresholding.** Every transcript that was geometrically inside a scaled boundary polygon retains its best cell assignment. The `keep` column is metadata — filtering happens at export time.
+
+This design means you can re-export the same segmentation parquet with different threshold settings (via `--min-similarity` or `--min-similarity-shift` on the `export` command) without re-running prediction.
+
+### Fragment Mode and `keep`
+
+When `--fragment-mode` is enabled, transcripts with `keep=False` (failed similarity threshold) are treated as candidates for fragment recovery alongside truly unassigned transcripts (null `segger_cell_id`). If a `keep=False` transcript is recovered into a fragment:
+
+- Its `segger_cell_id` is replaced with the fragment ID (`fragment-N`)
+- Its `keep` is flipped to `True`
+
+This ensures each transcript has exactly one cell or fragment assignment — no duplicates. Transcripts that are `keep=True` (passed threshold) are never reassigned to fragments.
 
 ---
 
@@ -218,13 +235,6 @@ When `--min-similarity` is not set, per-gene thresholds are computed:
 | `--tissue-type` | None | Auto-fetch scRNA reference from CellxGENE Census |
 | `--reference-cache-dir` | None | Cache dir for auto-fetched references |
 
-### Similarity Thresholding
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--min-similarity` | None | Fixed threshold [0,1]. None = auto per-gene |
-| `--min-similarity-shift` | 0.0 | Subtractive relaxation applied after thresholding |
-
 ### Fragment Mode
 
 | Flag | Default | Description |
@@ -256,7 +266,7 @@ The following observations are drawn from systematic benchmarks across 10 datase
 
 The scale factor controls how far beyond the original boundary polygon a transcript can be to still be considered a candidate for assignment. This is the single most impactful parameter for the **coverage vs. specificity tradeoff**.
 
-| Scale Factor | Typical Assignment | MECR | TCO | Center-Border Similarity |
+| Scale Factor | Typical Assignment | MECR | AES | Center-Border Similarity |
 |:---:|:---:|:---:|:---:|:---:|
 | 1.2 | 36–58% | Low (best) | High (best) | Lower |
 | 2.2 (default) | 56–86% | Moderate | Good | Good |
@@ -265,7 +275,7 @@ The scale factor controls how far beyond the original boundary polygon a transcr
 **Key findings**:
 
 - Going from 1.2 → 3.2 consistently increases assignment by 20–40 percentage points, but MECR can double — you're capturing more transcripts but also pulling in signal from neighboring cells.
-- TCO (how well-centered transcripts are within cells) degrades with higher scale factors: cells "reach" further for transcripts at their periphery, shifting the centroid.
+- AES (angular expression symmetry) degrades with higher scale factors: larger boundaries are more likely to capture transcripts from a specific neighbour direction, creating angular expression asymmetry.
 - Center-border similarity actually *improves* at higher scale factors because the expanded polygon captures enough border transcripts to make border/center profiles more consistent. However, this masks the fact that some of those border transcripts genuinely belong to neighbors.
 - **Recommendation**: Start with the default (2.2). If assignment is too low for your application, increase to 3.0–3.5. If MECR is too high (e.g., >0.02), decrease to 1.5–2.0. The optimal value depends on cell density — dense tissues benefit from lower scale factors.
 
@@ -311,7 +321,7 @@ Alignment loss penalizes co-expression of mutually exclusive gene pairs. The wei
 |:---:|:---:|:---:|:---:|
 | Assignment | baseline | ±1% | Negligible |
 | MECR | baseline | ±0.002 | Mixed |
-| TCO | baseline | ±0.005 | Negligible |
+| AES | baseline | ±0.005 | Negligible |
 | Doublet fraction | baseline | -1–3% | Small improvement |
 
 **Key findings**:
@@ -357,9 +367,6 @@ Training (`segment`) and prediction-only (`predict`) scale differently with data
 # Basic segmentation
 segger segment -i data/ -o output/
 
-# With fixed similarity threshold
-segger segment -i data/ -o output/ --min-similarity 0.5
-
 # With alignment loss from scRNA reference
 segger segment -i data/ -o output/ \
     --alignment-loss \
@@ -391,10 +398,9 @@ segger segment -i data/ -o output/ \
     --segmentation-loss-weight-start 0.2 \
     --segmentation-loss-weight-end 1.0
 
-# BCE loss with higher margin threshold
+# BCE loss
 segger segment -i data/ -o output/ \
-    --segmentation-loss bce \
-    --min-similarity 0.5
+    --segmentation-loss bce
 
 # Reduce MECR with alignment loss and stronger regularization
 segger segment -i data/ -o output/ \

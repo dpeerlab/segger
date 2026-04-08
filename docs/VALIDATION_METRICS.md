@@ -1,593 +1,586 @@
 # Segger Validation Metrics Reference
 
-This document describes the 11 quality metrics computed by `segger validate`. All implementations live in `src/segger/validation/quick_metrics.py`.
+All implementations live in `src/segger/validation/quick_metrics.py`. Run via `segger validate`.
 
 ## Overview
 
-The validation suite evaluates cell segmentation quality across four axes:
+| # | Metric | Abbrev. | Direction | Requires scRNA | Requires Source | CLI Flag |
+|---|--------|---------|-----------|----------------|-----------------|----------|
+| 1 | Coverage | COV | Higher = better | No | No | `--coverage` / `--cov` |
+| 2 | Positive Marker Recall | PMR | Higher = better | Yes | No | `--positive-marker-recall` / `--pmr` |
+| 3 | MECR | MECR | Lower = better | Yes* | No | `--mecr` |
+| 4 | Contamination | CTM | Lower = better | Yes | No | `--contamination` / `--ctm` |
+| 5 | Spurious Coexpression | SCE | Lower = better | No | Yes** | `--spurious-coexpression` / `--sce` |
+| 6 | Border Expression Integrity | BEI | Higher = better | No | No | `--border-expression-integrity` / `--bei` |
+| 7 | Morphological Match | MM | Higher = better | No | Yes | `--morphological-match` / `--mm` |
+| 8 | Expression Angular Uniformity | EAU | Higher = better | No | No | `--expression-angular-uniformity` / `--eau` |
 
-| Axis | Metrics |
-|------|---------|
-| **Coverage** | Transcript Assignment Coverage |
-| **Specificity** | MECR, RESOLVI Contamination, Spurious Coexpression, Border Contamination, Center-Border Similarity |
-| **Sensitivity** | Positive Marker Recall |
-| **Morphology & Spatial** | Reference Morphology Match, Transcript-Centroid Offset, Signal Doublet, Vertical Doublet |
+\* MECR requires `--anndata-path` and either `--me-gene-pairs-path` or `--scrna-reference-path`.
+\*\* Spurious Coexpression requires source data with `cell_id` and `cell_compartment` columns.
 
-### Reporting Names (Plots/Dashboard)
+For z-enabled datasets:
 
-The following display names are used in tradeoff/resource reporting.  
-CLI flags and output key names remain unchanged.
+| # | Metric | Abbrev. | Direction | CLI Flag |
+|---|--------|---------|-----------|----------|
+| 9 | Vertical Doublet | VD | Lower = better | `--vertical-doublet` / `--vd` |
 
-| Display Name | Legacy Label | CLI Flag / Key Family |
-|--------------|--------------|-----------------------|
-| Center-Border Similarity | Center-Border NCV | `--center-border-ncv`, `center_border_ncv_*` |
-| Transcript-Centroid Offset | TCO | `--tco`, `transcript_centroid_offset_fast` |
-| Vertical Doublet | VSI Doublet / Signal Hotspot Doublet | `--signal-hotspot` / `--vsi`, `signal_hotspot_doublet_*` |
+### Global Parameters
 
-### How Segmentation Parameters Affect Metrics
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--min-transcripts-per-cell` | 20 | Minimum transcripts per cell (all per-cell metrics) |
+| `--max-cells` | 10000 | Max cells sampled per metric (speed cap) |
+| `--random-seed` | 0 | Seed for cell/pair subsampling |
 
-These metrics are computed on the *output* of `segment` or `predict`. The parameter choices made upstream directly shape which metrics improve or degrade:
+### Subsampling Strategy
 
-| Parameter | Primary Metric Impact |
-|-----------|----------------------|
-| `--prediction-scale-factor` ↑ | Assignment ↑, MECR ↑, TCO ↓ |
-| `--fragment-mode` on | Assignment ↑↑, MECR ↑↑, Doublet ↑ |
-| `--alignment-loss-weight-end` ↑ | MECR ↓, Assignment risk ↓ at high values |
-| `--use-3d true` | Doublet ↓ (modest), other metrics ±1% |
-| `--min-similarity-shift` ↑ | Assignment ↑, MECR ↑ (more permissive thresholds) |
+All metrics that subsample cells use **stratified subsampling**: 10% of the budget is reserved for cells in the tails of the area and elongation distributions (largest, smallest, most elongated, most compact). The remaining budget is filled randomly. This ensures that extreme-geometry cells — the most likely segmentation failures — are always represented.
 
-See [SEGMENT.md](SEGMENT.md#empirical-parameter-guide) for detailed empirical analysis of these tradeoffs.
+### Geometry
 
-### CLI Usage
-
-```bash
-# Run all metrics
-segger validate -s segger_segmentation.parquet -i /path/to/source -a segger_segmentation.h5ad \
-    --scrna-reference-path reference.h5ad
-
-# Run specific metrics
-segger validate -s segger_segmentation.parquet --assigned --mecr -a segger_segmentation.h5ad
-
-# Auto-fetch scRNA reference by tissue type
-segger validate -s segger_segmentation.parquet -i /path/to/source \
-    --tissue-type colon -a segger_segmentation.h5ad
-```
-
-If no metric flags are provided, all metrics run. If any flag is set, only selected metrics run.
-
-### Common Inputs
-
-| Input | CLI Flag | Description |
-|-------|----------|-------------|
-| Segmentation parquet | `-s` / `--segmentation-path` | Required. Must contain `row_index` and `segger_cell_id` columns. |
-| Source data | `-i` / `--source-path` | Raw platform data (Xenium/MERSCOPE/CosMX) or SpatialData `.zarr`. Needed for source-based metrics. |
-| AnnData | `-a` / `--anndata-path` | `segger_segmentation.h5ad` for MECR. |
-| scRNA reference | `--scrna-reference-path` | `.h5ad` with cell type annotations. Used by MECR discovery, Marker Recall, RESOLVI. |
-| Tissue type | `--tissue-type` | Alternative to `--scrna-reference-path`; auto-fetches from CellxGENE Census. |
-| Output | `-o` / `--output-path` | `.tsv`, `.csv`, or `.parquet`. Default: `<seg_dir>/validation_metrics.tsv`. |
-| Random seed | `--random-seed` | Seed for cell/pair subsampling (default: 0). |
+Metrics that depend on cell shape use **PCA bounding ellipse** geometry computed from transcript point clouds. Border Expression Integrity (BEI) uses the Mahalanobis distance (from the per-cell covariance matrix) to partition transcripts into center and border zones — this is rotation-invariant and handles elongated cells correctly. Morphological Match (MM) projects transcript coordinates onto principal axes to derive semi-axes $a \geq b$ for area, elongation, and circularity features. Both approaches are fast, fully vectorized in Polars, and robust to transcript sparsity.
 
 ---
 
-## 1. Transcript Assignment Coverage
+## 1. Coverage (COV)
 
-**Function:** `compute_assignment_metrics` (line 250)
-**CLI flag:** `--assigned`
-**Direction:** Higher is better (more transcripts assigned)
+**CLI flag:** `--coverage` / `--cov` · **Direction:** higher is better
 
-### Description
+### Idea
 
-Measures the fraction of transcripts successfully assigned to a cell by the segmentation, and counts how many distinct cells and fragment objects were created.
+Measures what fraction of transcripts the segmentation successfully assigned to a cell.
 
-### Formula
+### Steps
 
-$$\text{Assignment\%} = 100 \times \frac{N_{\text{assigned}}}{N_{\text{total}}}$$
+1. Count total transcripts in the segmentation parquet.
+2. Count transcripts with a valid cell ID (non-null, not `"-1"`, not `"UNASSIGNED"`).
+3. Count distinct cell IDs and fragment IDs (prefix `fragment-`).
 
-Fragment objects are identified by cell IDs with the `fragment-` prefix.
+### Output
 
-### Output Keys
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `transcripts_total` | int | Total transcripts in segmentation file |
-| `transcripts_assigned` | int | Transcripts with a valid cell ID |
-| `transcripts_assigned_pct` | float | Percentage assigned |
-| `cells_assigned` | int | Distinct non-fragment cell IDs |
-| `fragments_assigned` | int | Distinct fragment cell IDs (prefix `fragment-`) |
-
-### Parameters
-
-No tunable parameters beyond the input data.
+| Key | Description |
+|-----|-------------|
+| `transcripts_total` | Total transcripts |
+| `transcripts_assigned` | Transcripts with a valid cell ID |
+| `coverage_pct` | $100 \times N_{\text{assigned}} / N_{\text{total}}$ |
+| `cells_assigned` | Distinct non-fragment cell IDs |
+| `fragments_assigned` | Distinct fragment cell IDs |
 
 ---
 
-## 2. Positive Marker Recall
+## 2. Positive Marker Recall (PMR)
 
-**Function:** `compute_positive_marker_recall_fast` (line 971)
-**CLI flag:** `--positive-marker-recall`
-**Direction:** Higher is better
-**Requires:** `--scrna-reference-path` or `--tissue-type`
+**CLI flag:** `--positive-marker-recall` / `--pmr` · **Direction:** higher is better · **Requires:** scRNA reference · **Typical runtime:** 5–15 s (subsampled)
 
-### Description
+### Idea
 
-Measures whether cells express the marker genes expected for their inferred cell type. Cell types are inferred by correlating each segmented cell's gene expression profile against mean cell-type profiles from a scRNA-seq reference.
+Checks whether cells express the marker genes expected for their inferred cell type. Low recall means the segmentation is splitting cells or losing characteristic transcripts.
 
-### Algorithm
+### Steps
 
-1. Build a sparse cell-by-gene count matrix from assigned transcripts.
-2. Load scRNA reference and compute mean expression profiles per cell type on shared genes.
-3. Assign each cell a host type by maximum cosine similarity to reference profiles.
-4. For each cell type, discover up to `n_markers_per_type` (default 12) marker genes where the type's mean expression exceeds the next-highest type by `min_specificity_ratio` (default 1.5x).
-5. For each cell, compute recall as the reference-weighted fraction of its marker genes that are present (count > 0):
+1. Build sparse cell × gene count matrix from assigned transcripts.
+2. Load scRNA reference; compute mean expression per cell type on shared genes.
+3. Assign each cell a type by maximum cosine similarity to reference profiles.
+4. For each type, discover up to 12 marker genes where expression exceeds the next-highest type by 1.5×.
+5. Per-cell recall — reference-weighted fraction of marker genes present:
 
 $$\text{Recall}_i = 100 \times \frac{\sum_{g \in M_t} w_g \cdot \mathbb{1}[x_{ig} > 0]}{\sum_{g \in M_t} w_g}$$
 
-where $M_t$ is the marker gene set for cell $i$'s inferred type $t$, and $w_g$ is the reference expression weight.
+6. Final score = transcript-count-weighted mean across cells.
 
-6. Final score is the transcript-count-weighted mean across cells.
+### Output
 
-### Output Keys
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `positive_marker_recall_fast` | float | Weighted mean recall (%) |
-| `positive_marker_types_used_fast` | int | Cell types with discoverable markers |
-| `positive_marker_genes_used_fast` | int | Unique marker genes used |
-| `positive_marker_cells_used_fast` | int | Cells scored |
-
-### Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `n_markers_per_type` | 12 | Max marker genes per cell type |
-| `min_specificity_ratio` | 1.5 | Required fold-change over second-highest type |
-| `min_transcripts_per_cell` | 20 | Cell filter |
-| `max_cells` | 3000 | Subsampling cap |
+| Key | Description |
+|-----|-------------|
+| `positive_marker_recall_fast` | Weighted mean recall (%) |
+| `positive_marker_types_used_fast` | Cell types with discoverable markers |
+| `positive_marker_genes_used_fast` | Unique marker genes used |
+| `positive_marker_cells_used_fast` | Cells scored |
 
 ---
 
 ## 3. MECR (Mutually Exclusive Co-expression Rate)
 
-**Function:** `compute_mecr_fast` (line 2287)
-**CLI flag:** `--mecr`
-**Direction:** Lower is better
-**Requires:** `--anndata-path` and either `--me-gene-pairs-path` or `--scrna-reference-path`
+**CLI flag:** `--mecr` · **Direction:** lower is better · **Requires:** `--anndata-path` + ME gene pairs · **Typical runtime:** 2–5 s (precomputed pairs), 30–60 s (pair discovery from scRNA)
 
-### Description
+### Idea
 
-Quantifies how often pairs of genes that should be mutually exclusive (expressed in different cell types) are co-expressed within the same cell. Over-segmentation (merging two cells) inflates MECR.
+Genes that belong to different cell types should not co-express in the same cell. High MECR suggests the segmentation is merging adjacent cells.
 
-### Formula
+### Steps
 
-ME gene pairs are loaded from a file or discovered from scRNA-seq. For each pair $(g_1, g_2)$:
-
-**Soft MECR** (default, `soft=True`):
+1. Load ME gene pairs from file or discover from scRNA-seq reference.
+2. Load cell × gene expression from AnnData.
+3. For each pair $(g_1, g_2)$, compute soft Jaccard:
 
 $$\text{MECR}(g_1, g_2) = \frac{\sum_c \min(x_{c,g_1},\; x_{c,g_2})}{\sum_c \max(x_{c,g_1},\; x_{c,g_2})}$$
 
-**Hard MECR** (`soft=False`):
+4. Overall MECR = unweighted mean across all scored pairs.
 
-$$\text{MECR}(g_1, g_2) = \frac{|\{c : x_{c,g_1} > 0 \;\land\; x_{c,g_2} > 0\}|}{|\{c : x_{c,g_1} > 0 \;\lor\; x_{c,g_2} > 0\}|}$$
+### Output
 
-The overall MECR is the unweighted mean across all scored pairs.
-
-### Output Keys
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `mecr_fast` | float | Mean MECR across pairs |
-| `mecr_pairs_used` | int | Number of gene pairs scored |
-
-### CLI Parameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--anndata-path` / `-a` | None | Path to `segger_segmentation.h5ad` |
-| `--me-gene-pairs-path` | None | TSV/CSV with two gene columns |
-| `--max-me-gene-pairs` | 500 | Max pairs subsampled |
+| Key | Description |
+|-----|-------------|
+| `mecr_fast` | Mean MECR across pairs |
+| `mecr_pairs_used` | Number of gene pairs scored |
 
 ---
 
-## 4. RESOLVI Contamination
+## 4. Contamination (CTM)
 
-**Function:** `compute_resolvi_contamination_fast` (line 818)
-**CLI flag:** `--resolvi`
-**Direction:** Lower is better
-**Requires:** `--scrna-reference-path` or `--tissue-type`
+**CLI flag:** `--contamination` / `--ctm` · **Direction:** lower is better · **Requires:** scRNA reference · **Typical runtime:** 10–30 s (subsampled)
 
-### Description
+### Idea
 
-Approximates the RESOLVI neighborhood contamination model. For each cell, it estimates what fraction of observed transcripts are better explained by neighboring cells or background than by the cell's own type.
+Models each cell's observed transcripts as a mixture of self-expression, neighbor leakage, and background. A transcript is "contaminated" if it's better explained by neighbors or background than by the cell's own type. This metric is based on the RESOLVI methodology but implemented as a faster, simplified version suitable for rapid validation.
 
-### Algorithm
+### Steps
 
 1. Infer host cell type from scRNA reference (same as Marker Recall).
-2. Build a KD-tree over cell centroids and find `k_neighbors` (default 10) nearest neighbors within `max_neighbor_distance` (default 20 $\mu$m).
-3. For each cell $i$ with host type $h$, compute expected gene expression as a mixture:
+2. Build KD-tree over cell centroids; find 10 nearest neighbors within 20 µm.
+3. For each cell $i$ with host type $h$, compute expected expression:
 
-$$\mathbf{p}_i = \alpha_{\text{self}} \cdot \mathbf{r}_h + \alpha_{\text{neighbor}} \cdot \mathbf{p}_{\text{neigh}} + \alpha_{\text{background}} \cdot \mathbf{p}_{\text{bg}}$$
+$$\mathbf{p}_i = 0.8 \cdot \mathbf{r}_h + 0.175 \cdot \mathbf{p}_{\text{neigh}} + 0.025 \cdot \mathbf{p}_{\text{bg}}$$
 
-where:
-- $\mathbf{r}_h$ = reference profile for host type $h$
-- $\mathbf{p}_{\text{neigh}} = \sum_{j \in N(i),\; j \ne h} f_j \cdot \mathbf{r}_j$ (neighbor type frequency-weighted profiles, excluding self type)
-- $\mathbf{p}_{\text{bg}} = \sum_t w_t \cdot \mathbf{r}_t$ (global background from cell-count-weighted type frequencies)
+4. Self-attribution per gene:
 
-4. Compute the self-attribution probability per gene:
+$$q_{\text{self}}^{(g)} = \frac{0.8 \cdot r_{h,g}}{p_{i,g} + \epsilon}$$
 
-$$q_{\text{self}}^{(g)} = \frac{\alpha_{\text{self}} \cdot r_{h,g}}{p_{i,g} + \epsilon}$$
-
-5. A transcript is flagged as contaminated if $q_{\text{self}}^{(g)} < \text{contam\_cutoff}$ (default 0.5).
-
+5. A transcript is contaminated if $q_{\text{self}}^{(g)} < 0.5$.
 6. Per-cell contamination % = fraction of transcripts flagged. Overall = transcript-count-weighted mean.
 
-### Output Keys
+### Output
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `resolvi_contamination_pct_fast` | float | Weighted mean contamination (%) |
-| `resolvi_contaminated_cells_pct_fast` | float | % cells with any contamination |
-| `resolvi_metric_cells_used` | int | Cells scored |
-| `resolvi_shared_genes_used` | int | Genes shared with reference |
-| `resolvi_cell_types_used` | int | Cell types in reference |
-
-### Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `k_neighbors` | 10 | Neighbors in KD-tree query |
-| `max_neighbor_distance` | 20.0 | Max distance ($\mu$m) for neighbors |
-| `alpha_self` | 0.8 | Self-expression mixing weight |
-| `alpha_neighbor` | 0.175 | Neighbor mixing weight |
-| `alpha_background` | 0.025 | Background mixing weight |
-| `contam_cutoff` | 0.5 | $q_{\text{self}}$ threshold |
-| `min_transcripts_per_cell` | 20 | Cell filter |
-| `max_cells` | 3000 | Subsampling cap |
+| Key | Description |
+|-----|-------------|
+| `contamination_pct_fast` | Weighted mean contamination (%) |
+| `contamination_cells_pct_fast` | % cells with any contamination |
+| `contamination_cells_used` | Cells scored |
+| `contamination_shared_genes_used` | Genes shared with reference |
+| `contamination_cell_types_used` | Cell types in reference |
 
 ---
 
-## 5. Spurious Coexpression
+## 5. Spurious Coexpression (SCE)
 
-**Function:** `compute_spurious_coexpression_fast` (line 1057)
-**CLI flag:** `--spurious`
-**Direction:** Lower is better
-**Requires:** `--source-path` (with `cell_id` and `cell_compartment` columns)
+**CLI flag:** `--spurious-coexpression` / `--sce` · **Direction:** lower is better · **Requires:** source data with `cell_id` and `cell_compartment` (falls back to `cell_id` alone if no compartment) · **Typical runtime:** 15–40 s per method (full dataset, no subsampling)
 
-### Description
+### Idea
 
-Detects gene pairs whose co-expression in segmented cells is suspiciously high relative to their nuclear co-occurrence, suggesting the segmentation is merging transcripts from different cells.
+Nuclear transcripts define the ground truth: genes that are semi-exclusive within nuclei (low co-occurrence Jaccard) should remain exclusive in segmented cells. Any excess co-expression above the nuclear baseline is contamination from misplaced boundaries that merge neighboring cells. This metric is **reference-free** — it derives gene pairs directly from the source data rather than an external scRNA reference.
 
-### Algorithm
+### Cytoplasmic normalization
 
-1. **Spatial co-occurrence:** Subsample source transcripts, build a KD-tree (radius default 10 $\mu$m), compute binary Jaccard similarity between gene pairs based on spatial proximity.
+When cell boundaries expand beyond the nucleus, genes with high cytoplasmic-to-nuclear ratio (e.g. mucins, complement factors, secreted proteins) naturally appear more in cells. This is **not** contamination. For each gene $g$, we compute the cytoplasmic ratio from source data:
 
-2. **Nuclear baseline:** From nuclear transcripts (compartment == 2) in source data, build a cell-by-gene binary matrix and compute Jaccard similarity.
+$$r_g = \frac{n_{\text{cytoplasm}}(g)}{n_{\text{nucleus}}(g)}$$
 
-3. **Discover spurious pairs:** Select gene pairs where:
-   - `spatial_score / nuclear_score > ratio_cutoff` (default 2.0)
-   - `nuclear_score < nuclear_max` (default 0.001)
-   - `spatial_score > min_spatial_score` (default 0.001)
-   - Both genes have sufficient support (`min_support` default 20)
+Cytoplasmic transcripts are those assigned to a valid cell but not overlapping the nucleus. Each pair's weight is then penalized:
 
-4. **Score in segmented cells:** For each discovered pair $(g_i, g_j)$, compute Jaccard in the segmented cell-by-gene matrix:
+$$w_{\text{adjusted}} = w_{\text{base}} \cdot \frac{1}{\sqrt{(1 + r_{g_a})(1 + r_{g_b})}}$$
 
-$$J_{\text{seg}}(g_i, g_j) = \frac{\sum_c \min(x_{c,g_i}, x_{c,g_j})}{\sum_c \max(x_{c,g_i}, x_{c,g_j})}$$
+This down-weights pairs where both genes are heavily cytoplasmic while keeping full weight on nuclear-gene pairs that are more diagnostic of genuine boundary contamination. This approach is similar to ProSeg's nucleus → expanded method but adds an explicit correction for cytoplasmic localization (which ProSeg acknowledges as a caveat but does not normalize for).
 
-5. **Excess co-expression:** $\text{excess} = \max(J_{\text{seg}} - J_{\text{nuc}}, 0)$, weighted by $\log(1 + \max(\text{occur}_{g_i}, \text{occur}_{g_j}))$.
+### Platform handling
 
-### Output Keys
+The metric uses the standardized `cell_compartment` field (2=nucleus, 1=cytoplasm, 0=extracellular) produced by all Segger preprocessors:
+- **Xenium:** from `overlaps_nucleus` (boolean)
+- **CosMx:** from `CellComp` (categorical: Nuclear, Membrane, Cytoplasm, None)
+- **MERSCOPE:** inferred from nucleus/cell assignment columns
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `spurious_coexpression_fast` | float | Weighted mean excess Jaccard |
-| `spurious_pairs_used_fast` | int | Pairs scored in segmented data |
-| `spurious_pairs_discovered_fast` | int | Pairs passing discovery filters |
-| `spurious_source_transcripts_used_fast` | int | Source transcripts in spatial analysis |
+If no compartment column is available, all assigned transcripts are treated as nuclear (cytoplasmic ratios become zero) and the metric reverts to an uncorrected version.
 
-### Parameters
+### Steps
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `spatial_radius` | 10.0 | KD-tree radius ($\mu$m) |
-| `max_spatial_transcripts` | 10,000 | Subsampling cap for spatial step |
-| `min_gene_count` | 20 | Min occurrences per gene |
-| `min_support` | 20 | Min co-occurrence support |
-| `ratio_cutoff` | 2.0 | Spatial/nuclear ratio threshold |
-| `nuclear_max` | 0.001 | Max nuclear Jaccard |
-| `min_spatial_score` | 0.001 | Min spatial Jaccard |
-| `max_pairs` | 200 | Top pairs retained |
-| `min_transcripts_per_cell` | 20 | Cell filter |
-| `max_cells` | 3000 | Subsampling cap |
+1. **Nuclear gene-presence matrix:** Filter to nuclear transcripts (compartment == nucleus_value), exclude control probes and unassigned codewords, and build per-nucleus binary gene-presence matrix using all nuclei (no subsampling).
+2. **Cytoplasmic ratios:** For each gene, compute $r_g$ from transcript counts inside vs outside nuclei.
+3. **Co-occurrence Jaccard:** For each gene pair, compute nuclear co-occurrence:
 
----
+$$J_{\text{nuc}}(g_a, g_b) = \frac{|N_a \cap N_b|}{|N_a \cup N_b|}$$
 
-## 6. Center-Border Similarity (formerly Center-Border NCV)
+4. **Discover semi-exclusive pairs:** Select pairs where $J_{\text{nuc}} < 0.10$ and both genes occur in at least 1% of nuclei. Rank by lowest nuclear score, cap at 500 pairs. The relaxed threshold (0.10 vs strictly exclusive) captures semi-exclusive pairs where contamination is actually detectable.
+5. **Score in segmented cells:** Build full cell × gene count matrix from ALL segmented cells. The gene column space is fixed to the nuclear gene list so all methods score the same pairs. Per-cell counts are normalized by total transcripts. For each pair, compute expression-weighted soft Jaccard:
 
-**Function:** `compute_center_border_ncv_fast` (line 1225)
-**CLI flag:** `--center-border-ncv`
-**Direction:** Higher is better
+$$J_{\text{seg}}(g_a, g_b) = \frac{\sum_c \min(x_{c,g_a},\; x_{c,g_b})}{\sum_c \max(x_{c,g_a},\; x_{c,g_b})}$$
 
-### Description
+6. **Excess co-expression:** $\text{excess} = \max(J_{\text{seg}} - J_{\text{nuc}}, 0)$, weighted by the cytoplasm-adjusted pair weight.
 
-Tests whether a cell's border region has a gene expression profile more similar to its own center than to its neighbors. Well-segmented cells should have internally consistent expression; poorly segmented cells leak neighbor signal at their borders.
+### Output
 
-### Algorithm
-
-1. For each cell, define center and border zones using an eroded bounding box (erosion = `erosion_fraction` x min side, default 0.3).
-
-2. Build gene expression vectors for center, border, and averaged neighbors (via KD-tree, `n_neighbors` default 10).
-
-3. Compute cosine similarities:
-   - $\text{sim}_{\text{center-border}} = \cos(\mathbf{v}_{\text{center}}, \mathbf{v}_{\text{border}})$
-   - $\text{sim}_{\text{border-neighbor}} = \cos(\mathbf{v}_{\text{border}}, \mathbf{v}_{\text{neighbor}})$
-
-4. Per-cell score:
-
-$$\text{ratio} = \frac{\text{sim}_{\text{border-neighbor}}}{\text{sim}_{\text{center-border}}}$$
-
-$$\text{score} = \frac{1}{1 + \max(0, \text{ratio} - 1)}$$
-
-A score of 1.0 means the border is more similar to the center than to neighbors. Lower scores indicate border contamination.
-
-### Output Keys
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `center_border_ncv_score_fast` | float | Weighted mean score [0, 1] |
-| `center_border_ncv_ratio_fast` | float | Weighted mean raw ratio |
-| `center_border_ncv_cells_used_fast` | int | Cells scored |
-
-### CLI Parameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--border-erosion-fraction` | 0.3 | Fraction defining center vs border |
-| `--border-min-transcripts-per-cell` | 20 | Min transcripts per cell |
-| `--border-max-cells` | 3000 | Subsampling cap |
+| Key | Description |
+|-----|-------------|
+| `spurious_coexpression_fast` | Weighted mean excess Jaccard (cyto-normalized) |
+| `spurious_pairs_used_fast` | Pairs scored in segmented data |
+| `spurious_pairs_discovered_fast` | Semi-exclusive pairs discovered from nuclei |
+| `spurious_source_transcripts_used_fast` | Nuclear transcripts used as ground truth |
 
 ---
 
-## 7. Border Contamination
+## 6. Border Expression Integrity (BEI)
 
-**Function:** `compute_border_contamination_fast` (line 1520)
-**CLI flag:** `--border-contamination`
-**Direction:** Lower is better
+**CLI flag:** `--border-expression-integrity` / `--bei` · **Direction:** higher is better · **Typical runtime:** 10–30 s (subsampled)
 
-### Description
+### Idea
 
-Measures whether a cell's border region has disproportionately high transcript density compared to its center, which can indicate that transcripts from neighboring cells are leaking into the periphery.
+A well-segmented cell's border region should have gene expression more similar to its own center than to its neighbors' expression. Low scores indicate the border is contaminated by neighbor signal.
 
-### Algorithm
+### Steps
 
-1. Define center and border regions using the same eroded bounding box as Center-Border Similarity.
+1. Compute per-cell **covariance statistics** (mean, variance, correlation of x/y coordinates) via a single Polars `group_by`.
+2. Compute the **Mahalanobis distance** $d^2$ for each transcript relative to its cell centroid. This defines a PCA bounding ellipse that is rotation-invariant and naturally handles elongated cells:
 
-2. Compute area-normalized densities:
+$$d^2 = \frac{1}{1 - \rho^2}\left(\tilde{x}^2 - 2\rho\,\tilde{x}\,\tilde{y} + \tilde{y}^2\right)$$
 
-$$\rho_{\text{center}} = \frac{N_{\text{center}}}{A_{\text{center}}} \qquad \rho_{\text{border}} = \frac{N_{\text{border}}}{A_{\text{border}}}$$
+   where $\tilde{x}, \tilde{y}$ are standardized coordinates and $\rho$ is the per-cell correlation.
 
-3. Border enrichment:
+3. **Classify** each transcript as center or border using a per-cell quantile threshold: transcripts with $d^2$ in the inner $(1 - \text{erosion\_fraction})$ quantile are center; the rest are border. With the default `erosion_fraction=0.3`, the inner 70% of transcripts (by elliptical distance) form the center zone.
+4. Build per-cell gene-expression dicts for center, border, and full profiles.
+5. Build **neighbor profiles** via a KD-tree on cell **centroids** (not transcripts — this is tiny, only ~3000 points). For each cell, average the full expression of its $k=10$ nearest neighboring cells.
+6. Compute cosine similarities:
+   - $\text{sim}_{cb} = \cos(\mathbf{v}_{\text{center}},\; \mathbf{v}_{\text{border}})$
+   - $\text{sim}_{bn} = \cos(\mathbf{v}_{\text{border}},\; \mathbf{v}_{\text{neighbor}})$
+7. Per-cell score:
 
-$$E = \frac{\rho_{\text{border}}}{\rho_{\text{center}}}$$
+$$\text{ratio} = \frac{\text{sim}_{bn}}{\text{sim}_{cb}}, \qquad \text{score} = \frac{1}{1 + \max(0,\; \text{ratio} - 1)}$$
 
-4. Contamination score:
+8. Final = transcript-count-weighted mean.
 
-$$\text{contam} = \max(E - 1, 0)$$
+### Why PCA ellipse instead of bounding box
 
-5. A cell is flagged as contaminated if $E > \text{threshold}$ (default 1.25).
+The original implementation used an axis-aligned bounding box eroded by a fixed fraction. This misclassifies transcripts in elongated or rotated cells — the corners of the box are outside the real cell shape, inflating the border zone with center-like transcripts and compressing scores. The PCA ellipse (Mahalanobis distance) adapts to each cell's shape and orientation, giving more accurate center/border partitioning. Empirically, both methods produce the same relative rankings between segmentation methods, but the ellipse version provides better discrimination at the top of the range (scores span 0.87–0.98 vs 0.75–0.96 for bbox) with no additional computational cost.
 
-### Output Keys
+### Output
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `border_contamination_fast` | float | Weighted mean contamination score |
-| `border_enrichment_fast` | float | Weighted mean enrichment ratio |
-| `border_excess_pct_fast` | float | $(E - 1) \times 100$ |
-| `border_contaminated_cells_pct_fast` | float | % cells exceeding threshold |
-| `border_metric_cells_used` | int | Cells scored |
-
-### CLI Parameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--border-erosion-fraction` | 0.3 | Fraction defining center vs border |
-| `--border-min-transcripts-per-cell` | 20 | Min transcripts per cell |
-| `--border-max-cells` | 3000 | Subsampling cap |
-| `--border-contaminated-enrichment-threshold` | 1.25 | Per-cell enrichment cutoff |
+| Key | Description |
+|-----|-------------|
+| `border_expression_integrity_fast` | Weighted mean score [0, 1] |
+| `border_expression_integrity_ratio_fast` | Weighted mean raw ratio |
+| `border_expression_integrity_cells_used_fast` | Cells scored |
 
 ---
 
-## 8. Reference Morphology Match
+## 7. Morphological Match (MM)
 
-**Function:** `compute_reference_morphology_match_fast` (line 1419)
-**CLI flag:** `--reference-morphology`
-**Direction:** Higher is better
-**Requires:** `--source-path` (with `cell_id` column in both source and segmentation)
+**CLI flag:** `--morphological-match` / `--mm` · **Direction:** higher is better · **Requires:** source data with `cell_id` · **Typical runtime:** 10–30 s (subsampled)
 
-### Description
+### Idea
 
-Compares the morphological properties (area, elongation, circularity) of segmented cells against reference cells from the source platform. Each segmented cell is matched to its best-overlapping reference cell.
+Compares the **distributional** shape similarity of segmented cells against reference cells from the source platform. All three geometric features are derived from the **PCA bounding ellipse** — the transcript point cloud is projected onto principal axes, and the half-ranges along each axis become the semi-axes $a \geq b$ of a bounding ellipse. This is fast, rotation-invariant, and robust to transcript sparsity.
 
-### Algorithm
+### Features
 
-1. Compute bounding-box geometry for both segmented and reference cells:
-   - **Area:** $A = \text{width} \times \text{height}$
-   - **Elongation:** $E = \max(w, h) / \min(w, h)$
-   - **Circularity:** $\Gamma = 4\pi A / P^2$ where $P = 2(w + h)$
+| Feature | Formula | Range | Interpretation |
+|---------|---------|-------|----------------|
+| **Area** | $\pi \cdot a \cdot b$ | $> 0$ (µm²) | Cell extent (ellipse area) |
+| **Elongation** | $a / b$ | $\geq 1.0$ | Axis ratio; 1.0 = circular |
+| **Circularity** | $b / a$ | $[0, 1]$ | Ellipse area / minimum bounding circle area; 1.0 = circular |
 
-2. Match each segmented cell to the reference cell with maximum transcript overlap.
+### Reference Space
 
-3. Per-cell morphology similarity (average of three components):
+| Flag | Description |
+|------|-------------|
+| `--morphological-match-space cell` | Compare against full cell boundaries (default) |
+| `--morphological-match-space nucleus` | Compare against nuclear compartment only (area comparison is skipped since nuclear area ≠ cell area) |
+| `--morphological-match-space auto` | Use nucleus when compartment column available, otherwise cell |
+| `--morphological-match-nucleus-value N` | Compartment value for nucleus (default: 2) |
 
-$$S_{\text{area}} = \exp\left(-\left|\ln\frac{A_{\text{pred}}}{A_{\text{ref}}}\right|\right)$$
+### Steps
 
-$$S_{\text{elong}} = \exp\left(-\left|\ln\frac{E_{\text{pred}}}{E_{\text{ref}}}\right|\right)$$
+1. Compute per-cell PCA bounding ellipse geometry for both segmented and reference cells (area, elongation, circularity as defined above).
+2. If `reference_space == "nucleus"`: filter source transcripts to compartment == nucleus\_value. In this mode, area comparison is excluded.
+3. Compare distributions via **Jensen-Shannon Divergence** (KDE-based, captures shape differences) and **Wasserstein distance** (captures location shift) for each feature.
+4. Final score: $1 - \overline{\text{JSD}} / \ln 2$ so 1.0 = identical distributions.
 
-$$S_{\text{circ}} = \exp\left(-|\Gamma_{\text{pred}} - \Gamma_{\text{ref}}|\right)$$
+### Output
 
-$$\text{score} = \frac{S_{\text{area}} + S_{\text{elong}} + S_{\text{circ}}}{3}$$
-
-Weighted by overlap count.
-
-### Output Keys
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `reference_morphology_match_fast` | float | Weighted mean score [0, 1] |
-| `reference_morphology_cells_used_fast` | int | Matched cell pairs scored |
-
-### Parameters
-
-No additional tunable CLI parameters. Uses default geometry from bounding boxes.
-
----
-
-## 9. Transcript-Centroid Offset (formerly TCO)
-
-**Function:** `compute_transcript_centroid_offset_fast` (line 1709)
-**CLI flag:** `--tco`
-**Direction:** Higher is better
-
-### Description
-
-Measures how well-centered a cell's transcript cloud is relative to its bounding box center. Cells where transcripts are skewed to one side may indicate poor boundary placement.
-
-### Formula
-
-1. Transcript centroid: $(\bar{x}, \bar{y})$ = mean of transcript coordinates.
-2. Bounding box center: $(c_x, c_y)$ = midpoint of min/max coordinates.
-3. Offset distance:
-
-$$d = \sqrt{(\bar{x} - c_x)^2 + (\bar{y} - c_y)^2}$$
-
-4. Score (normalized by cell size):
-
-$$\text{Transcript-Centroid Offset} = \text{clip}\left(1 - \frac{d}{\sqrt{A} + \epsilon},\; 0,\; 1\right)$$
-
-where $A = \text{width} \times \text{height}$.
-
-### Output Keys
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `transcript_centroid_offset_fast` | float | Weighted mean transcript-centroid offset score [0, 1] |
-| `tco_metric_cells_used` | int | Cells scored |
-
-### CLI Parameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--tco-min-transcripts-per-cell` | 20 | Min transcripts per cell |
-| `--tco-max-cells` | 3000 | Subsampling cap |
+| Key | Description |
+|-----|-------------|
+| `morphological_match_fast` | JSD-based similarity [0, 1] (higher = more similar) |
+| `morphological_match_cells_used_fast` | min(predicted cells, reference cells) |
+| `morphological_match_reference_space_fast` | Resolved reference space (`cell`, `nucleus`, or `nucleus_missing`) |
+| `mm_jsd_area_fast` | Jensen-Shannon divergence for area |
+| `mm_jsd_elongation_fast` | Jensen-Shannon divergence for elongation |
+| `mm_jsd_circularity_fast` | Jensen-Shannon divergence for circularity |
+| `mm_wasserstein_area_fast` | Wasserstein distance for area |
+| `mm_wasserstein_elongation_fast` | Wasserstein distance for elongation |
+| `mm_wasserstein_circularity_fast` | Wasserstein distance for circularity |
 
 ---
 
-## 10. Signal Doublet (Z-spread)
+## 8. Expression Angular Uniformity (EAU)
 
-**Function:** `compute_signal_doublet_fast` (line 1796)
-**CLI flag:** `--signal-doublet`
-**Direction:** Lower is better (fewer doublet-like cells)
-**Requires:** `z` column in transcript data
+**CLI flag:** `--expression-angular-uniformity` / `--eau` · **Direction:** higher is better · **Typical runtime:** 5–15 s (subsampled)
 
-### Description
+### Idea
 
-Identifies cells whose z-axis spread is abnormally wide, suggesting they may span two vertically stacked cells (doublets).
+Measures whether all angular sectors of a cell express the same genes. If a boundary incorrectly captures transcripts from a specific neighbour, the angular sector facing that neighbour will have a different gene expression profile from the opposite side. This directly detects **directional contamination**.
 
-### Algorithm
+Unlike simple spatial balance (counting transcripts per side), EAU compares *gene expression profiles* via cosine similarity — two sectors can have different transcript counts but still score high if they express the same genes.
 
-1. Compute per-cell z-coordinate standard deviation.
-2. Define expected z-spread as the median $\sigma_z$ across all cells with $\sigma_z > 0$.
-3. Compute per-cell integrity:
+### Why PCA ellipse normalisation
 
-$$I_i = \text{clip}\left(\frac{\tilde{\sigma}_z}{\sigma_{z,i} + \epsilon},\; 0,\; 1\right)$$
+Before binning into sectors, transcript coordinates are standardised by per-cell standard deviation along x and y: $\tilde{x} = (x - c_x)/\sigma_x$, $\tilde{y} = (y - c_y)/\sigma_y$. This maps the cell's PCA bounding ellipse to a unit circle, ensuring that angular sectors are equally sized in the cell's natural coordinate frame. Without this, elongated cells would have most transcripts in 2 of 4 sectors, making the perpendicular sectors too sparse for reliable expression vectors.
 
-4. Flag cell as doublet-like if $I_i < \text{threshold}$ (default 0.6).
-5. Report the transcript-count-weighted fraction of flagged cells.
+### Steps
 
-### Output Keys
+1. **PCA ellipse centroid:** Per-cell mean $(c_x, c_y)$ and standard deviations $(\sigma_x, \sigma_y)$.
+2. **Normalise:** $\tilde{x}_i = (x_i - c_x)/\sigma_x$, $\tilde{y}_i = (y_i - c_y)/\sigma_y$.
+3. **Angular sectors:** $\theta_i = \text{atan2}(\tilde{y}_i, \tilde{x}_i)$, bin into $K = 4$ quadrants.
+4. **Filter:** Only score cells where every sector has $\geq 5$ transcripts.
+5. **Gene expression vectors:** Per sector, count transcripts per gene → sparse vector $\mathbf{v}_k$.
+6. **Pairwise cosine similarity:** For all $\binom{K}{2} = 6$ pairs:
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `signal_doublet_like_fraction_fast` | float | Weighted doublet-like fraction |
-| `signal_metric_cells_used` | int | Cells scored |
+$$\cos(\mathbf{v}_i, \mathbf{v}_j) = \frac{\mathbf{v}_i \cdot \mathbf{v}_j}{\|\mathbf{v}_i\| \cdot \|\mathbf{v}_j\|}$$
 
-### CLI Parameters
+7. **Per-cell score** = mean of the 6 pairwise cosine similarities.
+8. **Final** = transcript-count-weighted mean across sampled cells.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--signal-min-transcripts-per-cell` | 20 | Min transcripts per cell |
-| `--signal-max-cells` | 3000 | Subsampling cap |
-| `--signal-doublet-threshold` | 0.6 | Integrity threshold for doublet flag |
+### Interpretation
+
+| Score range | Meaning |
+|-------------|---------|
+| 0.6–0.8 | Clean — all sectors express similar genes |
+| 0.4–0.6 | Moderate — some angular asymmetry, possible contamination |
+| < 0.4 | Significant directional contamination from neighbours |
+
+### Output
+
+| Key | Description |
+|-----|-------------|
+| `expression_angular_uniformity_fast` | Weighted mean pairwise cosine similarity [0, 1] |
+| `eau_cells_used` | Cells scored (cells with all sectors having ≥ 5 transcripts) |
 
 ---
 
-## 11. Vertical Doublet (formerly Signal Hotspot Doublet / VSI)
+## 9. Vertical Doublet (VD)
 
-**Function:** `compute_signal_hotspot_doublet_fast` (line 1914)
-**CLI flags:** `--signal-hotspot` or `--vsi`
-**Direction:** Lower is better (fewer doublet-like cells)
-**Requires:** `--source-path` with z-coordinates
+**CLI flag:** `--vertical-doublet` / `--vd` · **Direction:** lower is better · **Requires:** source data with z-coordinates · **Typical runtime:** 5–15 s
 
-### Description
+### Idea
 
-A more targeted doublet metric that restricts scoring to spatial "hotspot" pixels where vertical signal integrity is already low. This focuses the doublet estimate on regions where the tissue is thick or layered.
+Detects cells that span two vertically stacked cell layers by focusing on spatial "hotspot" regions where z-plane gene expression is already inconsistent. Only cells overlapping these hotspots are scored, making the metric robust to single-layer tissue.
 
-### Algorithm
+### Steps
 
-1. **Pixel binning:** Bin source transcripts into $(x, y)$ grid pixels of size `grid_size` (default 3.0 $\mu$m).
+1. **Pixel binning:** Bin source transcripts into $(x, y)$ grid pixels (3 µm).
+2. **Per-pixel z-halves:** For each pixel, split transcripts at the per-pixel median z. Compute gene-expression cosine similarity between upper and lower halves:
 
-2. **Plane-pair cosine similarity:** For each pixel, compute gene-composition cosine similarity between adjacent z-planes:
+$$\text{integrity} = \cos(\mathbf{v}_{\text{lower}}, \mathbf{v}_{\text{upper}})$$
 
-$$\text{cosine}(z, z+1) = \frac{\mathbf{v}_z \cdot \mathbf{v}_{z+1}}{\|\mathbf{v}_z\| \|\mathbf{v}_{z+1}\|}$$
-
-where $\mathbf{v}_z$ is the gene count vector at plane $z$.
-
-3. **Per-pixel integrity:** Weighted average of plane-pair cosines (weighted by transcript count per pair). Pixels with < `min_pixel_signal` (default 3) transcripts are excluded.
-
-4. **Hotspot detection:** Apply a knee-point algorithm on sorted pixel integrity values to find a low-integrity cutoff. Pixels below this cutoff are "hotspots."
-
+3. **Gaussian smoothing:** Apply weighted Gaussian filter ($\sigma = 2.0$ pixels ≈ 6 µm) to the $(1 - \text{integrity})$ score map, similar to ovrlpy's message-passing z-center smoothing. Only data pixels contribute; no-data regions do not bleed in.
+4. **Hotspot detection:** Use `peak_local_max` on the smoothed doublet score map (min distance = 10 pixels, threshold = 0.5) to find hotspot peaks.
 5. **Per-cell scoring:** For cells overlapping hotspot pixels:
-   - Split transcripts at the median z-plane.
-   - Compute cosine similarity of gene expression between upper and lower halves (cells with < `min_side_transcripts` default 5 on the minor side get coherence = 1.0).
-   - Flag as doublet-like if coherence < `doublet_threshold` (default 0.6).
+   - Split transcripts at the per-cell median z.
+   - Compute cosine similarity between upper and lower halves.
+   - Cells with < 5 transcripts on the minor side get coherence = 1.0.
+   - Flag as doublet if coherence < 0.6.
+6. **Hotspot-restricted percentage** (`vertical_doublet_pct_fast`): hotspot-pixel-weighted fraction of flagged cells among hotspot-overlapping cells only.
+7. **Global percentage** (`vertical_doublet_global_pct_fast`): flagged cells / total assigned cells. This is more interpretable for cross-method comparison.
 
-6. Report weighted fraction of flagged cells (weighted by hotspot pixel count).
+> **Note:** The hotspot-restricted percentage (`pct_fast`) has an inherently biased denominator — it only considers cells in low-integrity regions, so values are high (50–95%) even for good segmentations. For absolute interpretation, use the global percentage (`global_pct_fast`), which typically ranges 0.4–1.5%. The hotspot-restricted percentage is still useful for relative ranking.
 
-### Output Keys
+### Output
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `signal_hotspot_doublet_fraction_fast` | float | Weighted doublet-like fraction |
-| `signal_hotspot_cutoff_fast` | float | Auto-detected integrity cutoff |
-| `signal_hotspot_pixels_used_fast` | int | Hotspot pixels |
-| `signal_hotspot_candidate_cells_fast` | int | Cells overlapping hotspots |
-| `signal_hotspot_metric_cells_used_fast` | int | Cells meeting transcript minimum |
-| `signal_hotspot_cells_scored_fast` | int | Cells with enough transcripts on both sides |
-
-### CLI Parameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--signal-hotspot-grid-size` | 3.0 | Pixel bin size ($\mu$m) |
-| `--signal-min-transcripts-per-cell` | 20 | Min transcripts per cell |
-| `--signal-max-cells` | 3000 | Subsampling cap |
-| `--signal-doublet-threshold` | 0.6 | Coherence threshold for doublet flag |
+| Key | Description |
+|-----|-------------|
+| `vertical_doublet_pct_fast` | Hotspot-restricted weighted doublet % (biased high — see note) |
+| `vertical_doublet_global_pct_fast` | Doublet cells / total cells (%) — more interpretable |
+| `vertical_doublet_cutoff_fast` | Hotspot integrity threshold |
+| `vertical_doublet_pixels_used_fast` | Hotspot pixels detected |
+| `vertical_doublet_candidate_cells_fast` | Cells overlapping hotspots |
+| `vertical_doublet_metric_cells_used_fast` | Cells meeting transcript minimum |
+| `vertical_doublet_cells_scored_fast` | Cells with enough transcripts on both sides |
+| `vertical_doublet_total_cells_fast` | Total assigned cells in dataset |
 
 ---
 
-## Quick Reference Table
+## Metric Relationships and Interpretation
 
-| # | Metric | Direction | Requires scRNA | Requires Source | Requires Z | CLI Flag |
-|---|--------|-----------|----------------|-----------------|------------|----------|
-| 1 | Transcript Assignment Coverage | Higher = better | No | No | No | `--assigned` |
-| 2 | Positive Marker Recall | Higher = better | Yes | No | No | `--positive-marker-recall` |
-| 3 | MECR | Lower = better | Yes* | No | No | `--mecr` |
-| 4 | RESOLVI Contamination | Lower = better | Yes | No | No | `--resolvi` |
-| 5 | Spurious Coexpression | Lower = better | No | Yes** | No | `--spurious` |
-| 6 | Center-Border Similarity | Higher = better | No | No | No | `--center-border-ncv` |
-| 7 | Border Contamination | Lower = better | No | No | No | `--border-contamination` |
-| 8 | Reference Morphology Match | Higher = better | No | Yes | No | `--reference-morphology` |
-| 9 | Transcript-Centroid Offset | Higher = better | No | No | No | `--tco` |
-| 10 | Signal Doublet (Z-spread) | Lower = better | No | No | Yes | `--signal-doublet` |
-| 11 | Vertical Doublet | Lower = better | No | Yes | Yes | `--signal-hotspot` / `--vsi` |
+The metrics above measure segmentation quality from different angles. Understanding how they relate — and when they disagree — is essential for drawing correct conclusions.
 
-\* MECR requires `--anndata-path` and either `--me-gene-pairs-path` or `--scrna-reference-path` for pair discovery.
-\*\* Spurious Coexpression requires source data with `cell_id` and `cell_compartment` columns (nuclear compartment).
+### What each metric is sensitive to
+
+| Failure mode | Primary metrics | Secondary metrics | Blind spots |
+|---|---|---|---|
+| **Under-segmentation** (merging neighbors) | MECR, Spurious Coexpression (SCE) | Contamination (CTM), Border Expression Integrity (BEI) | PMR may stay high if one cell type dominates the merged cell |
+| **Over-segmentation** (splitting cells) | Positive Marker Recall (PMR) | Coverage (COV) (if fragments are lost) | MECR is unaffected — split cells don't gain foreign genes |
+| **Boundary shift** (correct count, wrong placement) | Border Expression Integrity (BEI), Expression Angular Uniformity (EAU) | Contamination (CTM) | MECR and PMR are insensitive to small shifts that don't change gene composition |
+| **Vertical merging** (stacked cells in z) | Vertical Doublet (VD) | MECR (if stacked cells are different types) | 2D-only metrics miss this entirely |
+
+### Metrics that should agree
+
+**MECR and Spurious Coexpression** both detect under-segmentation through gene co-occurrence, but from different angles. MECR uses scRNA-derived mutually exclusive pairs; Spurious uses nuclear transcripts as ground truth. When both are elevated, under-segmentation is highly likely. When they disagree, check whether the scRNA reference matches the tissue (affects MECR) or whether nuclear transcript quality is sufficient (affects Spurious).
+
+**Contamination (CTM) and Border Expression Integrity (BEI)** both measure boundary integrity. Contamination models per-transcript attribution to self vs neighbors; BEI tests whether border gene expression resembles the cell's center or its neighbors. They should correlate, but Contamination is reference-dependent (requires cell typing) while BEI is reference-free.
+
+**Expression Angular Uniformity (EAU) and Border Expression Integrity (BEI)** both assess boundary placement but from different angles. EAU measures angular expression consistency (do all sectors of the cell express the same genes?), while BEI measures gene-expression similarity between center and border zones. EAU detects directional contamination from specific neighbours, while BEI detects diffuse contamination from the border region.
+
+### Known disagreements and why they occur
+
+**Low Contamination with low BEI score.** Contamination can underestimate contamination for very large cells: when boundaries extend far from neighbors, the neighbor-expression term in the mixture model contributes little, even if the boundary is misplaced. BEI is more robust here because it compares border expression directly against neighbors regardless of distance.
+
+**High PMR with high MECR.** This happens when cells are partially merged: a cell that absorbs some transcripts from a neighbor may still express most of its own markers (keeping PMR high) while gaining foreign genes (raising MECR). PMR measures recall of expected signal; MECR measures presence of unexpected signal. Both can be independently informative.
+
+**High BEI score with high Spurious Coexpression.** BEI evaluates individual cells in isolation, while Spurious Coexpression operates on the full population. A segmentation can have clean individual boundaries (high BEI) but systematic low-level leakage that only becomes visible when aggregated across thousands of cells.
+
+**EAU disagreeing with everything else.** EAU can flag cells near tissue boundaries or at interfaces between very different cell types, even with correct segmentation — the expression profile naturally varies with direction in such locations. If EAU is low but other contamination metrics (MECR, Contamination) are fine, the angular asymmetry is likely biological rather than a segmentation error.
+
+### Interpreting metrics as a group
+
+No single metric captures all aspects of segmentation quality. The recommended interpretation strategy:
+
+1. **Start with Coverage (COV)** to check overall yield — if too few transcripts are assigned, all downstream metrics are unreliable.
+2. **Use MECR + PMR together** to distinguish under- vs over-segmentation. High MECR = merging. Low PMR = splitting. Both high = severe boundary errors.
+3. **Use Border Expression Integrity (BEI)** as the primary reference-free quality check. It is robust to cell size variation and does not require external data.
+4. **Use Contamination (CTM)** when an scRNA reference is available to quantify the magnitude of neighbor leakage. Cross-check against MECR — if Contamination is low but MECR is high, the reference may not capture the relevant cell types.
+5. **Use Morphological Match (MM)** to check whether cell shapes are biologically plausible. This catches extreme merging or fragmentation that changes the area/elongation distributions.
+6. **Use Spurious Coexpression (SCE) and Vertical Doublet (VD)** as specialized checks when source data is available. Spurious is most informative when nuclear transcripts cleanly separate cell types; Vertical Doublet only applies to multi-layer tissue with z-coordinates.
+
+### The sensitivity–specificity tradeoff
+
+All segmentation methods face a fundamental tradeoff between capturing more transcripts (higher sensitivity) and avoiding contamination (higher specificity). This directly affects how metrics move:
+
+- **Expanding boundaries** (larger scale factor, lower similarity threshold) increases Coverage and PMR (more transcripts → more markers detected), but raises MECR, Spurious Coexpression, and Contamination. BEI may also increase because larger cells have more center-dominated profiles.
+- **Tightening boundaries** (smaller scale factor, higher threshold) improves Contamination metrics and Spurious Coexpression, but reduces Coverage and PMR. Below a certain point, cells become too sparse for any metric to produce reliable results.
+
+The optimal operating point depends on the downstream analysis. Cell typing tolerates moderate contamination but needs enough transcripts per cell. Differential expression analysis requires cleaner cells even at the cost of lower coverage. Spatial analyses (cell neighborhoods, ligand-receptor) are sensitive to both under- and over-assignment.
+
+When comparing methods, look for those that push the Pareto frontier — achieving better specificity *at the same sensitivity level*, or vice versa. A method with fewer assigned transcripts but cleaner cells may be genuinely better than one that assigns everything but contaminates heavily.
+
+### How alignment loss helps decontamination
+
+Segger's alignment loss (v0.2.0+) adds a training-time constraint based on mutually exclusive gene pairs discovered from an scRNA reference. During training, it penalizes the model when transcripts from ME gene pairs are assigned to the same cell — effectively teaching the boundary predictor to respect cell-type exclusivity.
+
+This has measurable effects on validation metrics:
+
+- **Contamination (CTM)** and **Spurious Coexpression (SCE)** both decrease because the model learns to avoid merging cells with conflicting gene programs.
+- **PMR** stays high or improves because the model's tighter boundaries still capture cell-type-appropriate transcripts.
+- **Coverage (COV)** may decrease slightly — the alignment constraint makes the model more conservative about ambiguous transcripts near cell borders.
+
+The alignment loss weight (`--alignment-loss-weight-end`) controls the strength of this constraint. Higher values produce cleaner cells but may reduce assignment. The interpolation schedule ramps the weight from zero during training so the model first learns basic spatial structure before the ME constraint takes effect.
+
+**Important:** The scRNA reference used for alignment loss during training does not need to be the same one used for validation. Using a different reference for validation avoids circular evaluation — the model was trained to satisfy one set of ME constraints, and validation checks whether the resulting segmentation is independently clean.
+
+### Compute time budget
+
+Running the full validation suite on a typical Xenium dataset (~20M transcripts, ~300K cells):
+
+| Metric | Runtime | Bottleneck |
+|---|---|---|
+| Coverage (COV) | < 1 s | Counting |
+| Expression Angular Uniformity (EAU) | 5–15 s | PCA ellipse normalisation + pairwise cosine similarity across 4 angular sectors |
+| Border Expression Integrity (BEI) | 5–15 s | Per-cell Mahalanobis distance (Polars) + centroid KD-tree |
+| Positive Marker Recall (PMR) | 5–15 s | Reference loading + sparse matrix |
+| Contamination (CTM) | 10–30 s | KD-tree neighbors + mixture model |
+| MECR | 2–60 s | ME pair discovery (cached after first run) |
+| Morphological Match (MM) | 10–30 s | PCA ellipse for ~15K cells |
+| Spurious Coexpression (SCE) | 15–40 s | Full sparse matrix (no subsampling) |
+| Vertical Doublet (VD) | 5–15 s | Pixel binning + z-plane cosines |
+
+**Total:** ~1–3 minutes with all metrics. Spurious Coexpression is the only metric that does not subsample — it uses all cells because the signal is population-level, not per-cell. All other metrics subsample to `--max-cells` (default 10000).
+
+To iterate quickly: start with reference-free metrics (Coverage, EAU, BEI) at ~20 s, then add reference-based metrics (MECR, PMR, Contamination) at ~30 s more, and finally source-based metrics (Spurious Coexpression, Morphological Match, Vertical Doublet) for the full picture.
+
+### Caveats
+
+- **Reference dependence.** MECR, PMR, and Contamination (CTM) all depend on the scRNA reference. Absolute values shift dramatically with reference choice — a tissue-matched reference with many cell types and high gene overlap will produce lower Contamination and higher PMR than a broad atlas or a coarse-grained reference. However, **relative rankings between methods are stable** across references: the cleanest method remains cleanest, and the most contaminated remains most contaminated. Always report which reference was used. When possible, validate with two independent references to confirm that rankings hold, and focus on relative ordering rather than absolute thresholds.
+- **Subsampling.** All per-cell metrics subsample to `--max-cells` for speed. The stratified subsampling strategy ensures extreme cells are represented, but results can vary slightly between runs if the seed changes.
+- **Cell size confounds.** Several metrics are indirectly affected by cell size. Large cells tend to have better EAU (more transcripts per sector = more stable expression vectors) and better PMR (more transcripts = higher chance of detecting markers) but worse MECR (larger spatial extent = more gene diversity). When comparing across methods with different typical cell sizes, interpret scores in context of the cell size distribution.
+- **Cytoplasmic localization.** Spurious Coexpression uses a cytoplasmic normalization factor to account for genes that are naturally expressed more in the cytoplasm than the nucleus. Without this correction, methods that capture cytoplasmic transcripts would be unfairly penalized. The correction down-weights gene pairs where both genes have high cytoplasmic-to-nuclear ratios.
+- **Vertical Doublet denominator.** The hotspot-restricted percentage (`vertical_doublet_pct_fast`) is inherently high (50–95%) because it only scores cells in low-integrity regions. Use `vertical_doublet_global_pct_fast` (doublet cells / total cells) for absolute interpretation — typical range is 0.4–1.5%.
+- **Spurious Coexpression scale.** With cytoplasmic normalization enabled, absolute values are very small (typically 1e-5 to 3e-4). The metric measures *excess* Jaccard above the nuclear baseline, weighted by cytoplasmic penalty — so the absolute numbers represent the weighted-average excess co-occurrence beyond what nuclei already show. The relative ranking across methods is more informative than the absolute scale.
+
+---
+
+## Metric Robustness
+
+Empirical robustness was evaluated by running each metric 10 times with different random seeds across 12 segmentation methods on Xenium CRC data (~28M transcripts). Reference-dependent metrics (PMR, CTM) were tested with two independent scRNA references: CRC Level1 (9 types, tissue-matched) and Large Intestine (11 types, broader atlas).
+
+### Subsample Stability
+
+The coefficient of variation (CV) across 10 random seeds measures how much each metric fluctuates due to cell subsampling:
+
+| Metric | CV range (%) | Interpretation |
+|--------|-------------|----------------|
+| **BEI** | 0.08–0.26 | Extremely stable — most robust metric |
+| **SCE** | 0.00 | Perfectly deterministic (no cell subsampling) |
+| **MM** | 0.03–1.44 | Very stable; ProSeg shows most variation (1.4%) due to unusual morphology |
+| **EAU** | 0.61–2.21 | Stable; Baysor has highest CV (2.2%) |
+| **PMR** | 0.34–1.98 | Stable; slightly more variable with Large Intestine reference |
+| **CTM** | 1.07–11.66 | Least stable metric; CRC Level1 reference shows CV up to 12% |
+
+**Practical implication:** BEI, SCE, and MM produce essentially identical results across subsamples — a single run is sufficient. PMR and EAU show minor variation (< 2%) that does not affect method rankings. CTM is the most sensitive to subsampling, particularly with the tissue-matched CRC reference where absolute contamination values are small (3–7%), making the denominator effect larger. For CTM, consider averaging 3–5 runs or using `--max-cells 10000` (higher than default) for more stable estimates.
+
+### Reference Sensitivity
+
+Absolute metric values shift substantially between references, but **method rankings are preserved**:
+
+| Metric | CRC Level1 range | Large Intestine range | Shift direction |
+|--------|-------------------|----------------------|-----------------|
+| **PMR** | 71–86% | 61–78% | CRC gives 7–14 pp higher (tissue-matched reference has better gene overlap) |
+| **CTM** | 3.5–6.5% | 19–27% | Large Intestine inflates 4× (broader atlas → more "foreign" genes flagged) |
+
+The **ranking order** across all 12 methods is identical regardless of which reference is used:
+- PMR: Segger v2 sf3.2 and v1 3µm consistently rank highest; 10X Nucleus and Bering rank lowest.
+- CTM: Segger v2 3D and v2 align consistently cleanest; 10X Cell most contaminated.
+
+### Ranking Stability
+
+Method rankings were computed per seed and compared. Key findings:
+- **BEI and SCE** produce perfectly stable rankings — no rank swaps across any seed.
+- **PMR** is highly stable; the top-3 and bottom-3 methods never change rank.
+- **CTM** shows the most rank instability, with mid-ranked methods (ranks 4–8) occasionally swapping. Top and bottom methods are stable.
+- **MM** is stable for extreme-ranked methods but shows some mid-range swaps, especially between methods with similar morphology.
+
+### Recommendations
+
+1. **For robust comparison:** Focus on BEI + PMR + SCE — these three span reference-free and reference-dependent evaluation with minimal subsampling noise.
+2. **For CTM:** Report mean ± std across 3+ seeds, or use a larger `--max-cells` value. Do not interpret small CTM differences (< 1 pp) as meaningful.
+3. **Always report the scRNA reference used.** PMR and CTM absolute values are not comparable across references. When comparing published results, only compare method rankings.
+4. **Two-reference validation** is recommended for any claim about reference-dependent metrics. If rankings hold across both references, the conclusion is robust.
+
+---
+
+## Typical Value Ranges
+
+The table below gives empirically observed ranges across multiple segmentation approaches on Xenium data (~28M transcripts). Use these to calibrate expectations, not as hard thresholds.
+
+| Metric | Direction | Typical Range | Concerning | Notes |
+|---|---|---|---|---|
+| Coverage (COV) % | Higher = better | 40–95% | < 40% or > 95% | Very high values may indicate over-extended boundaries |
+| BEI | Higher = better | 0.86–0.98 | < 0.85 | Tight boundaries score lower; ProSeg-style expansion scores highest |
+| EAU | Higher = better | 0.41–0.63 | < 0.40 | Larger scale factors improve EAU (more transcripts per sector) |
+| VD % (global) | Lower = better | 0.4–1.5% | > 2% | Nucleus-only boundaries have fewest doublets |
+| VD % (hotspot) | Lower = better | 50–95% | — | Biased denominator; use for ranking only, not absolute interpretation |
+| SCE | Lower = better | 1e-5 to 3e-4 | — | Very small scale due to cytoplasmic normalization; compare relatively |
+| MM | Higher = better | 0.72–0.98 | < 0.70 | Methods that expand beyond platform boundaries score lower |
+| PMR | Higher = better | 53–72% | < 40% | Depends heavily on scRNA reference quality and gene overlap |
+| CTM % | Lower = better | 1.3–17% | > 20% | Absolute value depends on reference; tissue-matched refs give 1–3%, broad atlases 10–17% |
+| MECR | Lower = better | 0.006–0.020 | > 0.05 | Lower scale factors and alignment loss reduce MECR |
+
+### How Segger Parameters Affect Metrics
+
+| Parameter change | COV | BEI | EAU | PMR | CTM/MECR | SCE | MM |
+|---|---|---|---|---|---|---|---|
+| **Increase `--scale-factor`** | Up | Up | Up | Up | Up (worse) | Up (worse) | Down |
+| **Enable `--alignment-loss`** | Slightly down | Stable | Up | Stable/up | Down (better) | Down (better) | Stable |
+| **Lower `--min-similarity`** | Up | Stable | Stable | Up | Up (worse) | Stable | Down |
+| **Enable `--fragment-mode`** | Up | Stable | Down | Up | Stable | Stable | Down |
+| **Enable `--use-3d`** | Stable | Stable | Stable | Slightly up | Slightly down | Stable | Stable |
+
+**Scale factor** is the primary lever: increasing it captures more transcripts per cell (improving Coverage, PMR, EAU) but expands boundaries into neighboring cells (worsening MECR, Contamination, Spurious Coexpression). Morphological Match degrades because expanded boundaries no longer match platform-derived cell shapes.
+
+**Alignment loss** improves specificity metrics (MECR, Contamination, Spurious Coexpression) with minimal impact on sensitivity. It works by penalizing assignment of mutually exclusive gene pairs to the same cell during training. The tradeoff is a small reduction in Coverage as the model becomes more conservative near cell borders.
+
+**Similarity threshold** (`--min-similarity` at export, or auto-thresholding during predict) controls which assignments are kept. Lowering it recovers more transcripts but admits lower-confidence assignments that may increase contamination.
+
+**Fragment mode** recovers unassigned transcripts via connected components, boosting Coverage. Fragment cells tend to have lower EAU (less coherent expression) and altered morphology since they are formed by spatial proximity rather than learned boundaries.
+
+### How Reference Choice Affects Metrics
+
+Reference-dependent metrics (PMR, Contamination, MECR) are sensitive to the scRNA reference used:
+
+- **Tissue-matched references** (e.g., CRC-specific) give lower Contamination and higher PMR because cell types and gene programs align well with the spatial data.
+- **Broad atlas references** (e.g., organ-level from CellxGENE) inflate Contamination (often 5–10x higher) and slightly reduce PMR, because coarser cell type definitions and imperfect gene overlap introduce noise into the mixture model.
+- **Relative rankings between segmentation approaches are stable** across reference choices. The cleanest method remains cleanest regardless of which reference is used.
+- When possible, validate with two independent references to confirm that your conclusions hold. If you used an scRNA reference during alignment loss training, use a **different** reference for validation to avoid circular evaluation.

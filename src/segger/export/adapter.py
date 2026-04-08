@@ -162,4 +162,8 @@ def filter_assigned_transcripts(
     pd.DataFrame
         DataFrame with only assigned transcripts.
     """
-    return seg_df[seg_df[cell_id_column] >= 0].copy()
+    filtered = seg_df[seg_df[cell_id_column] >= 0]
+    # Filter by keep column when present (GMM threshold)
+    if "keep" in filtered.columns:
+        filtered = filtered[filtered["keep"].fillna(False)]
+    return filtered.copy()

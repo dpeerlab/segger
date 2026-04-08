@@ -20,21 +20,24 @@ Options:
   --include-default-10x <bool>
                      Include ref_10x_cell/ref_10x_nucleus rows in each dataset validation table
                      (default: true)
-  --include-border-contamination <bool>
-                     Include border-contamination metric in per-dataset validation (default: false)
   --include-positive-marker-recall <bool>
                      Include positive-marker-recall metric in per-dataset validation (default: false)
-  --include-center-border-ncv <bool>
-                     Include center-border-ncv metric in per-dataset validation (default: false)
+  --include-center-border-similarity <bool>
+                     Include center-border-similarity metric in per-dataset validation (default: false)
   --include-resolvi <bool>
                      Include resolvi contamination metric in per-dataset validation (default: false)
-  --include-tco <bool>
-                     Include transcript-centroid-offset metric in per-dataset validation (default: false)
+  --include-sce <bool>
+                     Include spurious-coexpression metric in per-dataset validation (default: false)
+  --include-mm <bool>
+                     Include morphological-match metric in per-dataset validation (default: false)
+  --include-aes <bool>
+                     Include angular-expression-symmetry metric in per-dataset validation (default: false)
   --include-vsi <bool>
                      Include VSI metric in per-dataset validation (default: false)
   --progressive-write <bool>
                      Update aggregate TSV incrementally while running (default: true)
   --jobs <int>       Number of datasets to refresh in parallel (default: 1)
+  --only-jobs <csv>  Optional comma-separated job names to validate per dataset (e.g. baseline)
   --recompute        Recompute validation rows for each dataset (passes --recompute to per-dataset script)
   --no-refresh       Do not run the per-dataset validation script when a table is missing
   -h, --help         Show this help
@@ -50,15 +53,17 @@ OUT_TSV=""
 REFRESH=1
 EXCLUDE_FRAGMENT_JOBS="false"
 INCLUDE_DEFAULT_10X="true"
-INCLUDE_BORDER_CONTAMINATION="false"
 INCLUDE_POSITIVE_MARKER_RECALL="false"
-INCLUDE_CENTER_BORDER_NCV="false"
-INCLUDE_RESOLVI="false"
-INCLUDE_TCO="false"
-INCLUDE_VSI="false"
+INCLUDE_BEI="false"
+INCLUDE_CTM="false"
+INCLUDE_SCE="false"
+INCLUDE_MM="false"
+INCLUDE_EAU="false"
+INCLUDE_VD="false"
 PROGRESSIVE_WRITE="true"
 JOBS="${VALIDATION_JOBS:-1}"
 RECOMPUTE=0
+ONLY_JOBS_CSV=""
 DATASET_VALIDATION_TSV_NAME="validation_metrics_.tsv"
 
 normalize_bool() {
@@ -95,6 +100,7 @@ refresh_dataset_validation() {
   local partial_validation_tsv
   local validation_rows legacy_rows partial_rows
   local -a recompute_args
+  local -a only_jobs_args
 
   dataset="$(basename "${dataset_dir}")"
   validation_tsv="${dataset_dir}/summaries/${DATASET_VALIDATION_TSV_NAME}"
@@ -127,8 +133,12 @@ refresh_dataset_validation() {
   source "${context_file}"
 
   recompute_args=()
+  only_jobs_args=()
   if [[ "${RECOMPUTE}" == "1" ]]; then
     recompute_args+=(--recompute)
+  fi
+  if [[ -n "${ONLY_JOBS_CSV}" ]]; then
+    only_jobs_args+=(--only-jobs "${ONLY_JOBS_CSV}")
   fi
 
   if [[ -z "${SCRNA_REFERENCE_PATH:-}" ]]; then
@@ -148,14 +158,16 @@ refresh_dataset_validation() {
     --input-dir "${INPUT_DIR}" \
     --scrna-reference-path "${SCRNA_REFERENCE_PATH}" \
     --include-default-10x "${INCLUDE_DEFAULT_10X}" \
-    --include-border-contamination "${INCLUDE_BORDER_CONTAMINATION}" \
     --include-positive-marker-recall "${INCLUDE_POSITIVE_MARKER_RECALL}" \
-    --include-center-border-ncv "${INCLUDE_CENTER_BORDER_NCV}" \
-    --include-resolvi "${INCLUDE_RESOLVI}" \
-    --include-tco "${INCLUDE_TCO}" \
-    --include-vsi "${INCLUDE_VSI}" \
+    --include-bei "${INCLUDE_BEI}" \
+    --include-ctm "${INCLUDE_CTM}" \
+    --include-sce "${INCLUDE_SCE}" \
+    --include-mm "${INCLUDE_MM}" \
+    --include-eau "${INCLUDE_EAU}" \
+    --include-vd "${INCLUDE_VD}" \
     --exclude-fragment-jobs "${EXCLUDE_FRAGMENT_JOBS}" \
     --progressive-write "${PROGRESSIVE_WRITE}" \
+    "${only_jobs_args[@]}" \
     "${recompute_args[@]}" \
     >> "${refresh_log}" 2>&1; then
     rc=0
@@ -199,28 +211,32 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_DEFAULT_10X="$2"
       shift 2
       ;;
-    --include-border-contamination)
-      INCLUDE_BORDER_CONTAMINATION="$2"
-      shift 2
-      ;;
     --include-positive-marker-recall)
       INCLUDE_POSITIVE_MARKER_RECALL="$2"
       shift 2
       ;;
-    --include-center-border-ncv)
-      INCLUDE_CENTER_BORDER_NCV="$2"
+    --include-center-border-similarity|--include-center-border-ncv|--include-bei)
+      INCLUDE_BEI="$2"
       shift 2
       ;;
-    --include-resolvi)
-      INCLUDE_RESOLVI="$2"
+    --include-resolvi|--include-border-contamination|--include-ctm)
+      INCLUDE_CTM="$2"
       shift 2
       ;;
-    --include-tco)
-      INCLUDE_TCO="$2"
+    --include-spurious-coexpression|--include-sce)
+      INCLUDE_SCE="$2"
       shift 2
       ;;
-    --include-vsi)
-      INCLUDE_VSI="$2"
+    --include-morphological-match|--include-mm)
+      INCLUDE_MM="$2"
+      shift 2
+      ;;
+    --include-aes|--include-tco|--include-eau)
+      INCLUDE_EAU="$2"
+      shift 2
+      ;;
+    --include-vsi|--include-vd)
+      INCLUDE_VD="$2"
       shift 2
       ;;
     --progressive-write)
@@ -229,6 +245,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --jobs)
       JOBS="$2"
+      shift 2
+      ;;
+    --only-jobs)
+      ONLY_JOBS_CSV="$2"
       shift 2
       ;;
     --no-refresh)
@@ -259,28 +279,32 @@ if ! INCLUDE_DEFAULT_10X="$(normalize_bool "${INCLUDE_DEFAULT_10X}")"; then
   echo "ERROR: --include-default-10x must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_BORDER_CONTAMINATION="$(normalize_bool "${INCLUDE_BORDER_CONTAMINATION}")"; then
-  echo "ERROR: --include-border-contamination must be true/false." >&2
-  exit 1
-fi
 if ! INCLUDE_POSITIVE_MARKER_RECALL="$(normalize_bool "${INCLUDE_POSITIVE_MARKER_RECALL}")"; then
   echo "ERROR: --include-positive-marker-recall must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_CENTER_BORDER_NCV="$(normalize_bool "${INCLUDE_CENTER_BORDER_NCV}")"; then
-  echo "ERROR: --include-center-border-ncv must be true/false." >&2
+if ! INCLUDE_BEI="$(normalize_bool "${INCLUDE_BEI}")"; then
+  echo "ERROR: --include-bei must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_RESOLVI="$(normalize_bool "${INCLUDE_RESOLVI}")"; then
-  echo "ERROR: --include-resolvi must be true/false." >&2
+if ! INCLUDE_CTM="$(normalize_bool "${INCLUDE_CTM}")"; then
+  echo "ERROR: --include-ctm must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_TCO="$(normalize_bool "${INCLUDE_TCO}")"; then
-  echo "ERROR: --include-tco must be true/false." >&2
+if ! INCLUDE_SCE="$(normalize_bool "${INCLUDE_SCE}")"; then
+  echo "ERROR: --include-sce must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_VSI="$(normalize_bool "${INCLUDE_VSI}")"; then
-  echo "ERROR: --include-vsi must be true/false." >&2
+if ! INCLUDE_MM="$(normalize_bool "${INCLUDE_MM}")"; then
+  echo "ERROR: --include-mm must be true/false." >&2
+  exit 1
+fi
+if ! INCLUDE_EAU="$(normalize_bool "${INCLUDE_EAU}")"; then
+  echo "ERROR: --include-eau must be true/false." >&2
+  exit 1
+fi
+if ! INCLUDE_VD="$(normalize_bool "${INCLUDE_VD}")"; then
+  echo "ERROR: --include-vd must be true/false." >&2
   exit 1
 fi
 if ! PROGRESSIVE_WRITE="$(normalize_bool "${PROGRESSIVE_WRITE}")"; then

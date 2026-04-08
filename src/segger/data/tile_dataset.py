@@ -176,11 +176,13 @@ class TilePredictDataset(Dataset):
         data: Data | HeteroData,
         tiling: Tiling,
         margin: float = 0.0,
+        bd_margin: float | None = None,
     ):
         """Initializes and partitions the dataset."""
         self.data = data
         self.tiling = tiling
         self.margin = float(margin)
+        self.bd_margin = float(bd_margin) if bd_margin is not None else self.margin
         self._is_hetero = isinstance(self.data, HeteroData)
 
         # Validate presence of positions.
@@ -218,22 +220,29 @@ class TilePredictDataset(Dataset):
     def _subset(self, bounds: shapely.Polygon) -> Data | HeteroData:
         """Slices all node attributes within bounds.
 
-        TODO: Long Description.
+        For heterogeneous graphs, boundary (``bd``) nodes are fetched using
+        a wider margin (``bd_margin``) so that scaled polygon centroids
+        remain reachable from transcript tiles.  Transcript (``tx``) nodes
+        use the standard ``margin``.
         """
         inner = bounds.bounds
         outer = bounds.buffer(self.margin).bounds
-        
+        outer_bd = bounds.buffer(self.bd_margin).bounds
+
         if self._is_hetero:
             subset = dict()
             p_mask = dict()
             for node_type in self.data.node_types:
                 pos: torch.Tensor = self.data[node_type]['pos']
+                # Use wider margin for bd nodes so scaled polygon
+                # centroids stay within the subgraph.
+                node_outer = outer_bd if node_type == 'bd' else outer
                 # Row indices of masked elements inside tile w/ margin
                 subset[node_type] = (
-                    (pos[:, 0] >= outer[0]) &
-                    (pos[:, 0] <  outer[2]) &
-                    (pos[:, 1] >= outer[1]) &
-                    (pos[:, 1] <  outer[3])
+                    (pos[:, 0] >= node_outer[0]) &
+                    (pos[:, 0] <  node_outer[2]) &
+                    (pos[:, 1] >= node_outer[1]) &
+                    (pos[:, 1] <  node_outer[3])
                 ).nonzero().flatten()
                 p_mask[node_type] = (
                     (pos[subset[node_type], 0] >= inner[0]) &

@@ -1439,7 +1439,7 @@ render_dashboard() {
         for (i = 1; i <= NF; i++) {
           idx[$i] = i
         }
-        print "job\tkind\tst\tval\tgpu_m v\tcells\tfrag\tasg% ^\tmecr v\tbdr% v\trslv v\ttco ^\tvsi% v"
+        print "job\tkind\tst\tval\tgpu_m v\tcells\tfrag\tasg% ^\tmecr v\tbdr% v\trslv v\taes ^\tvsi% v"
         next
       }
       FILENAME != validation_file {
@@ -1507,7 +1507,7 @@ render_dashboard() {
         fragments = fmt_nonneg_int(fragments)
 
         assigned = get_col("assigned_pct")
-        if (assigned == "") assigned = get_col("transcripts_assigned_pct")
+        if (assigned == "") assigned = get_col("coverage_pct")
 
         mecr = get_col("mecr")
         if (mecr == "") mecr = get_col("mecr_fast")
@@ -1515,11 +1515,12 @@ render_dashboard() {
         contamination = get_col("contamination_pct")
         if (contamination == "") contamination = get_col("border_contaminated_cells_pct_fast")
 
-        resolvi = get_col("resolvi_contamination_pct")
-        if (resolvi == "") resolvi = get_col("resolvi_contamination_pct_fast")
+        resolvi = get_col("contamination_pct")
+        if (resolvi == "") resolvi = get_col("contamination_pct_fast")
+        if (resolvi == "") resolvi = get_col("resolvi_contamination_pct")
 
-        tco = get_col("tco")
-        if (tco == "") tco = get_col("transcript_centroid_offset_fast")
+        aes = get_col("aes")
+        if (aes == "") aes = get_col("expression_angular_uniformity_fast")
 
         doublet = get_col("doublet_pct")
         if (doublet == "") {
@@ -1533,7 +1534,7 @@ render_dashboard() {
 
         print job_disp "\t" kind "\t" state "\t" validate_status "\t" gpu_time "\t" cells "\t" fragments "\t" \
               fmt_float(assigned) "\t" fmt_float(mecr) "\t" fmt_float(contamination) "\t" \
-              fmt_float(resolvi) "\t" fmt_float(tco) "\t" fmt_float(doublet)
+              fmt_float(resolvi) "\t" fmt_float(aes) "\t" fmt_float(doublet)
       }
     ' "${snapshot}" "${PLAN_FILE}" "${VALIDATION_TSV}" \
       | {
@@ -1605,7 +1606,7 @@ render_dashboard() {
               m_mecr[n] = $9
               m_border[n] = $10
               m_resolvi[n] = $11
-              m_tco[n] = $12
+              m_aes[n] = $12
               m_doublet[n] = $13
               m_gpu[n] = $5
               st[n] = tolower($4)
@@ -1649,7 +1650,7 @@ render_dashboard() {
                   if (is_top2_down(m_mecr[i], m_best1, m_best2, have_m_best2)) cell[i, 9] = b_on cell[i, 9] b_off
                   if (is_top2_down(m_border[i], b_best1, b_best2, have_b_best2)) cell[i, 10] = b_on cell[i, 10] b_off
                   if (is_top2_down(m_resolvi[i], r_best1, r_best2, have_r_best2)) cell[i, 11] = b_on cell[i, 11] b_off
-                  if (is_top2_up(m_tco[i], t_best1, t_best2, have_t_best2)) cell[i, 12] = b_on cell[i, 12] b_off
+                  if (is_top2_up(m_aes[i], t_best1, t_best2, have_t_best2)) cell[i, 12] = b_on cell[i, 12] b_off
                   if (is_top2_down(m_doublet[i], d_best1, d_best2, have_d_best2)) cell[i, 13] = b_on cell[i, 13] b_off
                 }
 
@@ -1659,7 +1660,7 @@ render_dashboard() {
                   k_mecr = 0
                   k_border = 0
                   k_resolvi = 0
-                  k_tco = 0
+                  k_aes = 0
                   k_doublet = 0
                 } else if (st[i] == "ok") {
                   bucket = 1
@@ -1667,7 +1668,7 @@ render_dashboard() {
                   k_mecr = sort_key_down(m_mecr[i])
                   k_border = sort_key_down(m_border[i])
                   k_resolvi = sort_key_down(m_resolvi[i])
-                  k_tco = sort_key_up(m_tco[i])
+                  k_aes = sort_key_up(m_aes[i])
                   k_doublet = sort_key_down(m_doublet[i])
                 } else {
                   bucket = 2
@@ -1675,7 +1676,7 @@ render_dashboard() {
                   k_mecr = 1e12
                   k_border = 1e12
                   k_resolvi = 1e12
-                  k_tco = 1e12
+                  k_aes = 1e12
                   k_doublet = 1e12
                 }
 
@@ -1684,7 +1685,7 @@ render_dashboard() {
                   row = row "\t" cell[i, j]
                 }
                 printf "%d\t%.10f\t%.10f\t%.10f\t%.10f\t%.10f\t%.10f\t%08d\t%s\n", \
-                  bucket, k_assigned, k_mecr, k_border, k_resolvi, k_tco, k_doublet, i, row
+                  bucket, k_assigned, k_mecr, k_border, k_resolvi, k_aes, k_doublet, i, row
               }
             }
           ' \

@@ -61,7 +61,7 @@ def platform_feature_filter_patterns(platform: str | None) -> list[str]:
 def glob_patterns_to_regex(patterns: Sequence[str]) -> str:
     """Convert glob-like patterns (``*``) to a regex union."""
     return "|".join(
-        f"^{re.escape(pattern).replace(r'\\*', '.*')}$"
+        "^" + re.escape(pattern).replace(r"\*", ".*") + "$"
         for pattern in patterns
     )
 

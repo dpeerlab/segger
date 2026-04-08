@@ -3,15 +3,18 @@ from torch_geometric.loader import DataLoader
 import random
 import torch
 import math
+import logging
 
 
 from .dataset import PartitionDataset
+
+LOGGER = logging.getLogger(__name__)
 
 
 def best_fit_decreasing(
     items: List[float],
     bin_capacity: float,
-    skip_too_big: bool = False,
+    skip_too_big: bool = True,
 ) -> List[List[int]]:
     """Implements the Best-Fit Decreasing (BFD) bin packing algorithm.
 
@@ -27,7 +30,7 @@ def best_fit_decreasing(
         The capacity of each bin.
     skip_too_big : bool, optional
         If True, items larger than `bin_capacity` or <= 0 are ignored instead 
-        of raising an error. Defaults to False.
+        of raising an error. Defaults to True.
 
     Returns
     -------
@@ -86,7 +89,7 @@ def harmonic_k(
     items: List[float],
     bin_capacity: float,
     k: int = 6,
-    skip_too_big: bool = False,
+    skip_too_big: bool = True,
 ) -> List[List[int]]:
     """Implements the Harmonic-k online bin packing algorithm.
 
@@ -108,7 +111,7 @@ def harmonic_k(
         Defaults to 6.
     skip_too_big : bool, optional
         If True, items larger than `bin_capacity` or <= 0 are ignored instead 
-        of raising an error. Defaults to False.
+        of raising an error. Defaults to True.
 
     Returns
     -------
@@ -186,7 +189,7 @@ def harmonic_k(
 def first_fit_decreasing_bucketed(
     items: List[float],
     bin_capacity: float,
-    skip_too_big: bool = False,
+    skip_too_big: bool = True,
     n_buckets: Optional[int] = 1,
     rng: Optional[random.Random] = None,
 ) -> List[List[int]]:
@@ -204,7 +207,7 @@ def first_fit_decreasing_bucketed(
         The capacity of each bin.
     skip_too_big : bool, optional
         If True, items larger than `bin_capacity` or <= 0 are ignored instead
-        of raising an error. Defaults to False.
+        of raising an error. Defaults to True.
     n_buckets : int, optional
         - If None or >= len(items), deterministic FFD is performed.
         - If 1, a fully random First-Fit is performed.
@@ -308,7 +311,7 @@ class PartitionSampler(torch.utils.data.Sampler):
         mode: Literal["node", "edge"] = "edge",
         subset: list[int] = None,
         shuffle: bool = False,
-        skip_too_big: bool = False,
+        skip_too_big: bool = True,
     ):
         """Initializes the DynamicPartitionBatchSampler.
 
@@ -330,8 +333,8 @@ class PartitionSampler(torch.utils.data.Sampler):
             batches. If False, an offline algorithm is used to create a
             fixed, deterministic set of batches. Defaults to False.
         skip_too_big : bool, optional
-            If True, partitions larger than `max_num` are ignored. If False, 
-            the packing algorithm will raise a ValueError. Defaults to False.
+            If True, partitions larger than `max_num` are ignored. If False,
+            the packing algorithm will raise a ValueError. Defaults to True.
         """
         self.dataset = dataset
         self.max_num = max_num
@@ -371,11 +374,27 @@ class PartitionSampler(torch.utils.data.Sampler):
 
         # Get new packed bins
         weights_to_pack = [self.weights[i] for i in indices]
-        bins = self.packing_algo(
-            weights_to_pack,
-            self.max_num,
-            skip_too_big=self.skip_too_big,
-        )
+        try:
+            bins = self.packing_algo(
+                weights_to_pack,
+                self.max_num,
+                skip_too_big=self.skip_too_big,
+            )
+        except ValueError as exc:
+            # Backward-compat fallback for checkpoints/callers that still request
+            # strict packing while data includes zero-size or oversized partitions.
+            if self.skip_too_big or "All items must be > 0 and <= bin_capacity." not in str(exc):
+                raise
+            LOGGER.warning(
+                "Partition packing hit invalid sizes (<=0 or > max_num=%s); "
+                "retrying with skip_too_big=True.",
+                self.max_num,
+            )
+            bins = self.packing_algo(
+                weights_to_pack,
+                self.max_num,
+                skip_too_big=True,
+            )
 
         # Map local indices from the packer back to original dataset indices
         self.batches = [[indices[i] for i in bin] for bin in bins]

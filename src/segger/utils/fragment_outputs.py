@@ -76,6 +76,9 @@ def split_transcripts_by_object_type(
         unassigned_value=unassigned_value,
     )
     assigned = annotated.filter(pl.col(OBJECT_TYPE_COLUMN) != OBJECT_TYPE_UNASSIGNED)
+    # Filter by keep column when present (GMM threshold)
+    if "keep" in assigned.columns:
+        assigned = assigned.filter(pl.col("keep").fill_null(False))
     return {
         "all": assigned,
         OBJECT_TYPE_CELL: assigned.filter(pl.col(OBJECT_TYPE_COLUMN) == OBJECT_TYPE_CELL),

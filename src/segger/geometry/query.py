@@ -237,6 +237,24 @@ def points_in_polygons(
             f"Unsupported predicate '{predicate}'. Supported predicates are "
             f"'contains' and 'intersects'."
         )
+    # Ensure all geometries are simple Polygons before GPU conversion.
+    # MultiPolygon can arise from invalid/self-intersecting boundaries;
+    # extract the largest component so cuspatial doesn't reject them.
+    if isinstance(polygons, gpd.GeoSeries):
+        from shapely import get_parts
+        def _to_polygon(geom):
+            if geom is None or geom.is_empty:
+                return None
+            if geom.geom_type == 'Polygon':
+                return geom
+            if geom.geom_type == 'MultiPolygon':
+                parts = get_parts(geom)
+                return max(parts, key=lambda p: p.area) if len(parts) > 0 else None
+            return None
+        polygons = polygons.map(_to_polygon)
+        polygons = polygons[polygons.notna() & (polygons.geom_type == 'Polygon')]
+        polygons = polygons.reset_index(drop=True)
+
     # Convert geometries to GeoSeries on GPU
     points = points_to_geoseries(points, backend='cuspatial')
     polygons = polygons_to_geoseries(polygons, backend='cuspatial')

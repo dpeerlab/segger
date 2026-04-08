@@ -1,3 +1,4 @@
+import math
 import os
 from cyclopts import App, Parameter, Group, validators
 from typing import Annotated, Literal
@@ -98,54 +99,49 @@ group_validation_inputs = Group(
     help="Shared source/reference inputs reused by multiple validation metrics.",
     sort_key=14,
 )
-group_validation_assigned = Group(
-    name="Assigned Transcripts",
+group_validation_coverage = Group(
+    name="Coverage",
     help="Transcript assignment coverage metric.",
     sort_key=15,
 )
 group_validation_positive_marker = Group(
-    name="Positive Marker Recall",
+    name="Positive Marker Recall (PMR)",
     help="Positive marker recall metric.",
     sort_key=16,
 )
 group_validation_mecr = Group(
-    name="MECR",
+    name="Mutually Exclusive Coexpression Rate (MECR)",
     help="Mutually exclusive co-expression rate metric.",
     sort_key=17,
 )
-group_validation_border = Group(
-    name="Border Contamination",
-    help="Border contamination proxy metric.",
+group_validation_bei = Group(
+    name="Border Expression Integrity (BEI)",
+    help="Border-vs-center expression coherence metric.",
     sort_key=18,
 )
-group_validation_center_border = Group(
-    name="Center-Border NCV",
-    help="Border-vs-neighborhood expression coherence metric.",
-    sort_key=19,
-)
-group_validation_resolvi = Group(
-    name="RESOLVI Contamination",
-    help="Reference-guided neighbor contamination metric.",
+group_validation_ctm = Group(
+    name="Contamination (CTM)",
+    help="Reference-guided neighbor contamination metric (based on RESOLVI).",
     sort_key=20,
 )
-group_validation_spurious = Group(
-    name="Spurious Coexpression",
-    help="Nucleus-aware spurious coexpression metric.",
+group_validation_sce = Group(
+    name="Spurious Coexpression (SCE)",
+    help="Nuclear-grounded spurious co-expression metric.",
     sort_key=21,
 )
-group_validation_reference_morph = Group(
-    name="Reference Morphology",
-    help="Matched-cell morphology agreement metric.",
+group_validation_mm = Group(
+    name="Morphological Match (MM)",
+    help="Distribution-based morphology comparison metric.",
     sort_key=22,
 )
-group_validation_tco = Group(
-    name="TCO",
-    help="Transcript centroid offset metric.",
+group_validation_eau = Group(
+    name="Expression Angular Uniformity (EAU)",
+    help="Expression angular uniformity metric.",
     sort_key=23,
 )
-group_validation_signal = Group(
-    name="Signal / VSI",
-    help="Z-coherence and doublet-style metrics.",
+group_validation_vd = Group(
+    name="Vertical Doublet (VD)",
+    help="Z-dimension doublet detection metric.",
     sort_key=24,
 )
 
@@ -466,21 +462,6 @@ def segment(
     )] = None,
 
     # Prediction parameters
-    min_similarity: Annotated[float | None, Parameter(
-        help="Minimum similarity threshold for transcript-cell assignment. "
-             "If None, uses per-gene auto-thresholding (Li+Yen methods).",
-        validator=validators.Number(gte=0, lte=1),
-        group=group_prediction,
-    )] = None,
-
-    min_similarity_shift: Annotated[float, Parameter(
-        help="Subtractive relaxation applied to transcript-cell similarity "
-             "thresholds after fixed/auto thresholding. "
-             "Always subtractive; 0 disables shifting.",
-        validator=validators.Number(gte=0, lte=1),
-        group=group_prediction,
-    )] = 0.0,
-
     fragment_mode: Annotated[bool, Parameter(
         help="Enable fragment mode for grouping unassigned transcripts "
              "using tx-tx connected components.",
@@ -621,8 +602,6 @@ def segment(
     logger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(
         output_directory,
-        min_similarity=min_similarity,
-        min_similarity_shift=min_similarity_shift,
         fragment_mode=fragment_mode,
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,
@@ -673,19 +652,6 @@ def predict(
         group=group_io,
         validator=validators.Path(dir_okay=True),
     )] = registry.get_default("output_directory"),
-    min_similarity: Annotated[float | None, Parameter(
-        help="Minimum similarity threshold for transcript-cell assignment. "
-             "If None, uses per-gene auto-thresholding (Li+Yen methods).",
-        validator=validators.Number(gte=0, lte=1),
-        group=group_prediction,
-    )] = None,
-    min_similarity_shift: Annotated[float, Parameter(
-        help="Subtractive relaxation applied to transcript-cell similarity "
-             "thresholds after fixed/auto thresholding. "
-             "Always subtractive; 0 disables shifting.",
-        validator=validators.Number(gte=0, lte=1),
-        group=group_prediction,
-    )] = 0.0,
     fragment_mode: Annotated[bool, Parameter(
         help="Enable fragment mode for grouping unassigned transcripts "
              "using tx-tx connected components.",
@@ -781,8 +747,6 @@ def predict(
 
     writer = ISTSegmentationWriter(
         output_directory,
-        min_similarity=min_similarity,
-        min_similarity_shift=min_similarity_shift,
         fragment_mode=fragment_mode,
         fragment_min_transcripts=fragment_min_transcripts,
         fragment_similarity_threshold=fragment_similarity_threshold,
@@ -892,6 +856,20 @@ def export(
         validator=validators.Number(gt=3),
         group=group_boundary,
     )] = 25,
+    min_similarity: Annotated[float | None, Parameter(
+        help="Override similarity threshold for the keep column. "
+             "If set, transcripts with similarity >= this value are kept. "
+             "Replaces the per-gene Li+Yen threshold from segmentation.",
+        validator=validators.Number(gte=0, lte=1),
+        group=group_export,
+    )] = None,
+    min_similarity_shift: Annotated[float, Parameter(
+        help="Subtractive relaxation applied to per-gene similarity thresholds. "
+             "Positive values lower the threshold (more permissive). "
+             "Only effective when --min-similarity is not set.",
+        validator=validators.Number(gte=0, lte=1),
+        group=group_export,
+    )] = 0.0,
 ):
     """Export segmentation results in Xenium/merged/AnnData/SpatialData formats."""
     import polars as pl
@@ -914,6 +892,29 @@ def export(
 
     if area_high <= area_low:
         raise ValueError("area_high must be greater than area_low.")
+
+    def _recompute_keep(df: pl.DataFrame) -> pl.DataFrame:
+        """Recompute the keep column based on export threshold params."""
+        if min_similarity is not None:
+            # Fixed threshold overrides per-gene thresholds
+            return df.with_columns(
+                (
+                    pl.col("segger_cell_id").is_not_null()
+                    & (pl.col("segger_similarity") >= min_similarity)
+                ).alias("keep")
+            )
+        if min_similarity_shift > 0 and "similarity_threshold" in df.columns:
+            # Relax per-gene thresholds and recompute keep
+            return df.with_columns(
+                (
+                    pl.col("segger_cell_id").is_not_null()
+                    & (
+                        pl.col("segger_similarity")
+                        >= (pl.col("similarity_threshold") - min_similarity_shift).clip(-1.0, 1.0)
+                    )
+                ).alias("keep")
+            )
+        return df
 
     # Load segmentation table
     segmentation_from_spatialdata = False
@@ -977,6 +978,10 @@ def export(
     ):
         seg_df = seg_df.rename({effective_cell_id_column: "segger_cell_id"})
         effective_cell_id_column = "segger_cell_id"
+
+    # Recompute keep column if export threshold params are set
+    if isinstance(seg_df, pl.DataFrame):
+        seg_df = _recompute_keep(seg_df)
 
     def _resolve_transcripts_and_boundaries():
         resolved = input_format
@@ -1176,15 +1181,18 @@ def validate(
              "(or $SEGGER_REFERENCE_CACHE_DIR).",
         group=group_validation_inputs,
     )] = None,
-    assigned: Annotated[bool, Parameter(
-        help="Compute transcript assignment coverage. If no metric flags are set, all metrics run.",
-        group=group_validation_assigned,
+    coverage: Annotated[bool, Parameter(
+        name=["--coverage", "--cov"],
+        help="Compute transcript coverage. If no metric flags are set, all metrics run.",
+        group=group_validation_coverage,
     )] = False,
     positive_marker_recall: Annotated[bool, Parameter(
+        name=["--positive-marker-recall", "--pmr"],
         help="Compute positive marker recall. If no metric flags are set, all metrics run.",
         group=group_validation_positive_marker,
     )] = False,
     mecr: Annotated[bool, Parameter(
+        name=["--mecr"],
         help="Compute MECR. If no metric flags are set, all metrics run.",
         group=group_validation_mecr,
     )] = False,
@@ -1204,92 +1212,60 @@ def validate(
         validator=validators.Number(gt=0),
         group=group_validation_mecr,
     )] = 500,
-    border_contamination: Annotated[bool, Parameter(
-        help="Compute the border contamination proxy. If no metric flags are set, all metrics run.",
-        group=group_validation_border,
+    border_expression_integrity: Annotated[bool, Parameter(
+        name=["--border-expression-integrity", "--bei"],
+        help="Compute border expression integrity. If no metric flags are set, all metrics run.",
+        group=group_validation_bei,
     )] = False,
-    border_erosion_fraction: Annotated[float, Parameter(
-        help="Fraction of cell bounding box used to define center vs border.",
-        validator=validators.Number(gt=0, lt=0.5),
-        group=group_validation_border,
-    )] = 0.3,
-    border_min_transcripts_per_cell: Annotated[int, Parameter(
-        help="Minimum transcripts per cell for border-style metrics.",
-        validator=validators.Number(gt=0),
-        group=group_validation_border,
-    )] = 20,
-    border_max_cells: Annotated[int, Parameter(
-        help="Max sampled cells for border-style metrics (speed cap).",
-        validator=validators.Number(gt=0),
-        group=group_validation_border,
-    )] = 3000,
-    border_contaminated_enrichment_threshold: Annotated[float, Parameter(
-        help="Per-cell border enrichment threshold counted as contaminated (ratio > threshold).",
-        validator=validators.Number(gt=1),
-        group=group_validation_border,
-    )] = 1.25,
-    center_border_ncv: Annotated[bool, Parameter(
-        help="Compute center-border NCV. If no metric flags are set, all metrics run.",
-        group=group_validation_center_border,
+    contamination: Annotated[bool, Parameter(
+        name=["--contamination", "--ctm"],
+        help="Compute contamination metric. If no metric flags are set, all metrics run.",
+        group=group_validation_ctm,
     )] = False,
-    resolvi: Annotated[bool, Parameter(
-        help="Compute RESOLVI-style contamination. If no metric flags are set, all metrics run.",
-        group=group_validation_resolvi,
-    )] = False,
-    spurious: Annotated[bool, Parameter(
+    spurious_coexpression: Annotated[bool, Parameter(
+        name=["--spurious-coexpression", "--sce"],
         help="Compute spurious coexpression. If no metric flags are set, all metrics run.",
-        group=group_validation_spurious,
+        group=group_validation_sce,
     )] = False,
-    reference_morphology: Annotated[bool, Parameter(
-        help="Compute reference morphology match. If no metric flags are set, all metrics run.",
-        group=group_validation_reference_morph,
+    morphological_match: Annotated[bool, Parameter(
+        name=["--morphological-match", "--mm"],
+        help="Compute morphological match. If no metric flags are set, all metrics run.",
+        group=group_validation_mm,
     )] = False,
-    tco: Annotated[bool, Parameter(
-        help="Compute transcript centroid offset. If no metric flags are set, all metrics run.",
-        group=group_validation_tco,
+    morphological_match_space: Annotated[Literal["cell", "nucleus", "auto"], Parameter(
+        help=(
+            "Reference space for morphology metric: "
+            "'cell' compares against full cell reference geometry; "
+            "'nucleus' compares against nucleus-compartment reference geometry; "
+            "'auto' uses nucleus when available, otherwise cell."
+        ),
+        group=group_validation_mm,
+    )] = "cell",
+    morphological_match_nucleus_value: Annotated[int, Parameter(
+        help="Compartment value representing nucleus in source transcripts (used when morphology space is nucleus/auto).",
+        validator=validators.Number(gte=0),
+        group=group_validation_mm,
+    )] = 2,
+    expression_angular_uniformity: Annotated[bool, Parameter(
+        name=["--expression-angular-uniformity", "--eau"],
+        help="Compute expression angular uniformity. If no metric flags are set, all metrics run.",
+        group=group_validation_eau,
     )] = False,
-    tco_min_transcripts_per_cell: Annotated[int, Parameter(
-        help="Minimum transcripts per cell for transcript-centroid-offset metric.",
+    vertical_doublet: Annotated[bool, Parameter(
+        name=["--vertical-doublet", "--vd"],
+        help="Compute vertical doublet metric. If no metric flags are set, all metrics run.",
+        group=group_validation_vd,
+    )] = False,
+    min_transcripts_per_cell: Annotated[int, Parameter(
+        help="Minimum transcripts per cell (applies to all per-cell metrics).",
         validator=validators.Number(gt=0),
-        group=group_validation_tco,
+        group=group_validation,
     )] = 20,
-    tco_max_cells: Annotated[int, Parameter(
-        help="Max number of cells sampled per run for transcript-centroid-offset (speed cap).",
+    max_cells: Annotated[int, Parameter(
+        help="Max cells sampled per metric (speed cap).",
         validator=validators.Number(gt=0),
-        group=group_validation_tco,
-    )] = 3000,
-    signal_doublet: Annotated[bool, Parameter(
-        help="Compute the legacy z-spread doublet proxy. If no metric flags are set, all metrics run.",
-        group=group_validation_signal,
-    )] = False,
-    signal_hotspot: Annotated[bool, Parameter(
-        help="Compute hotspot-restricted z-coherence. If no metric flags are set, all metrics run.",
-        group=group_validation_signal,
-    )] = False,
-    vsi: Annotated[bool, Parameter(
-        help="Compute the VSI alias of hotspot-restricted z-coherence. If no metric flags are set, all metrics run.",
-        group=group_validation_signal,
-    )] = False,
-    signal_min_transcripts_per_cell: Annotated[int, Parameter(
-        help="Minimum transcripts per cell for z-based doublet metric.",
-        validator=validators.Number(gt=0),
-        group=group_validation_signal,
-    )] = 20,
-    signal_max_cells: Annotated[int, Parameter(
-        help="Max number of cells sampled per run for z-based doublet metric (speed cap).",
-        validator=validators.Number(gt=0),
-        group=group_validation_signal,
-    )] = 3000,
-    signal_doublet_threshold: Annotated[float, Parameter(
-        help="Integrity threshold below which a cell is counted as doublet-like.",
-        validator=validators.Number(gt=0, lte=1),
-        group=group_validation_signal,
-    )] = 0.6,
-    signal_hotspot_grid_size: Annotated[float, Parameter(
-        help="Pixel size for hotspot-based vertical integrity proxy (larger is faster and less sparse).",
-        validator=validators.Number(gt=0),
-        group=group_validation_signal,
-    )] = 3.0,
+        group=group_validation,
+    )] = 10000,
 ):
     """Compute lightweight validation metrics for Segger outputs.
 
@@ -1314,17 +1290,15 @@ def validate(
     from ..io import StandardTranscriptFields
     from ..validation.quick_metrics import (
         count_cells_from_anndata,
-        compute_assignment_metrics,
-        compute_border_contamination_fast,
-        compute_center_border_ncv_fast,
+        compute_coverage_metrics,
+        compute_border_expression_integrity_fast,
         compute_mecr_fast,
         compute_positive_marker_recall_fast,
-        compute_reference_morphology_match_fast,
-        compute_resolvi_contamination_fast,
-        compute_signal_doublet_fast,
-        compute_signal_hotspot_doublet_fast,
+        compute_morphological_match_fast,
+        compute_contamination_fast,
+        compute_vertical_doublet_fast,
         compute_spurious_coexpression_fast,
-        compute_transcript_centroid_offset_fast,
+        compute_expression_angular_uniformity_fast,
         load_me_gene_pairs,
         load_segmentation,
         load_source_transcripts,
@@ -1335,120 +1309,90 @@ def validate(
 
     metric_selection_explicit = any(
         (
-            assigned,
+            coverage,
             positive_marker_recall,
             mecr,
-            border_contamination,
-            center_border_ncv,
-            resolvi,
-            spurious,
-            reference_morphology,
-            tco,
-            signal_doublet,
-            signal_hotspot,
-            vsi,
+            border_expression_integrity,
+            contamination,
+            spurious_coexpression,
+            morphological_match,
+            expression_angular_uniformity,
+            vertical_doublet,
         )
     )
 
     def _metric_enabled(flag: bool) -> bool:
         return bool(flag) or not metric_selection_explicit
 
-    run_assigned = _metric_enabled(assigned)
+    run_coverage = _metric_enabled(coverage)
     run_positive_marker = _metric_enabled(positive_marker_recall)
     run_mecr = _metric_enabled(mecr)
-    run_border = _metric_enabled(border_contamination)
-    run_center_border = _metric_enabled(center_border_ncv)
-    run_resolvi = _metric_enabled(resolvi)
-    run_spurious = _metric_enabled(spurious)
-    run_reference_morph = _metric_enabled(reference_morphology)
-    run_tco = _metric_enabled(tco)
-    run_signal_doublet = _metric_enabled(signal_doublet)
-    run_hotspot = _metric_enabled(signal_hotspot) or _metric_enabled(vsi)
+    run_bei = _metric_enabled(border_expression_integrity)
+    run_ctm = _metric_enabled(contamination)
+    run_sce = _metric_enabled(spurious_coexpression)
+    run_mm = _metric_enabled(morphological_match)
+    run_eau = _metric_enabled(expression_angular_uniformity)
+    run_vd = _metric_enabled(vertical_doublet)
     run_source_metrics = any(
         (
             run_positive_marker,
-            run_border,
-            run_center_border,
-            run_resolvi,
-            run_spurious,
-            run_reference_morph,
-            run_tco,
-            run_signal_doublet,
-            run_hotspot,
+            run_bei,
+            run_ctm,
+            run_sce,
+            run_mm,
+            run_eau,
+            run_vd,
         )
     )
 
     positive_marker_empty = {
         "positive_marker_recall_fast": float("nan"),
-        "positive_marker_recall_ci95_fast": float("nan"),
         "positive_marker_types_used_fast": 0,
         "positive_marker_genes_used_fast": 0,
         "positive_marker_cells_used_fast": 0,
     }
-    border_empty = {
-        "border_contamination_fast": float("nan"),
-        "border_enrichment_fast": float("nan"),
-        "border_excess_pct_fast": float("nan"),
-        "border_contaminated_cells_pct_fast": float("nan"),
-        "border_contaminated_cells_pct_ci95_fast": float("nan"),
-        "border_metric_cells_used": 0,
+    bei_empty = {
+        "border_expression_integrity_fast": float("nan"),
+        "border_expression_integrity_ratio_fast": float("nan"),
+        "border_expression_integrity_cells_used_fast": 0,
     }
-    center_border_empty = {
-        "center_border_ncv_score_fast": float("nan"),
-        "center_border_ncv_ci95_fast": float("nan"),
-        "center_border_ncv_ratio_fast": float("nan"),
-        "center_border_ncv_cells_used_fast": 0,
-    }
-    resolvi_empty = {
-        "resolvi_contamination_pct_fast": float("nan"),
-        "resolvi_contamination_ci95_fast": float("nan"),
-        "resolvi_contaminated_cells_pct_fast": float("nan"),
-        "resolvi_contaminated_cells_pct_ci95_fast": float("nan"),
-        "resolvi_metric_cells_used": 0,
-        "resolvi_shared_genes_used": 0,
-        "resolvi_cell_types_used": 0,
+    ctm_empty = {
+        "contamination_pct_fast": float("nan"),
+        "contamination_cells_pct_fast": float("nan"),
+        "contamination_cells_used": 0,
+        "contamination_shared_genes_used": 0,
+        "contamination_cell_types_used": 0,
     }
     spurious_empty = {
         "spurious_coexpression_fast": float("nan"),
-        "spurious_coexpression_ci95_fast": float("nan"),
         "spurious_pairs_used_fast": 0,
         "spurious_pairs_discovered_fast": 0,
         "spurious_source_transcripts_used_fast": 0,
     }
-    reference_morph_empty = {
-        "reference_morphology_match_fast": float("nan"),
-        "reference_morphology_match_ci95_fast": float("nan"),
-        "reference_morphology_cells_used_fast": 0,
+    mm_empty = {
+        "morphological_match_fast": float("nan"),
+        "morphological_match_cells_used_fast": 0,
+        "morphological_match_reference_space_fast": str(morphological_match_space),
+        "mm_wasserstein_area_fast": float("nan"),
+        "mm_wasserstein_elongation_fast": float("nan"),
+        "mm_wasserstein_circularity_fast": float("nan"),
     }
-    tco_empty = {
-        "transcript_centroid_offset_fast": float("nan"),
-        "transcript_centroid_offset_ci95_fast": float("nan"),
-        "tco_metric_cells_used": 0,
+    eau_empty = {
+        "expression_angular_uniformity_fast": float("nan"),
+        "eau_cells_used": 0,
     }
-    signal_doublet_empty = {
-        "signal_doublet_like_fraction_fast": float("nan"),
-        "signal_doublet_like_fraction_ci95_fast": float("nan"),
-        "signal_metric_cells_used": 0,
-    }
-    signal_hotspot_empty = {
-        "signal_hotspot_doublet_fraction_fast": float("nan"),
-        "signal_hotspot_doublet_fraction_ci95_fast": float("nan"),
-        "signal_hotspot_cutoff_fast": float("nan"),
-        "signal_hotspot_pixels_used_fast": 0,
-        "signal_hotspot_candidate_cells_fast": 0,
-        "signal_hotspot_metric_cells_used_fast": 0,
-        "signal_hotspot_cells_scored_fast": 0,
-        "vsi_doublet_fraction_fast": float("nan"),
-        "vsi_doublet_fraction_ci95_fast": float("nan"),
-        "vsi_hotspot_cutoff_fast": float("nan"),
-        "vsi_hotspot_pixels_used_fast": 0,
-        "vsi_hotspot_candidate_cells_fast": 0,
-        "vsi_hotspot_metric_cells_used_fast": 0,
-        "vsi_hotspot_cells_scored_fast": 0,
+    vd_empty = {
+        "vertical_doublet_pct_fast": float("nan"),
+        "vertical_doublet_global_pct_fast": float("nan"),
+        "vertical_doublet_cutoff_fast": float("nan"),
+        "vertical_doublet_pixels_used_fast": 0,
+        "vertical_doublet_candidate_cells_fast": 0,
+        "vertical_doublet_metric_cells_used_fast": 0,
+        "vertical_doublet_cells_scored_fast": 0,
+        "vertical_doublet_total_cells_fast": 0,
     }
     mecr_empty = {
         "mecr_fast": float("nan"),
-        "mecr_ci95_fast": float("nan"),
         "mecr_pairs_used": 0,
     }
 
@@ -1469,9 +1413,14 @@ def validate(
         )
 
     source_tx = None
+    source_tx_error = ""
     tx_fields = StandardTranscriptFields()
     if source_path is not None and run_source_metrics:
-        source_tx = load_source_transcripts(Path(source_path))
+        try:
+            source_tx = load_source_transcripts(Path(source_path))
+        except Exception as exc:
+            source_tx = None
+            source_tx_error = f"source_load:{exc}"
 
     row: dict[str, object] = {
         "job": job,
@@ -1482,58 +1431,59 @@ def validate(
         "fragments_total": 0,
         "transcripts_total": 0,
         "transcripts_assigned": 0,
-        "transcripts_assigned_pct": float("nan"),
-        "transcripts_assigned_pct_ci95": float("nan"),
+        "coverage_pct": float("nan"),
         "cells_assigned": 0,
         "fragments_assigned": 0,
-        "positive_marker_recall_ci95_fast": float("nan"),
-        "mecr_ci95_fast": float("nan"),
-        "border_contaminated_cells_pct_ci95_fast": float("nan"),
-        "center_border_ncv_ci95_fast": float("nan"),
-        "reference_morphology_match_ci95_fast": float("nan"),
-        "resolvi_contamination_ci95_fast": float("nan"),
-        "spurious_coexpression_ci95_fast": float("nan"),
-        "transcript_centroid_offset_ci95_fast": float("nan"),
-        "signal_doublet_like_fraction_ci95_fast": float("nan"),
-        "signal_hotspot_doublet_fraction_ci95_fast": float("nan"),
-        "vsi_doublet_fraction_fast": float("nan"),
-        "vsi_doublet_fraction_ci95_fast": float("nan"),
-        "vsi_hotspot_cutoff_fast": float("nan"),
-        "vsi_hotspot_pixels_used_fast": 0,
-        "vsi_hotspot_candidate_cells_fast": 0,
-        "vsi_hotspot_metric_cells_used_fast": 0,
-        "vsi_hotspot_cells_scored_fast": 0,
-        "signal_hotspot_cutoff_fast": float("nan"),
-        "signal_hotspot_pixels_used_fast": 0,
-        "signal_hotspot_candidate_cells_fast": 0,
-        "signal_hotspot_metric_cells_used_fast": 0,
-        "signal_hotspot_cells_scored_fast": 0,
+        "validate_metric_errors": "",
     }
     row.update(positive_marker_empty)
-    row.update(border_empty)
-    row.update(center_border_empty)
-    row.update(resolvi_empty)
+    row.update(bei_empty)
+    row.update(ctm_empty)
     row.update(spurious_empty)
-    row.update(reference_morph_empty)
-    row.update(tco_empty)
-    row.update(signal_doublet_empty)
-    row.update(signal_hotspot_empty)
+    row.update(mm_empty)
+    row.update(eau_empty)
+    row.update(vd_empty)
     row.update(mecr_empty)
+
+    metric_errors: list[str] = []
+
+    # Primary output keys per metric — used to detect NaN results.
+    _metric_primary_keys = {
+        "positive_marker_recall": "positive_marker_recall_fast",
+        "border_expression_integrity": "border_expression_integrity_fast",
+        "contamination": "contamination_pct_fast",
+        "spurious_coexpression": "spurious_coexpression_fast",
+        "morphological_match": "morphological_match_fast",
+        "expression_angular_uniformity": "expression_angular_uniformity_fast",
+        "vertical_doublet": "vertical_doublet_pct_fast",
+        "mecr": "mecr_fast",
+    }
+
+    def _safe_update(metric_name: str, fn) -> None:
+        try:
+            payload = fn()
+            if isinstance(payload, dict):
+                row.update(payload)
+                pk = _metric_primary_keys.get(metric_name)
+                if pk is not None:
+                    val = payload.get(pk)
+                    if val is None or (isinstance(val, float) and not math.isfinite(val)):
+                        metric_errors.append(f"{metric_name}:result_nan")
+            else:
+                metric_errors.append(f"{metric_name}:invalid_payload")
+        except Exception as exc:
+            metric_errors.append(f"{metric_name}:{exc}")
 
     try:
         seg_df = load_segmentation(segmentation_path)
-        assignment_metrics = compute_assignment_metrics(seg_df)
+        assignment_metrics = compute_coverage_metrics(seg_df)
         row["transcripts_total"] = int(assignment_metrics.get("transcripts_total", 0))
         row["transcripts_assigned"] = int(assignment_metrics.get("transcripts_assigned", 0))
         row["cells_assigned"] = int(assignment_metrics.get("cells_assigned", 0))
         row["fragments_assigned"] = int(assignment_metrics.get("fragments_assigned", 0))
-        if run_assigned:
-            row["transcripts_assigned_pct"] = assignment_metrics.get(
-                "transcripts_assigned_pct",
-                float("nan"),
-            )
-            row["transcripts_assigned_pct_ci95"] = assignment_metrics.get(
-                "transcripts_assigned_pct_ci95",
+        if run_coverage:
+            row["coverage_pct"] = assignment_metrics.get(
+                "coverage_pct",
                 float("nan"),
             )
         row["cells_non_fragment_total"] = int(row.get("cells_assigned", 0))
@@ -1548,131 +1498,100 @@ def validate(
         if source_tx is not None:
             assigned_tx = merge_assigned_transcripts(seg_df, source_tx)
             if run_positive_marker:
-                row.update(
-                    compute_positive_marker_recall_fast(
+                _safe_update(
+                    "positive_marker_recall",
+                    lambda: compute_positive_marker_recall_fast(
                         assigned_tx,
                         scrna_reference_path=(
                             Path(scrna_reference_path) if scrna_reference_path is not None else None
                         ),
                         scrna_celltype_column=scrna_celltype_column,
                         feature_column=tx_fields.feature,
-                        min_transcripts_per_cell=border_min_transcripts_per_cell,
-                        max_cells=border_max_cells,
+                        min_transcripts_per_cell=min_transcripts_per_cell,
+                        max_cells=max_cells,
                         seed=random_seed,
+                        source_tx=source_tx,
                     )
                 )
-            if run_border:
-                row.update(
-                    compute_border_contamination_fast(
-                        assigned_tx,
-                        erosion_fraction=border_erosion_fraction,
-                        min_transcripts_per_cell=border_min_transcripts_per_cell,
-                        max_cells=border_max_cells,
-                        contaminated_enrichment_threshold=border_contaminated_enrichment_threshold,
-                        seed=random_seed,
-                    )
-                )
-            if run_center_border:
-                row.update(
-                    compute_center_border_ncv_fast(
+            if run_bei:
+                _safe_update(
+                    "border_expression_integrity",
+                    lambda: compute_border_expression_integrity_fast(
                         assigned_tx,
                         feature_column=tx_fields.feature,
-                        erosion_fraction=border_erosion_fraction,
-                        min_transcripts_per_cell=border_min_transcripts_per_cell,
-                        max_cells=border_max_cells,
+                        min_transcripts_per_cell=min_transcripts_per_cell,
+                        max_cells=max_cells,
                         seed=random_seed,
                     )
                 )
-            if run_tco:
-                row.update(
-                    compute_transcript_centroid_offset_fast(
+            if run_eau:
+                _safe_update(
+                    "expression_angular_uniformity",
+                    lambda: compute_expression_angular_uniformity_fast(
                         assigned_tx,
-                        min_transcripts_per_cell=tco_min_transcripts_per_cell,
-                        max_cells=tco_max_cells,
+                        min_transcripts_per_cell=min_transcripts_per_cell,
+                        max_cells=max_cells,
                         seed=random_seed,
                     )
                 )
-            if run_signal_doublet:
-                row.update(
-                    compute_signal_doublet_fast(
+            if run_vd:
+                _safe_update(
+                    "vertical_doublet",
+                    lambda: compute_vertical_doublet_fast(
+                        source_tx,
                         assigned_tx,
+                        feature_column=tx_fields.feature,
                         z_column=tx_fields.z,
-                        min_transcripts_per_cell=signal_min_transcripts_per_cell,
-                        max_cells=signal_max_cells,
+                        min_transcripts_per_cell=min_transcripts_per_cell,
+                        max_cells=max_cells,
                         seed=random_seed,
-                        doublet_threshold=signal_doublet_threshold,
                     )
                 )
-            if run_hotspot:
-                hotspot_metrics = compute_signal_hotspot_doublet_fast(
-                    source_tx,
-                    assigned_tx,
-                    feature_column=tx_fields.feature,
-                    z_column=tx_fields.z,
-                    grid_size=signal_hotspot_grid_size,
-                    min_transcripts_per_cell=signal_min_transcripts_per_cell,
-                    max_cells=signal_max_cells,
-                    seed=random_seed,
-                    doublet_threshold=signal_doublet_threshold,
-                )
-                row.update(hotspot_metrics)
-                row.update(
-                    {
-                        "vsi_doublet_fraction_fast": hotspot_metrics["signal_hotspot_doublet_fraction_fast"],
-                        "vsi_doublet_fraction_ci95_fast": hotspot_metrics[
-                            "signal_hotspot_doublet_fraction_ci95_fast"
-                        ],
-                        "vsi_hotspot_cutoff_fast": hotspot_metrics["signal_hotspot_cutoff_fast"],
-                        "vsi_hotspot_pixels_used_fast": hotspot_metrics[
-                            "signal_hotspot_pixels_used_fast"
-                        ],
-                        "vsi_hotspot_candidate_cells_fast": hotspot_metrics[
-                            "signal_hotspot_candidate_cells_fast"
-                        ],
-                        "vsi_hotspot_metric_cells_used_fast": hotspot_metrics[
-                            "signal_hotspot_metric_cells_used_fast"
-                        ],
-                        "vsi_hotspot_cells_scored_fast": hotspot_metrics[
-                            "signal_hotspot_cells_scored_fast"
-                        ],
-                    }
-                )
-            if run_spurious:
-                row.update(
-                    compute_spurious_coexpression_fast(
+            if run_sce:
+                _safe_update(
+                    "spurious_coexpression",
+                    lambda: compute_spurious_coexpression_fast(
                         source_tx,
                         assigned_tx,
                         feature_column=tx_fields.feature,
-                        min_transcripts_per_cell=border_min_transcripts_per_cell,
-                        max_cells=border_max_cells,
+                        compartment_column=tx_fields.compartment,
+                        min_transcripts_per_cell=min_transcripts_per_cell,
                         seed=random_seed,
                     )
                 )
-            if run_reference_morph:
-                row.update(
-                    compute_reference_morphology_match_fast(
+            if run_mm:
+                _safe_update(
+                    "morphological_match",
+                    lambda: compute_morphological_match_fast(
                         source_tx,
                         assigned_tx,
+                        compartment_column=tx_fields.compartment,
+                        nucleus_value=int(morphological_match_nucleus_value),
+                        reference_space=str(morphological_match_space),
                     )
                 )
-            if run_resolvi:
-                row.update(
-                    compute_resolvi_contamination_fast(
+            if run_ctm:
+                _safe_update(
+                    "contamination",
+                    lambda: compute_contamination_fast(
                         assigned_tx,
                         scrna_reference_path=(
                             Path(scrna_reference_path) if scrna_reference_path is not None else None
                         ),
                         scrna_celltype_column=scrna_celltype_column,
                         feature_column=tx_fields.feature,
-                        min_transcripts_per_cell=border_min_transcripts_per_cell,
-                        max_cells=border_max_cells,
+                        min_transcripts_per_cell=min_transcripts_per_cell,
+                        max_cells=max_cells,
                         seed=random_seed,
                     )
                 )
+        elif run_source_metrics and source_path is not None:
+            metric_errors.append(source_tx_error or "source_load:missing_source_transcripts")
 
         if run_mecr and anndata_path is not None and Path(anndata_path).exists() and len(gene_pairs) > 0:
-            row.update(
-                compute_mecr_fast(
+            _safe_update(
+                "mecr",
+                lambda: compute_mecr_fast(
                     Path(anndata_path),
                     gene_pairs=gene_pairs,
                     max_pairs=max_me_gene_pairs,
@@ -1681,10 +1600,13 @@ def validate(
                 )
             )
 
-        row["validate_status"] = "ok"
+        row["validate_status"] = "ok_partial" if metric_errors else "ok"
+        row["validate_metric_errors"] = " | ".join(metric_errors)
     except Exception as exc:
         row["validate_status"] = "failed"
         row["validate_error"] = str(exc)
+        if metric_errors:
+            row["validate_metric_errors"] = " | ".join(metric_errors)
 
     row["elapsed_s"] = round(time.time() - t0, 3)
     result_df = pl.DataFrame([row])

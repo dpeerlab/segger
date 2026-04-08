@@ -95,6 +95,9 @@ def build_anndata_table(
         .filter(pl.col(cell_id_column).is_not_null())
         .filter(pl.col(OBJECT_TYPE_COLUMN) != "unassigned")
     )
+    # Filter by keep column when present (GMM threshold)
+    if "keep" in assigned.columns:
+        assigned = assigned.filter(pl.col("keep"))
 
     # Gene list from all transcripts (even if no assignments)
     var_idx = (

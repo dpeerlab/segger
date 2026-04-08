@@ -122,7 +122,7 @@ class ISTDataModule(LightningDataModule):
         Feature representation used for cell embeddings.
     cells_embedding_size : int or None, default=128
         Dimensionality of the cell embedding space.
-    cells_min_counts : int, default=10
+    cells_min_counts : int, default=3
         Minimum transcript count threshold per cell.
     cells_clusters_n_neighbors : int, default=10
         Number of neighbors for cell clustering.
@@ -149,10 +149,13 @@ class ISTDataModule(LightningDataModule):
         construction. Values > 1 expand, values < 1 shrink.
     tiling_mode : {"adaptive", "square"}, default="adaptive"
         Strategy for spatial graph tiling (adaptive quadtree or grid).
-    tiling_margin_training : float, default=8.0
+    tiling_margin_training : float, default=20.0
         Margin width (in µm) added to tiles during training.
-    tiling_margin_prediction : float, default=8.0
+    tiling_margin_prediction : float or None, default=None
         Margin width (in µm) added to tiles during prediction.
+        If None, automatically set to ``median_cell_radius *
+        prediction_graph_scale_factor * 3`` to ensure that scaled
+        boundary centroids remain reachable from transcript tiles.
     tiling_nodes_per_tile : int, default=50000
         Maximum number of nodes per tile for adaptive tiling.
     tiling_side_length : float, default=250.0
@@ -166,10 +169,10 @@ class ISTDataModule(LightningDataModule):
     num_workers: int = 8
     cells_representation_mode: Literal["pca", "morphology"] = "pca"
     cells_embedding_size: int | None = 128
-    cells_min_counts: int = 10
+    cells_min_counts: int = 3
     cells_clusters_n_neighbors: int = 10
     cells_clusters_resolution: float = 2.
-    genes_min_counts: int = 100
+    genes_min_counts: int = 10
     genes_clusters_n_neighbors: int = 5
     genes_clusters_resolution: float = 2.
     transcripts_graph_max_k: int = 5
@@ -187,8 +190,8 @@ class ISTDataModule(LightningDataModule):
     scrna_celltype_column: str = "cell_type"
     me_gene_pairs: Optional[list[tuple[str, str]]] = None
     tiling_mode: Literal["adaptive", "square"] = "adaptive"  # TODO: Remove (benchmarking only)
-    tiling_margin_training: float = 8.
-    tiling_margin_prediction: float = 8.
+    tiling_margin_training: float = 20.
+    tiling_margin_prediction: float | None = None
     tiling_nodes_per_tile: int = 50_000
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
@@ -249,29 +252,28 @@ class ISTDataModule(LightningDataModule):
         if hasattr(self, "hparams"):
             self.hparams.me_gene_pairs = self.me_gene_pairs
 
-        # Load standardized IST data (raw platform directory or SpatialData .zarr)
+        # Load standardized IST data.
+        # SpatialData .zarr stores are only used when the path ends in .zarr;
+        # raw platform directories (Xenium, MERSCOPE, CosMX) always go through
+        # the platform-specific preprocessor to keep boundary loading stable.
         input_path = Path(self.input_directory)
-        tx = None
-        bd = None
+        use_spatialdata = input_path.suffix == ".zarr"
 
-        try:
-            from ..io.spatialdata_loader import (
-                is_spatialdata_path,
-                load_from_spatialdata,
-            )
-            has_spatialdata_loader = True
-        except Exception:
-            has_spatialdata_loader = False
-
-        if has_spatialdata_loader and is_spatialdata_path(input_path):
-            tx_lf, bd = load_from_spatialdata(
-                input_path,
-                boundary_type="all",
-                normalize=True,
-                min_qv=self.min_qv,
-                apply_platform_filters=True,
-            )
-            tx = tx_lf.collect() if isinstance(tx_lf, pl.LazyFrame) else tx_lf
+        if use_spatialdata:
+            try:
+                from ..io.spatialdata_loader import load_from_spatialdata
+                tx_lf, bd = load_from_spatialdata(
+                    input_path,
+                    boundary_type="all",
+                    normalize=True,
+                    min_qv=self.min_qv,
+                    apply_platform_filters=True,
+                )
+                tx = tx_lf.collect() if isinstance(tx_lf, pl.LazyFrame) else tx_lf
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load SpatialData from {input_path}: {exc}"
+                ) from exc
         else:
             pp = get_preprocessor(
                 self.input_directory,
@@ -452,6 +454,34 @@ class ISTDataModule(LightningDataModule):
             use_3d=self.use_3d,
             me_gene_pairs=self.me_gene_pairs,
         )
+        # Auto-compute the boundary-node margin from actual cell sizes so
+        # that scaled polygon centroids remain reachable from transcript
+        # tiles.  The tiling margin stays moderate (avoids "tile disappear"
+        # errors); only the bd-node lookup uses the wider radius.
+        cell_areas = bd.loc[
+            bd[bd_fields.boundary_type] == bd_fields.cell_value, "geometry"
+        ].area
+        if len(cell_areas) > 0:
+            median_radius = float(np.sqrt(np.median(cell_areas) / np.pi))
+            self._bd_margin = max(
+                20.0,
+                median_radius * self.prediction_graph_scale_factor * 3,
+            )
+        else:
+            self._bd_margin = 20.0
+
+        if self.tiling_margin_prediction is None:
+            self.tiling_margin_prediction = 20.0
+
+        LOGGER.info(
+            "Prediction margins: tiling=%.1f µm, bd_node=%.1f µm "
+            "(scale_factor=%.1f, median_cell_radius=%.1f µm).",
+            self.tiling_margin_prediction,
+            self._bd_margin,
+            self.prediction_graph_scale_factor,
+            median_radius if len(cell_areas) > 0 else 0.0,
+        )
+
         # Tile graph dataset
         node_positions = torch.vstack([
             self.data['tx']['pos'],
@@ -549,6 +579,7 @@ class ISTDataModule(LightningDataModule):
                         data=self.data,
                         tiling=self.tiling,
                         margin=margin,
+                        bd_margin=self._bd_margin,
                     )
                 except (ValueError, RuntimeError) as exc:
                     if not _is_recoverable_tiling_error(exc):

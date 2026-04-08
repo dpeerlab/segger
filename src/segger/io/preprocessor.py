@@ -977,13 +977,15 @@ class XeniumPreprocessor(ISTPreprocessor):
                 compartment_value=std_tx.nucleus_value,
             )
 
-        # 10X Xenium nucleus segmentation is intersection of geometries
+        # 10X Xenium nucleus segmentation is intersection of geometries.
+        # make_valid is applied for the intersection only — original
+        # boundary geometries are kept as-is (Polygon, not MultiPolygon).
         idx = cells.index.intersection(nuclei.index)
         if len(idx) > 0 and has_cell and has_nuc:
             import shapely
-            cells.loc[idx, cells.geometry.name] = shapely.make_valid(cells.loc[idx].geometry)
-            nuclei.loc[idx, nuclei.geometry.name] = shapely.make_valid(nuclei.loc[idx].geometry)
-            _ = cells.loc[idx].intersection(nuclei.loc[idx])
+            valid_cells = shapely.make_valid(cells.loc[idx].geometry)
+            valid_nuclei = shapely.make_valid(nuclei.loc[idx].geometry)
+            _ = valid_cells.intersection(valid_nuclei)
 
         if len(cells) == 0 and len(nuclei) > 0:
             cells = nuclei.copy()

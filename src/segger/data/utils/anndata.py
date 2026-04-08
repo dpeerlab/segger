@@ -25,6 +25,9 @@ def anndata_from_transcripts(
     """
     # Remove non-nuclear transcript
     tx = tx.filter(pl.col(cell_id_column).is_not_null())
+    # Filter by keep column when present (GMM threshold)
+    if "keep" in tx.columns:
+        tx = tx.filter(pl.col("keep"))
     if tx.height == 0:
         raise ValueError(
             "No transcripts with assigned cell IDs remain after filtering. "
@@ -159,34 +162,19 @@ def setup_anndata(
         coordinate_columns=[tx_fields.x, tx_fields.y],
     )
 
-    # Map boundary cell IDs to boundary index (robust to mixed dtypes/missing IDs).
-    boundary_lookup = (
+    # Map boundary cell IDs to boundary index.
+    boundary_index_series = (
         boundaries
-        .reset_index(names=bd_fields.index)[[bd_fields.id, bd_fields.index]]
-        .dropna(subset=[bd_fields.id, bd_fields.index])
-        .copy()
-    )
-    boundary_lookup[bd_fields.id] = boundary_lookup[bd_fields.id].astype(str)
-    boundary_lookup = (
-        boundary_lookup
-        .drop_duplicates(subset=[bd_fields.id], keep="first")
+        .reset_index(names=bd_fields.index)
+        .astype({bd_fields.id: str})
         .set_index(bd_fields.id, verify_integrity=True)
         .get(bd_fields.index)
     )
 
-    obs = ad.obs.copy()
-    obs.index = obs.index.astype(str)
-    obs[bd_fields.index] = obs.index.to_series().map(boundary_lookup)
-    obs = obs.loc[obs[bd_fields.index].notna()].copy()
-    obs = obs.loc[~obs[bd_fields.index].duplicated(keep="first")].copy()
-    if len(obs) == 0:
-        raise ValueError(
-            "No transcripts could be matched to valid boundary indices after boundary normalization."
-        )
-
-    ad = ad[obs.index].copy()
+    ad.obs.index = ad.obs.index.astype(str)
     ad.obs = (
-        obs
+        ad.obs
+        .join(boundary_index_series, how="left", validate="1:1")
         .reset_index(names=bd_fields.id)
         .set_index(bd_fields.index, verify_integrity=True)
     )

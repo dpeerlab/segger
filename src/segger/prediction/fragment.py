@@ -7,6 +7,7 @@ create "fragment cells" from spatially proximal unassigned transcripts.
 """
 
 from typing import Any
+import os
 import numpy as np
 import polars as pl
 
@@ -41,6 +42,33 @@ def _to_cupy(array: Any):
     return cp.asarray(array)
 
 
+def _to_numpy(array: Any) -> np.ndarray:
+    """Convert numpy/torch/cupy arrays to numpy.ndarray."""
+    if isinstance(array, np.ndarray):
+        return array
+    if HAS_RAPIDS and isinstance(array, cp.ndarray):
+        return cp.asnumpy(array)
+    try:
+        import torch  # local optional import
+    except Exception:
+        torch = None
+    if torch is not None and isinstance(array, torch.Tensor):
+        return array.detach().cpu().numpy()
+    return np.asarray(array)
+
+
+def _is_gpu_oom(exc: Exception) -> bool:
+    """Best-effort detection for CUDA/RAPIDS memory allocation failures."""
+    text = str(exc).lower()
+    return (
+        isinstance(exc, MemoryError)
+        or "out_of_memory" in text
+        or "cudaerrormemoryallocation" in text
+        or "std::bad_alloc" in text
+        or "rmm" in text and "memory" in text
+    )
+
+
 def compute_fragment_assignments(
     source_ids: Any,
     target_ids: Any,
@@ -67,36 +95,69 @@ def compute_fragment_assignments(
         - transcript IDs for valid fragment components
         - component label for each transcript ID
     """
+    debug_fragment = os.getenv("SEGGER_DEBUG_FRAGMENT", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    max_cc_nodes_env = os.getenv("SEGGER_FRAGMENT_MAX_CC_NODES", "").strip()
+    max_cc_nodes = 0
+    if max_cc_nodes_env:
+        try:
+            max_cc_nodes = max(0, int(max_cc_nodes_env))
+        except ValueError:
+            if debug_fragment:
+                print(
+                    "[segger][fragment] ignoring invalid "
+                    "SEGGER_FRAGMENT_MAX_CC_NODES",
+                    flush=True,
+                )
+    force_cpu_cc = os.getenv("SEGGER_FRAGMENT_FORCE_CPU_CC", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    if force_cpu_cc:
+        use_gpu = False
+
     if use_gpu and HAS_RAPIDS:
-        src = _to_cupy(source_ids)
-        dst = _to_cupy(target_ids)
-        if src.size == 0:
-            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+        try:
+            src = _to_cupy(source_ids)
+            dst = _to_cupy(target_ids)
+            if src.size == 0:
+                return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
-        unique_ids = cp.unique(cp.concatenate([src, dst]))
-        n_nodes = int(unique_ids.size)
-        if n_nodes == 0:
-            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+            unique_ids = cp.unique(cp.concatenate([src, dst]))
+            n_nodes = int(unique_ids.size)
+            if n_nodes == 0:
+                return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
-        src_idx = cp.searchsorted(unique_ids, src)
-        dst_idx = cp.searchsorted(unique_ids, dst)
-        data = cp.ones(int(src_idx.size) * 2, dtype=cp.float32)
-        rows = cp.concatenate([src_idx, dst_idx])
-        cols = cp.concatenate([dst_idx, src_idx])
-        adj_matrix = cp_csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
-        n_components, labels = cc_gpu(adj_matrix, directed=False)
+            src_idx = cp.searchsorted(unique_ids, src).astype(cp.int32, copy=False)
+            dst_idx = cp.searchsorted(unique_ids, dst).astype(cp.int32, copy=False)
+            # With directed=False, one directed edge is enough for undirected connectivity.
+            # Avoid explicit symmetric duplication to reduce GPU memory pressure.
+            data = cp.ones(int(src_idx.size), dtype=cp.uint8)
+            adj_matrix = cp_csr_matrix((data, (src_idx, dst_idx)), shape=(n_nodes, n_nodes))
+            n_components, labels = cc_gpu(adj_matrix, directed=False)
 
-        counts = cp.bincount(labels, minlength=int(n_components))
-        valid_node_mask = counts[labels] >= min_transcripts
-        if not bool(cp.any(valid_node_mask)):
-            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+            counts = cp.bincount(labels, minlength=int(n_components))
+            valid_node_mask = counts[labels] >= min_transcripts
+            if max_cc_nodes > 0:
+                valid_node_mask = valid_node_mask & (counts[labels] <= max_cc_nodes)
+            if not bool(cp.any(valid_node_mask)):
+                return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
-        valid_ids = unique_ids[valid_node_mask]
-        valid_labels = labels[valid_node_mask]
-        return cp.asnumpy(valid_ids), cp.asnumpy(valid_labels.astype(cp.int64))
+            valid_ids = unique_ids[valid_node_mask]
+            valid_labels = labels[valid_node_mask]
+            return cp.asnumpy(valid_ids), cp.asnumpy(valid_labels.astype(cp.int64))
+        except Exception as exc:
+            if not _is_gpu_oom(exc):
+                raise
+            if debug_fragment:
+                print(
+                    "[segger][fragment] RAPIDS connected-components OOM; "
+                    "falling back to CPU connected-components.",
+                    flush=True,
+                )
 
-    src = np.asarray(source_ids)
-    dst = np.asarray(target_ids)
+    src = _to_numpy(source_ids)
+    dst = _to_numpy(target_ids)
     if src.size == 0:
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
@@ -106,16 +167,17 @@ def compute_fragment_assignments(
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
     id_to_idx = {id_: idx for idx, id_ in enumerate(unique_ids)}
-    src_idx = np.array([id_to_idx[s] for s in src], dtype=np.int64)
-    dst_idx = np.array([id_to_idx[d] for d in dst], dtype=np.int64)
-    data = np.ones(len(src_idx) * 2, dtype=np.float32)
-    rows = np.concatenate([src_idx, dst_idx])
-    cols = np.concatenate([dst_idx, src_idx])
-    adj_matrix = csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+    src_idx = np.array([id_to_idx[s] for s in src], dtype=np.int32)
+    dst_idx = np.array([id_to_idx[d] for d in dst], dtype=np.int32)
+    # With directed=False, one directed edge is enough for undirected connectivity.
+    data = np.ones(len(src_idx), dtype=np.uint8)
+    adj_matrix = csr_matrix((data, (src_idx, dst_idx)), shape=(n_nodes, n_nodes))
     n_components, labels = cc_cpu(adj_matrix, directed=False)
 
     counts = np.bincount(labels, minlength=int(n_components))
     valid_node_mask = counts[labels] >= min_transcripts
+    if max_cc_nodes > 0:
+        valid_node_mask = valid_node_mask & (counts[labels] <= max_cc_nodes)
     if not np.any(valid_node_mask):
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
@@ -166,22 +228,20 @@ def compute_fragment_components(
     src_idx = np.array([id_to_idx[s] for s in src])
     dst_idx = np.array([id_to_idx[d] for d in dst])
 
-    # Create symmetric adjacency matrix
-    data = np.ones(len(src_idx) * 2)
-    rows = np.concatenate([src_idx, dst_idx])
-    cols = np.concatenate([dst_idx, src_idx])
+    # With directed=False, one directed edge is enough for undirected connectivity.
+    data = np.ones(len(src_idx), dtype=np.uint8)
 
     # Use GPU or CPU connected components
     if use_gpu and HAS_RAPIDS:
         adj_matrix = cp_csr_matrix(
-            (cp.asarray(data), (cp.asarray(rows), cp.asarray(cols))),
+            (cp.asarray(data), (cp.asarray(src_idx, dtype=cp.int32), cp.asarray(dst_idx, dtype=cp.int32))),
             shape=(n_nodes, n_nodes),
         )
         _, labels = cc_gpu(adj_matrix, directed=False)
         labels = cp.asnumpy(labels)
     else:
         adj_matrix = csr_matrix(
-            (data, (rows, cols)),
+            (data, (src_idx.astype(np.int32, copy=False), dst_idx.astype(np.int32, copy=False))),
             shape=(n_nodes, n_nodes),
         )
         _, labels = cc_cpu(adj_matrix, directed=False)

@@ -54,6 +54,8 @@ segger export -s segger_segmentation.parquet -i /path/to/source -o /path/to/expo
 | `--x-column` | `x` | X coordinate column |
 | `--y-column` | `y` | Y coordinate column |
 | `--z-column` | `z` | Z coordinate column |
+| `--min-similarity` | None | Fixed similarity threshold [0,1]. Overrides per-gene thresholds. Recomputes the `keep` column |
+| `--min-similarity-shift` | 0.0 | Subtractive relaxation on per-gene thresholds. Positive values lower the threshold (more permissive). Recomputes the `keep` column. Only effective when `--min-similarity` is not set |
 
 ### Input/Output Format
 
@@ -77,12 +79,34 @@ segger export -s segger_segmentation.parquet -i /path/to/source -o /path/to/expo
 
 ---
 
+## How the `keep` Column Works
+
+The segmentation parquet (`segger_segmentation.parquet`) from `segment` or `predict` contains all transcript assignments — **nothing is filtered**. A `keep` column marks which transcripts passed the per-gene Li+Yen similarity threshold:
+
+| Column | Description |
+|--------|-------------|
+| `segger_cell_id` | Best cell assignment (null only if no boundary polygon contained the transcript) |
+| `segger_similarity` | Cosine similarity to the assigned boundary |
+| `similarity_threshold` | Per-gene threshold computed via `min(threshold_li, threshold_yen)` |
+| `keep` | `True` if `similarity >= threshold` and cell is assigned |
+
+**All export formats filter by `keep`.** Only transcripts with `keep=True` are included in exported cell boundaries, count matrices, and merged tables.
+
+### Overriding thresholds at export time
+
+You can adjust which transcripts pass the threshold without re-running prediction:
+
+- **`--min-similarity 0.3`**: Sets a fixed global threshold. Recomputes `keep` as `similarity >= 0.3`, ignoring per-gene thresholds entirely.
+- **`--min-similarity-shift 0.1`**: Subtracts 0.1 from each per-gene threshold, making the filter more permissive. Recomputes `keep` using the relaxed thresholds.
+
+These flags only affect the `keep` column during export — the underlying parquet is never modified.
+
 ## Relationship to Training and Prediction
 
 The export command operates on the output of `segment` or `predict`. The quality of exported segmentations depends on upstream parameter choices:
 
-- **Unassigned transcripts** (null `segger_cell_id`) are excluded from cell boundaries and count matrices. Typical assignment rates range from 50–90% depending on `--prediction-scale-factor` (see [SEGMENT.md](SEGMENT.md#empirical-parameter-guide)). If too many transcripts are unassigned, consider increasing the scale factor or using `--min-similarity-shift` during prediction.
-- **Fragment cells** (IDs starting with `fragment-`) are included in all export formats. Fragment mode at low scale factors can inflate MECR 2–6x while boosting assignment to 95%+. This trades specificity for completeness in the exported data.
+- **Unassigned transcripts** (null `segger_cell_id` or `keep=False`) are excluded from cell boundaries and count matrices. Typical assignment rates range from 50–90% depending on `--prediction-scale-factor` (see [SEGMENT.md](SEGMENT.md#empirical-parameter-guide)). If too many transcripts have `keep=False`, use `--min-similarity-shift` to relax thresholds at export time.
+- **Fragment cells** (IDs starting with `fragment-`) are included in all export formats with `keep=True`. Fragment mode at low scale factors can inflate MECR 2–6x while boosting assignment to 95%+. This trades specificity for completeness in the exported data.
 - The `--area-low` / `--area-high` filters in export apply to polygon area after boundary generation — they do not change the underlying assignment. For `convex_hull` or `delaunay` boundaries, cells with very few transcripts may produce degenerate polygons that fall below `--area-low`.
 - **Boundary method choice**: `input` boundaries come from the platform (most accurate). `convex_hull` is fast but overestimates area for non-convex cells. `delaunay` produces tighter boundaries but is slower with `--num-workers 1`.
 - **Memory**: Export loads the full segmentation parquet and source transcript data into memory. For large datasets (>100M transcripts), expect 40–80 GB RAM. The Xenium Explorer Zarr writer is the most memory-intensive format; `merged` is the lightest.
@@ -113,6 +137,16 @@ Writes a SpatialData-compatible `.zarr` store with transcript points and (option
 # Xenium Explorer export
 segger export -s output/segger_segmentation.parquet \
     -i /data/xenium_run -o /export/xenium
+
+# Relax per-gene thresholds for higher yield
+segger export -s output/segger_segmentation.parquet \
+    -i /data/xenium_run -o /export/xenium \
+    --min-similarity-shift 0.1
+
+# Use a fixed global threshold instead of per-gene
+segger export -s output/segger_segmentation.parquet \
+    -i /data/xenium_run -o /export/xenium \
+    --min-similarity 0.3
 
 # Parallel export with convex hull boundaries
 segger export -s output/segger_segmentation.parquet \

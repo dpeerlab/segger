@@ -281,7 +281,7 @@ def merge_predictions_with_transcripts(
     pred_cols = [row_index_column, cell_id_column]
     if similarity_column and similarity_column in predictions.columns:
         pred_cols.append(similarity_column)
-    for column in (FRAGMENT_FLAG_COLUMN, OBJECT_TYPE_COLUMN, OBJECT_GROUP_COLUMN):
+    for column in ("keep", "similarity_threshold", FRAGMENT_FLAG_COLUMN, OBJECT_TYPE_COLUMN, OBJECT_GROUP_COLUMN):
         if column in predictions.columns:
             pred_cols.append(column)
 

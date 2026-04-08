@@ -83,6 +83,7 @@ profile_default/
 ipython_config.py
 
 scripts/
+docs/SKILL_WORKFLOWS.md
 presentations/
 .claude/
 .pytest_cache/

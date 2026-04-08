@@ -27,16 +27,17 @@ Options:
   --include-default-10x <bool>    Include ref_10x_cell/ref_10x_nucleus rows (default: true)
   --exclude-fragment-jobs <bool>  Skip fragment-mode jobs (name contains "fragon") (default: false)
   --progressive-write <bool>      Update output TSV incrementally while running (default: true)
-  --include-border-contamination <bool>
-                                  Include border-contamination metric (default: false)
   --include-positive-marker-recall <bool>
                                   Include positive-marker-recall metric (default: false)
-  --include-center-border-ncv <bool>
-                                  Include center-border-ncv metric (default: false)
+  --include-center-border-similarity <bool>
+                                  Include center-border-similarity metric (default: false)
   --include-resolvi <bool>        Include resolvi contamination metric (default: false)
-  --include-tco <bool>            Include transcript-centroid-offset metric (default: false)
+  --include-sce <bool>            Include spurious-coexpression metric (default: false)
+  --include-mm <bool>             Include morphological-match metric (default: false)
+  --include-aes <bool>            Include angular-expression-symmetry metric (default: false)
   --include-vsi <bool>            Include VSI metric (default: false)
   --reference-universe-seg <file> Canonical Segger universe segmentation override
+  --only-jobs <csv>               Optional comma-separated job names to validate (e.g. baseline)
   -h, --help                      Show this help
 EOF
 }
@@ -80,6 +81,53 @@ normalize_bool() {
   esac
 }
 
+flag_present_in_help() {
+  local help_text="${1:-}"
+  local flag="${2:-}"
+  local escaped=""
+  if [[ -z "${help_text}" ]] || [[ -z "${flag}" ]]; then
+    return 1
+  fi
+  escaped="$(printf '%s' "${flag}" | sed 's/[][(){}.^$*+?|\\/]/\\&/g')"
+  # Use -a to treat help output as text even when it contains UTF-8 box drawing
+  # or terminal color escape bytes from wrappers.
+  printf '%s\n' "${help_text}" | grep -aEiq "(^|[^A-Za-z0-9-])${escaped}([^A-Za-z0-9-]|$)"
+}
+
+pick_validate_flag() {
+  local help_text="${1:-}"
+  shift || true
+  local flag
+  for flag in "$@"; do
+    if flag_present_in_help "${help_text}" "${flag}"; then
+      printf '%s' "${flag}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+trim_spaces() {
+  local s="${1:-}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "${s}"
+}
+
+csv_contains_exact() {
+  local needle="$1"
+  local csv="$2"
+  local item trimmed
+  IFS=',' read -r -a _csv_items <<< "${csv}"
+  for item in "${_csv_items[@]}"; do
+    trimmed="$(trim_spaces "${item}")"
+    if [[ -n "${trimmed}" ]] && [[ "${trimmed}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 metric_missing() {
   local value="${1:-}"
   local lc
@@ -101,13 +149,15 @@ GPU_B="${GPU_B:-1}"
 INCLUDE_DEFAULT_10X="true"
 EXCLUDE_FRAGMENT_JOBS="false"
 PROGRESSIVE_WRITE="true"
-INCLUDE_BORDER_CONTAMINATION="false"
 INCLUDE_POSITIVE_MARKER_RECALL="false"
-INCLUDE_CENTER_BORDER_NCV="false"
-INCLUDE_RESOLVI="false"
-INCLUDE_TCO="false"
-INCLUDE_VSI="false"
+INCLUDE_BEI="false"
+INCLUDE_CTM="false"
+INCLUDE_SCE="false"
+INCLUDE_MM="false"
+INCLUDE_EAU="false"
+INCLUDE_VD="false"
 REFERENCE_UNIVERSE_SEG=""
+ONLY_JOBS_CSV=""
 RECOMPUTE=0
 VALIDATE_FAST_FLAGS=()
 NEED_SOURCE_INPUT="false"
@@ -197,39 +247,49 @@ while [[ $# -gt 0 ]]; do
       PROGRESSIVE_WRITE="$2"
       shift 2
       ;;
-    --include-border-contamination)
-      require_value "$1" "${2-}"
-      INCLUDE_BORDER_CONTAMINATION="$2"
-      shift 2
-      ;;
     --include-positive-marker-recall)
       require_value "$1" "${2-}"
       INCLUDE_POSITIVE_MARKER_RECALL="$2"
       shift 2
       ;;
-    --include-center-border-ncv)
+    --include-center-border-similarity|--include-center-border-ncv|--include-bei)
       require_value "$1" "${2-}"
-      INCLUDE_CENTER_BORDER_NCV="$2"
+      INCLUDE_BEI="$2"
       shift 2
       ;;
-    --include-resolvi)
+    --include-resolvi|--include-border-contamination|--include-ctm)
       require_value "$1" "${2-}"
-      INCLUDE_RESOLVI="$2"
+      INCLUDE_CTM="$2"
       shift 2
       ;;
-    --include-tco)
+    --include-spurious-coexpression|--include-sce)
       require_value "$1" "${2-}"
-      INCLUDE_TCO="$2"
+      INCLUDE_SCE="$2"
       shift 2
       ;;
-    --include-vsi)
+    --include-morphological-match|--include-mm)
       require_value "$1" "${2-}"
-      INCLUDE_VSI="$2"
+      INCLUDE_MM="$2"
+      shift 2
+      ;;
+    --include-aes|--include-tco|--include-eau)
+      require_value "$1" "${2-}"
+      INCLUDE_EAU="$2"
+      shift 2
+      ;;
+    --include-vsi|--include-vd)
+      require_value "$1" "${2-}"
+      INCLUDE_VD="$2"
       shift 2
       ;;
     --reference-universe-seg)
       require_value "$1" "${2-}"
       REFERENCE_UNIVERSE_SEG="$2"
+      shift 2
+      ;;
+    --only-jobs)
+      require_value "$1" "${2-}"
+      ONLY_JOBS_CSV="$2"
       shift 2
       ;;
     -h|--help)
@@ -265,63 +325,134 @@ if ! PROGRESSIVE_WRITE="$(normalize_bool "${PROGRESSIVE_WRITE}")"; then
   echo "ERROR: --progressive-write must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_BORDER_CONTAMINATION="$(normalize_bool "${INCLUDE_BORDER_CONTAMINATION}")"; then
-  echo "ERROR: --include-border-contamination must be true/false." >&2
-  exit 1
-fi
 if ! INCLUDE_POSITIVE_MARKER_RECALL="$(normalize_bool "${INCLUDE_POSITIVE_MARKER_RECALL}")"; then
   echo "ERROR: --include-positive-marker-recall must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_CENTER_BORDER_NCV="$(normalize_bool "${INCLUDE_CENTER_BORDER_NCV}")"; then
-  echo "ERROR: --include-center-border-ncv must be true/false." >&2
+if ! INCLUDE_BEI="$(normalize_bool "${INCLUDE_BEI}")"; then
+  echo "ERROR: --include-bei must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_RESOLVI="$(normalize_bool "${INCLUDE_RESOLVI}")"; then
-  echo "ERROR: --include-resolvi must be true/false." >&2
+if ! INCLUDE_CTM="$(normalize_bool "${INCLUDE_CTM}")"; then
+  echo "ERROR: --include-ctm must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_TCO="$(normalize_bool "${INCLUDE_TCO}")"; then
-  echo "ERROR: --include-tco must be true/false." >&2
+if ! INCLUDE_SCE="$(normalize_bool "${INCLUDE_SCE}")"; then
+  echo "ERROR: --include-sce must be true/false." >&2
   exit 1
 fi
-if ! INCLUDE_VSI="$(normalize_bool "${INCLUDE_VSI}")"; then
-  echo "ERROR: --include-vsi must be true/false." >&2
+if ! INCLUDE_MM="$(normalize_bool "${INCLUDE_MM}")"; then
+  echo "ERROR: --include-mm must be true/false." >&2
+  exit 1
+fi
+if ! INCLUDE_EAU="$(normalize_bool "${INCLUDE_EAU}")"; then
+  echo "ERROR: --include-eau must be true/false." >&2
+  exit 1
+fi
+if ! INCLUDE_VD="$(normalize_bool "${INCLUDE_VD}")"; then
+  echo "ERROR: --include-vd must be true/false." >&2
   exit 1
 fi
 
-VALIDATE_FAST_FLAGS=(
-  --assigned
-  --mecr
-)
+read -r -a SEGGER_BIN_PARTS <<< "${SEGGER_BIN}"
+if [[ ${#SEGGER_BIN_PARTS[@]} -eq 0 ]]; then
+  echo "ERROR: --segger-bin resolved to empty command." >&2
+  exit 1
+fi
+if ! command -v "${SEGGER_BIN_PARTS[0]}" >/dev/null 2>&1; then
+  echo "ERROR: segger executable not found: ${SEGGER_BIN_PARTS[0]}" >&2
+  exit 1
+fi
+
+VALIDATE_HELP_TEXT="$("${SEGGER_BIN_PARTS[@]}" validate --help 2>&1 || true)"
+if [[ -z "${VALIDATE_HELP_TEXT}" ]]; then
+  echo "WARN: could not inspect '${SEGGER_BIN} validate --help'; using fallback validate flags." >&2
+fi
+
+coverage_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --coverage --cov --assigned || true)"
+mecr_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --mecr || true)"
+pmr_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --positive-marker-recall --pmr || true)"
+bei_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --border-expression-integrity --bei --center-border-ncv --center-border-similarity || true)"
+ctm_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --contamination --ctm --resolvi --border-contamination || true)"
+sce_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --spurious-coexpression --sce || true)"
+mm_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --morphological-match --mm || true)"
+eau_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --expression-angular-uniformity --eau --aes --tco || true)"
+vd_flag="$(pick_validate_flag "${VALIDATE_HELP_TEXT}" --vertical-doublet --vd --vsi || true)"
+
+if [[ -z "${coverage_flag}" ]]; then
+  if [[ -n "${VALIDATE_HELP_TEXT}" ]]; then
+    echo "WARN: coverage flags not detected from 'segger validate --help'; falling back to --coverage." >&2
+  fi
+  coverage_flag="--coverage"
+fi
+if [[ -z "${mecr_flag}" ]]; then
+  if [[ -n "${VALIDATE_HELP_TEXT}" ]]; then
+    echo "WARN: MECR flag not detected from 'segger validate --help'; falling back to --mecr." >&2
+  fi
+  mecr_flag="--mecr"
+fi
+
+VALIDATE_FAST_FLAGS=("${coverage_flag}" "${mecr_flag}")
 if [[ "${INCLUDE_POSITIVE_MARKER_RECALL}" == "true" ]]; then
-  VALIDATE_FAST_FLAGS+=(--positive-marker-recall)
+  if [[ -z "${pmr_flag}" ]]; then
+    echo "WARN: PMR flag not detected from 'segger validate --help'; falling back to --positive-marker-recall." >&2
+    pmr_flag="--positive-marker-recall"
+  fi
+  VALIDATE_FAST_FLAGS+=("${pmr_flag}")
 fi
-if [[ "${INCLUDE_CENTER_BORDER_NCV}" == "true" ]]; then
-  VALIDATE_FAST_FLAGS+=(--center-border-ncv)
+if [[ "${INCLUDE_BEI}" == "true" ]]; then
+  if [[ -z "${bei_flag}" ]]; then
+    echo "WARN: BEI flag not detected from 'segger validate --help'; falling back to --border-expression-integrity." >&2
+    bei_flag="--border-expression-integrity"
+  fi
+  VALIDATE_FAST_FLAGS+=("${bei_flag}")
 fi
-if [[ "${INCLUDE_RESOLVI}" == "true" ]]; then
-  VALIDATE_FAST_FLAGS+=(--resolvi)
+if [[ "${INCLUDE_CTM}" == "true" ]]; then
+  if [[ -z "${ctm_flag}" ]]; then
+    echo "WARN: CTM flag not detected from 'segger validate --help'; falling back to --contamination." >&2
+    ctm_flag="--contamination"
+  fi
+  VALIDATE_FAST_FLAGS+=("${ctm_flag}")
 fi
-if [[ "${INCLUDE_TCO}" == "true" ]]; then
-  VALIDATE_FAST_FLAGS+=(--tco)
+if [[ "${INCLUDE_SCE}" == "true" ]]; then
+  if [[ -z "${sce_flag}" ]]; then
+    echo "WARN: SCE flag not detected from 'segger validate --help'; falling back to --spurious-coexpression." >&2
+    sce_flag="--spurious-coexpression"
+  fi
+  VALIDATE_FAST_FLAGS+=("${sce_flag}")
 fi
-if [[ "${INCLUDE_BORDER_CONTAMINATION}" == "true" ]]; then
-  VALIDATE_FAST_FLAGS+=(--border-contamination)
+if [[ "${INCLUDE_MM}" == "true" ]]; then
+  if [[ -z "${mm_flag}" ]]; then
+    echo "WARN: MM flag not detected from 'segger validate --help'; falling back to --morphological-match." >&2
+    mm_flag="--morphological-match"
+  fi
+  VALIDATE_FAST_FLAGS+=("${mm_flag}")
 fi
-if [[ "${INCLUDE_VSI}" == "true" ]]; then
-  VALIDATE_FAST_FLAGS+=(--vsi)
+if [[ "${INCLUDE_EAU}" == "true" ]]; then
+  if [[ -z "${eau_flag}" ]]; then
+    echo "WARN: EAU flag not detected from 'segger validate --help'; falling back to --expression-angular-uniformity." >&2
+    eau_flag="--expression-angular-uniformity"
+  fi
+  VALIDATE_FAST_FLAGS+=("${eau_flag}")
+fi
+if [[ "${INCLUDE_VD}" == "true" ]]; then
+  if [[ -z "${vd_flag}" ]]; then
+    echo "WARN: VD flag not detected from 'segger validate --help'; falling back to --vertical-doublet." >&2
+    vd_flag="--vertical-doublet"
+  fi
+  VALIDATE_FAST_FLAGS+=("${vd_flag}")
 fi
 
-if [[ "${INCLUDE_POSITIVE_MARKER_RECALL}" == "true" ]] || [[ "${INCLUDE_RESOLVI}" == "true" ]]; then
+if [[ "${INCLUDE_POSITIVE_MARKER_RECALL}" == "true" ]] || [[ "${INCLUDE_CTM}" == "true" ]]; then
   NEED_SCRNA_ALIGNMENT="true"
 fi
 if [[ "${INCLUDE_POSITIVE_MARKER_RECALL}" == "true" ]] || \
-   [[ "${INCLUDE_BORDER_CONTAMINATION}" == "true" ]] || \
-   [[ "${INCLUDE_CENTER_BORDER_NCV}" == "true" ]] || \
-   [[ "${INCLUDE_RESOLVI}" == "true" ]] || \
-   [[ "${INCLUDE_TCO}" == "true" ]] || \
-   [[ "${INCLUDE_VSI}" == "true" ]]; then
+   [[ "${INCLUDE_BEI}" == "true" ]] || \
+   [[ "${INCLUDE_CTM}" == "true" ]] || \
+   [[ "${INCLUDE_SCE}" == "true" ]] || \
+   [[ "${INCLUDE_MM}" == "true" ]] || \
+   [[ "${INCLUDE_EAU}" == "true" ]] || \
+   [[ "${INCLUDE_VD}" == "true" ]]; then
   NEED_SOURCE_INPUT="true"
 fi
 
@@ -475,7 +606,7 @@ cleanup_validation_build() {
 
 trap cleanup_validation_build EXIT INT TERM
 
-METRIC_SCHEMA_VERSION="2026-03-09-v14-assigned_mecr-pmr_${INCLUDE_POSITIVE_MARKER_RECALL}-cbncv_${INCLUDE_CENTER_BORDER_NCV}-resolvi_${INCLUDE_RESOLVI}-tco_${INCLUDE_TCO}-border_${INCLUDE_BORDER_CONTAMINATION}-vsi_${INCLUDE_VSI}"
+METRIC_SCHEMA_VERSION="2026-04-05-v17-cov_mecr-pmr_${INCLUDE_POSITIVE_MARKER_RECALL}-bei_${INCLUDE_BEI}-ctm_${INCLUDE_CTM}-sce_${INCLUDE_SCE}-mm_${INCLUDE_MM}-eau_${INCLUDE_EAU}-vd_${INCLUDE_VD}"
 RUN_INPUT_DIR_TOKEN="$(normalize_token "${INPUT_DIR}")"
 if [[ -n "${TISSUE_TYPE}" ]]; then
   RUN_SCRNA_REFERENCE_TOKEN="$(normalize_token "tissue:${TISSUE_TYPE}")"
@@ -499,7 +630,7 @@ else
 fi
 RUN_REFERENCE_UNIVERSE_TOKEN="$(normalize_token "${REFERENCE_UNIVERSE_SEG_RESOLVED}")"
 
-OUTPUT_HEADER=$'job\tgroup\tgpu\tis_reference\treference_kind\tvalidate_status\tvalidate_error\tgpu_time_s\tcells\tfragments\tassigned_pct\tassigned_ci95\tpositive_marker_recall_pct\tpositive_marker_recall_ci95\tmecr\tmecr_ci95\tcontamination_pct\tcontamination_ci95\tresolvi_contamination_pct\tresolvi_contamination_ci95\tcenter_border_ncv\tcenter_border_ncv_ci95\tspurious_coexpression\tspurious_coexpression_ci95\treference_morphology_match\treference_morphology_match_ci95\ttco\ttco_ci95\tdoublet_pct\tdoublet_ci95\tsegmentation_path\tanndata_path\toutput_path\tupdated_at\tmetric_schema_version\trun_input_dir\trun_scrna_reference_path\trun_me_gene_pairs_path\trun_reference_universe_seg'
+OUTPUT_HEADER=$'job\tgroup\tgpu\tis_reference\treference_kind\tvalidate_status\tvalidate_error\tgpu_time_s\tcells\tfragments\tassigned_pct\tassigned_ci95\tpositive_marker_recall_pct\tpositive_marker_recall_ci95\tmecr\tmecr_ci95\tcontamination_pct\tcontamination_ci95\tresolvi_contamination_pct\tresolvi_contamination_ci95\tcenter_border_similarity\tcenter_border_similarity_ci95\tspurious_coexpression\tspurious_coexpression_ci95\treference_morphology_match\treference_morphology_match_ci95\taes\taes_ci95\tdoublet_pct\tdoublet_ci95\tsegmentation_path\tanndata_path\toutput_path\tupdated_at\tmetric_schema_version\trun_input_dir\trun_scrna_reference_path\trun_me_gene_pairs_path\trun_reference_universe_seg'
 reuse_existing=0
 if [[ "${RECOMPUTE}" != "1" ]] && [[ -s "${OUT_TSV}" ]]; then
   existing_header="$(head -n1 "${OUT_TSV}" || true)"
@@ -748,7 +879,16 @@ scale_frac_to_pct() {
     printf '%s' "nan"
     return 0
   fi
-  awk -v v="${value}" 'BEGIN { printf "%.6f", (v + 0.0) * 100.0 }'
+  awk -v v="${value}" '
+    BEGIN {
+      x = v + 0.0
+      if (x >= 0.0 && x <= 1.0) {
+        printf "%.6f", x * 100.0
+      } else {
+        printf "%.6f", x
+      }
+    }
+  '
 }
 
 append_row() {
@@ -772,14 +912,14 @@ append_row() {
   local contamination_ci95="${18}"
   local resolvi_contamination_pct="${19}"
   local resolvi_contamination_ci95="${20}"
-  local center_border_ncv="${21}"
-  local center_border_ncv_ci95="${22}"
+  local center_border_similarity="${21}"
+  local center_border_similarity_ci95="${22}"
   local spurious_coexpression="${23}"
   local spurious_coexpression_ci95="${24}"
   local reference_morphology_match="${25}"
   local reference_morphology_match_ci95="${26}"
-  local tco="${27}"
-  local tco_ci95="${28}"
+  local aes="${27}"
+  local aes_ci95="${28}"
   local doublet_pct="${29}"
   local doublet_ci95="${30}"
   local row_seg_path="${31}"
@@ -791,8 +931,8 @@ append_row() {
   printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
     "${job}" "${group}" "${gpu}" "${is_reference}" "${reference_kind}" "${validate_status}" "${validate_error}" "${gpu_time_s}" \
     "${cells}" "${fragments}" "${assigned_pct}" "${assigned_ci95}" "${positive_marker_recall_pct}" "${positive_marker_recall_ci95}" "${mecr}" "${mecr_ci95}" \
-    "${contamination_pct}" "${contamination_ci95}" "${resolvi_contamination_pct}" "${resolvi_contamination_ci95}" "${center_border_ncv}" "${center_border_ncv_ci95}" \
-    "${spurious_coexpression}" "${spurious_coexpression_ci95}" "${reference_morphology_match}" "${reference_morphology_match_ci95}" "${tco}" "${tco_ci95}" \
+    "${contamination_pct}" "${contamination_ci95}" "${resolvi_contamination_pct}" "${resolvi_contamination_ci95}" "${center_border_similarity}" "${center_border_similarity_ci95}" \
+    "${spurious_coexpression}" "${spurious_coexpression_ci95}" "${reference_morphology_match}" "${reference_morphology_match_ci95}" "${aes}" "${aes_ci95}" \
     "${doublet_pct}" "${doublet_ci95}" "${row_seg_path}" "${row_anndata_path}" "${OUT_TSV}" \
     "$(timestamp)" "${METRIC_SCHEMA_VERSION}" "${RUN_INPUT_DIR_TOKEN}" "${RUN_SCRNA_REFERENCE_TOKEN}" "${RUN_ME_GENE_PAIRS_TOKEN}" "${RUN_REFERENCE_UNIVERSE_TOKEN}" \
     >> "${tmp_out}"
@@ -849,40 +989,47 @@ should_reuse_row() {
     should_reuse=0
     reason="missing_cells"
   elif [[ "${NEED_SOURCE_INPUT}" == "true" ]]; then
-    if [[ "${INCLUDE_TCO}" == "true" ]]; then
-      existing_tco="$(get_existing_field_by_job "${job}" "tco")"
-      if metric_missing "${existing_tco:-}"; then
+    if [[ "${INCLUDE_EAU}" == "true" ]]; then
+      existing_eau="$(get_existing_field_by_job "${job}" "eau")"
+      if metric_missing "${existing_eau:-}"; then
         should_reuse=0
-        reason="missing_tco_metric"
+        reason="missing_eau_metric"
       fi
     fi
-    if [[ "${should_reuse}" == "1" && "${INCLUDE_BORDER_CONTAMINATION}" == "true" ]]; then
-      existing_contam="$(get_existing_field_by_job "${job}" "contamination_pct")"
-      if metric_missing "${existing_contam:-}"; then
+    if [[ "${should_reuse}" == "1" && "${INCLUDE_BEI}" == "true" ]]; then
+      existing_bei="$(get_existing_field_by_job "${job}" "center_border_similarity")"
+      if metric_missing "${existing_bei:-}"; then
         should_reuse=0
-        reason="missing_border_contamination_metric"
+        reason="missing_bei_metric"
       fi
     fi
-    if [[ "${should_reuse}" == "1" && "${INCLUDE_CENTER_BORDER_NCV}" == "true" ]]; then
-      existing_border_ncv="$(get_existing_field_by_job "${job}" "center_border_ncv")"
-      if metric_missing "${existing_border_ncv:-}"; then
-        should_reuse=0
-        reason="missing_center_border_ncv_metric"
-      fi
-    fi
-    if [[ "${should_reuse}" == "1" && "${INCLUDE_VSI}" == "true" ]]; then
+    if [[ "${should_reuse}" == "1" && "${INCLUDE_VD}" == "true" ]]; then
       existing_doublet="$(get_existing_field_by_job "${job}" "doublet_pct")"
       if metric_missing "${existing_doublet:-}"; then
         should_reuse=0
-        reason="missing_vsi_metric"
+        reason="missing_vd_metric"
+      fi
+    fi
+    if [[ "${should_reuse}" == "1" && "${INCLUDE_SCE}" == "true" ]]; then
+      existing_sce="$(get_existing_field_by_job "${job}" "spurious_coexpression")"
+      if metric_missing "${existing_sce:-}"; then
+        should_reuse=0
+        reason="missing_sce_metric"
+      fi
+    fi
+    if [[ "${should_reuse}" == "1" && "${INCLUDE_MM}" == "true" ]]; then
+      existing_mm="$(get_existing_field_by_job "${job}" "reference_morphology_match")"
+      if metric_missing "${existing_mm:-}"; then
+        should_reuse=0
+        reason="missing_mm_metric"
       fi
     fi
     if [[ "${should_reuse}" == "1" && "${NEED_SCRNA_ALIGNMENT}" == "true" && "${RUN_SCRNA_REFERENCE_TOKEN}" != "-" ]]; then
-      if [[ "${INCLUDE_RESOLVI}" == "true" ]]; then
-        existing_resolvi="$(get_existing_field_by_job "${job}" "resolvi_contamination_pct")"
-        if metric_missing "${existing_resolvi:-}"; then
+      if [[ "${INCLUDE_CTM}" == "true" ]]; then
+        existing_ctm="$(get_existing_field_by_job "${job}" "contamination_pct")"
+        if metric_missing "${existing_ctm:-}"; then
           should_reuse=0
-          reason="missing_resolvi_metric"
+          reason="missing_ctm_metric"
         fi
       fi
       if [[ "${should_reuse}" == "1" && "${INCLUDE_POSITIVE_MARKER_RECALL}" == "true" ]]; then
@@ -921,14 +1068,14 @@ run_validate_for_row() {
   contamination_ci95="nan"
   resolvi_contamination_pct="nan"
   resolvi_contamination_ci95="nan"
-  center_border_ncv="nan"
-  center_border_ncv_ci95="nan"
+  center_border_similarity="nan"
+  center_border_similarity_ci95="nan"
   spurious_coexpression="nan"
   spurious_coexpression_ci95="nan"
   reference_morphology_match="nan"
   reference_morphology_match_ci95="nan"
-  tco="nan"
-  tco_ci95="nan"
+  aes="nan"
+  aes_ci95="nan"
   doublet_pct="nan"
   doublet_ci95="nan"
   row_seg_path="${seg_path}"
@@ -947,7 +1094,7 @@ run_validate_for_row() {
   : > "${row_file}"
   : > "${cmd_log_file}"
   cmd=(
-    "${SEGGER_BIN}" validate
+    "${SEGGER_BIN_PARTS[@]}" validate
     -s "${seg_path}"
     -o "${row_file}"
     "${VALIDATE_FAST_FLAGS[@]}"
@@ -981,9 +1128,14 @@ run_validate_for_row() {
   if "${cmd[@]}" > "${cmd_log_file}" 2>&1; then
     cat "${cmd_log_file}" >> "${LOG_FILE}"
     parsed_status="$(get_field "validate_status")"
-    [[ -n "${parsed_status}" ]] && validate_status="${parsed_status}"
+    [[ -n "${parsed_status}" ]] && validate_status="${parsed_status}" || true
     parsed_error="$(get_field "validate_error")"
-    [[ -n "${parsed_error}" ]] && validate_error="${parsed_error}"
+    [[ -n "${parsed_error}" ]] && validate_error="${parsed_error}" || true
+    # Newer validate writes per-metric runtime failures here even with rc=0.
+    if [[ -z "${validate_error}" ]]; then
+      parsed_error="$(get_field "validate_metric_errors")"
+      [[ -n "${parsed_error}" ]] && validate_error="${parsed_error}" || true
+    fi
 
     parsed_elapsed="$(get_field "elapsed_s")"
     if [[ "${apply_elapsed_fallback}" == "1" ]] && [[ -n "${parsed_elapsed}" ]] && [[ "${gpu_time_s}" == "0" || -z "${gpu_time_s}" ]]; then
@@ -999,7 +1151,7 @@ run_validate_for_row() {
         cells="${parsed_val}"
       else
         parsed_val="$(get_field "cells_total")"
-        [[ -n "${parsed_val}" ]] && cells="${parsed_val}"
+        [[ -n "${parsed_val}" ]] && cells="${parsed_val}" || true
       fi
     fi
 
@@ -1008,67 +1160,124 @@ run_validate_for_row() {
       fragments="${parsed_val}"
     else
       parsed_val="$(get_field "fragments_assigned")"
-      [[ -n "${parsed_val}" ]] && fragments="${parsed_val}"
+      [[ -n "${parsed_val}" ]] && fragments="${parsed_val}" || true
     fi
 
-    parsed_val="$(get_field "transcripts_assigned_pct")"
-    [[ -n "${parsed_val}" ]] && assigned_pct="${parsed_val}"
-    parsed_val="$(get_field "transcripts_assigned_pct_ci95")"
-    [[ -n "${parsed_val}" ]] && assigned_ci95="${parsed_val}"
+    parsed_val="$(get_field "coverage_pct")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "transcripts_assigned_pct")"
+    fi
+    [[ -n "${parsed_val}" ]] && assigned_pct="${parsed_val}" || true
+    parsed_val="$(get_field "coverage_pct_ci95")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "transcripts_assigned_pct_ci95")"
+    fi
+    [[ -n "${parsed_val}" ]] && assigned_ci95="${parsed_val}" || true
 
     parsed_val="$(get_field "positive_marker_recall_fast")"
-    [[ -n "${parsed_val}" ]] && positive_marker_recall_pct="${parsed_val}"
+    [[ -n "${parsed_val}" ]] && positive_marker_recall_pct="${parsed_val}" || true
     parsed_val="$(get_field "positive_marker_recall_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && positive_marker_recall_ci95="${parsed_val}"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "positive_marker_recall_ci95")"
+    fi
+    [[ -n "${parsed_val}" ]] && positive_marker_recall_ci95="${parsed_val}" || true
 
     parsed_val="$(get_field "mecr_fast")"
-    [[ -n "${parsed_val}" ]] && mecr="${parsed_val}"
+    [[ -n "${parsed_val}" ]] && mecr="${parsed_val}" || true
     parsed_val="$(get_field "mecr_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && mecr_ci95="${parsed_val}"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "mecr_ci95")"
+    fi
+    [[ -n "${parsed_val}" ]] && mecr_ci95="${parsed_val}" || true
 
     parsed_val="$(get_field "border_contaminated_cells_pct_fast")"
-    [[ -n "${parsed_val}" ]] && contamination_pct="${parsed_val}"
+    [[ -n "${parsed_val}" ]] && contamination_pct="${parsed_val}" || true
     parsed_val="$(get_field "border_contaminated_cells_pct_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && contamination_ci95="${parsed_val}"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "contamination_ci95")"
+    fi
+    [[ -n "${parsed_val}" ]] && contamination_ci95="${parsed_val}" || true
 
-    parsed_val="$(get_field "resolvi_contamination_pct_fast")"
-    [[ -n "${parsed_val}" ]] && resolvi_contamination_pct="${parsed_val}"
-    parsed_val="$(get_field "resolvi_contamination_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && resolvi_contamination_ci95="${parsed_val}"
+    parsed_val="$(get_field "contamination_pct_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "resolvi_contamination_pct_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && resolvi_contamination_pct="${parsed_val}" || true
+    parsed_val="$(get_field "contamination_ci95_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "resolvi_contamination_ci95_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && resolvi_contamination_ci95="${parsed_val}" || true
 
-    parsed_val="$(get_field "center_border_ncv_score_fast")"
-    [[ -n "${parsed_val}" ]] && center_border_ncv="${parsed_val}"
-    parsed_val="$(get_field "center_border_ncv_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && center_border_ncv_ci95="${parsed_val}"
+    parsed_val="$(get_field "border_expression_integrity_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "center_border_similarity_score_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && center_border_similarity="${parsed_val}" || true
+    parsed_val="$(get_field "border_expression_integrity_ci95_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "border_expression_integrity_ci95")"
+    fi
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "center_border_similarity_ci95_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && center_border_similarity_ci95="${parsed_val}" || true
 
     parsed_val="$(get_field "spurious_coexpression_fast")"
-    [[ -n "${parsed_val}" ]] && spurious_coexpression="${parsed_val}"
+    [[ -n "${parsed_val}" ]] && spurious_coexpression="${parsed_val}" || true
     parsed_val="$(get_field "spurious_coexpression_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && spurious_coexpression_ci95="${parsed_val}"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "spurious_coexpression_ci95")"
+    fi
+    [[ -n "${parsed_val}" ]] && spurious_coexpression_ci95="${parsed_val}" || true
 
-    parsed_val="$(get_field "reference_morphology_match_fast")"
-    [[ -n "${parsed_val}" ]] && reference_morphology_match="${parsed_val}"
-    parsed_val="$(get_field "reference_morphology_match_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && reference_morphology_match_ci95="${parsed_val}"
+    parsed_val="$(get_field "morphological_match_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "reference_morphology_match_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && reference_morphology_match="${parsed_val}" || true
+    parsed_val="$(get_field "morphological_match_ci95_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "reference_morphology_match_ci95_fast")"
+    fi
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "morphological_match_ci95")"
+    fi
+    [[ -n "${parsed_val}" ]] && reference_morphology_match_ci95="${parsed_val}" || true
 
-    parsed_val="$(get_field "transcript_centroid_offset_fast")"
-    [[ -n "${parsed_val}" ]] && tco="${parsed_val}"
-    parsed_val="$(get_field "transcript_centroid_offset_ci95_fast")"
-    [[ -n "${parsed_val}" ]] && tco_ci95="${parsed_val}"
+    parsed_val="$(get_field "expression_angular_uniformity_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "angular_expression_symmetry_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && aes="${parsed_val}" || true
+    parsed_val="$(get_field "expression_angular_uniformity_ci95_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "expression_angular_uniformity_ci95")"
+    fi
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "angular_expression_symmetry_ci95_fast")"
+    fi
+    [[ -n "${parsed_val}" ]] && aes_ci95="${parsed_val}" || true
 
     parsed_val="$(get_field "vsi_doublet_fraction_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "vertical_doublet_pct_fast")"
+    fi
     if [[ -n "${parsed_val}" ]]; then
       doublet_pct="$(scale_frac_to_pct "${parsed_val}")"
     fi
     parsed_val="$(get_field "vsi_doublet_fraction_ci95_fast")"
+    if [[ -z "${parsed_val}" ]]; then
+      parsed_val="$(get_field "vertical_doublet_pct_ci95_fast")"
+    fi
     if [[ -n "${parsed_val}" ]]; then
       doublet_ci95="$(scale_frac_to_pct "${parsed_val}")"
     fi
 
     parsed_val="$(get_field "segmentation_path")"
-    [[ -n "${parsed_val}" ]] && row_seg_path="${parsed_val}"
+    [[ -n "${parsed_val}" ]] && row_seg_path="${parsed_val}" || true
     parsed_val="$(get_field "anndata_path")"
-    [[ -n "${parsed_val}" ]] && row_anndata_path="${parsed_val}"
+    [[ -n "${parsed_val}" ]] && row_anndata_path="${parsed_val}" || true
   else
     cat "${cmd_log_file}" >> "${LOG_FILE}"
     validate_status="validate_command_failed"
@@ -1099,13 +1308,15 @@ echo "[$(timestamp)] INCLUDE_DEFAULT_10X=${INCLUDE_DEFAULT_10X}" >> "${LOG_FILE}
 echo "[$(timestamp)] EXCLUDE_FRAGMENT_JOBS=${EXCLUDE_FRAGMENT_JOBS}" >> "${LOG_FILE}"
 echo "[$(timestamp)] PROGRESSIVE_WRITE=${PROGRESSIVE_WRITE}" >> "${LOG_FILE}"
 echo "[$(timestamp)] INCLUDE_POSITIVE_MARKER_RECALL=${INCLUDE_POSITIVE_MARKER_RECALL}" >> "${LOG_FILE}"
-echo "[$(timestamp)] INCLUDE_CENTER_BORDER_NCV=${INCLUDE_CENTER_BORDER_NCV}" >> "${LOG_FILE}"
-echo "[$(timestamp)] INCLUDE_RESOLVI=${INCLUDE_RESOLVI}" >> "${LOG_FILE}"
-echo "[$(timestamp)] INCLUDE_TCO=${INCLUDE_TCO}" >> "${LOG_FILE}"
-echo "[$(timestamp)] INCLUDE_BORDER_CONTAMINATION=${INCLUDE_BORDER_CONTAMINATION}" >> "${LOG_FILE}"
-echo "[$(timestamp)] INCLUDE_VSI=${INCLUDE_VSI}" >> "${LOG_FILE}"
+echo "[$(timestamp)] INCLUDE_BEI=${INCLUDE_BEI}" >> "${LOG_FILE}"
+echo "[$(timestamp)] INCLUDE_CTM=${INCLUDE_CTM}" >> "${LOG_FILE}"
+echo "[$(timestamp)] INCLUDE_EAU=${INCLUDE_EAU}" >> "${LOG_FILE}"
+echo "[$(timestamp)] INCLUDE_VD=${INCLUDE_VD}" >> "${LOG_FILE}"
+echo "[$(timestamp)] SEGGER_BIN=${SEGGER_BIN}" >> "${LOG_FILE}"
+echo "[$(timestamp)] VALIDATE_FAST_FLAGS=${VALIDATE_FAST_FLAGS[*]}" >> "${LOG_FILE}"
 echo "[$(timestamp)] NEED_SOURCE_INPUT=${NEED_SOURCE_INPUT}" >> "${LOG_FILE}"
 echo "[$(timestamp)] REFERENCE_UNIVERSE_SEG=${RUN_REFERENCE_UNIVERSE_TOKEN}" >> "${LOG_FILE}"
+echo "[$(timestamp)] ONLY_JOBS=${ONLY_JOBS_CSV:-<all>}" >> "${LOG_FILE}"
 echo "[$(timestamp)] LOCK=${LOCK_FILE} mode=${LOCK_MODE} pid=$$" >> "${LOG_FILE}"
 
 reused_count=0
@@ -1114,6 +1325,10 @@ computed_count=0
 while IFS=$'\t' read -r \
   job group _use3d _expansion _txk _txdist _layers _heads _cellsmin _minqv _alignment; do
   if [[ -z "${job:-}" ]] || [[ "${job}" == "job" ]]; then
+    continue
+  fi
+  if [[ -n "${ONLY_JOBS_CSV}" ]] && ! csv_contains_exact "${job}" "${ONLY_JOBS_CSV}"; then
+    echo "[$(timestamp)] SKIP job=${job}: filtered by --only-jobs" >> "${LOG_FILE}"
     continue
   fi
   if [[ "${EXCLUDE_FRAGMENT_JOBS}" == "true" ]] && [[ "${job}" == *fragon* ]]; then
@@ -1169,14 +1384,18 @@ while IFS=$'\t' read -r \
     "${job}" "${group}" "${gpu}" "0" "-" \
     "${validate_status}" "${validate_error}" "${gpu_time_s}" "${cells}" "${fragments}" \
     "${assigned_pct}" "${assigned_ci95}" "${positive_marker_recall_pct}" "${positive_marker_recall_ci95}" "${mecr}" "${mecr_ci95}" \
-    "${contamination_pct}" "${contamination_ci95}" "${resolvi_contamination_pct}" "${resolvi_contamination_ci95}" "${center_border_ncv}" "${center_border_ncv_ci95}" \
-    "${spurious_coexpression}" "${spurious_coexpression_ci95}" "${reference_morphology_match}" "${reference_morphology_match_ci95}" "${tco}" "${tco_ci95}" \
+    "${contamination_pct}" "${contamination_ci95}" "${resolvi_contamination_pct}" "${resolvi_contamination_ci95}" "${center_border_similarity}" "${center_border_similarity_ci95}" \
+    "${spurious_coexpression}" "${spurious_coexpression_ci95}" "${reference_morphology_match}" "${reference_morphology_match_ci95}" "${aes}" "${aes_ci95}" \
     "${doublet_pct}" "${doublet_ci95}" "${row_seg_path}" "${row_anndata_path}"
 done < "${PLAN_FILE}"
 
 if [[ "${INCLUDE_DEFAULT_10X}" == "true" ]]; then
   for reference_kind in 10x_cell 10x_nucleus; do
     job="ref_${reference_kind}"
+    if [[ -n "${ONLY_JOBS_CSV}" ]] && ! csv_contains_exact "${job}" "${ONLY_JOBS_CSV}"; then
+      echo "[$(timestamp)] SKIP job=${job}: filtered by --only-jobs" >> "${LOG_FILE}"
+      continue
+    fi
     group="R"
     gpu="-"
 
@@ -1222,14 +1441,14 @@ if [[ "${INCLUDE_DEFAULT_10X}" == "true" ]]; then
     contamination_ci95="nan"
     resolvi_contamination_pct="nan"
     resolvi_contamination_ci95="nan"
-    center_border_ncv="nan"
-    center_border_ncv_ci95="nan"
+    center_border_similarity="nan"
+    center_border_similarity_ci95="nan"
     spurious_coexpression="nan"
     spurious_coexpression_ci95="nan"
     reference_morphology_match="nan"
     reference_morphology_match_ci95="nan"
-    tco="nan"
-    tco_ci95="nan"
+    aes="nan"
+    aes_ci95="nan"
     doublet_pct="nan"
     doublet_ci95="nan"
     row_seg_path="${REFERENCE_ARTIFACTS_DIR}/${job}/segger_segmentation.parquet"
@@ -1270,8 +1489,8 @@ if [[ "${INCLUDE_DEFAULT_10X}" == "true" ]]; then
       "${job}" "${group}" "${gpu}" "1" "${reference_kind}" \
       "${validate_status}" "${validate_error}" "${gpu_time_s}" "${cells}" "${fragments}" \
       "${assigned_pct}" "${assigned_ci95}" "${positive_marker_recall_pct}" "${positive_marker_recall_ci95}" "${mecr}" "${mecr_ci95}" \
-      "${contamination_pct}" "${contamination_ci95}" "${resolvi_contamination_pct}" "${resolvi_contamination_ci95}" "${center_border_ncv}" "${center_border_ncv_ci95}" \
-      "${spurious_coexpression}" "${spurious_coexpression_ci95}" "${reference_morphology_match}" "${reference_morphology_match_ci95}" "${tco}" "${tco_ci95}" \
+      "${contamination_pct}" "${contamination_ci95}" "${resolvi_contamination_pct}" "${resolvi_contamination_ci95}" "${center_border_similarity}" "${center_border_similarity_ci95}" \
+      "${spurious_coexpression}" "${spurious_coexpression_ci95}" "${reference_morphology_match}" "${reference_morphology_match_ci95}" "${aes}" "${aes_ci95}" \
       "${doublet_pct}" "${doublet_ci95}" "${row_seg_path}" "${row_anndata_path}"
   done
 fi

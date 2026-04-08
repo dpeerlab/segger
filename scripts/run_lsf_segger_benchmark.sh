@@ -8,6 +8,8 @@ benchmark-script layout per dataset root.
 
 Environment overrides:
   OUTPUT_ROOT                Top-level output root
+  WORK_TMP_ROOT              Temp/scratch dir for this run (default:
+                             <OUTPUT_ROOT>/_workflow/tmp)
   DATASET_KEYS               "all", "root_missing" (default), "root_present",
                              or comma-separated dataset keys
   DRY_RUN                    1 to only render plans/scripts
@@ -31,10 +33,10 @@ Environment overrides:
   SEGMENT_WALL_TIME_DEFAULT  Default wall time for segment/predict jobs
   PREDICT_FRAGMENT_GMEM_GB   Base gmem (GB) for fragment-mode predict jobs
                              (default: 36)
-  MERSCOPE_MOUSE_LIVER_MIN_QV
-                             Optional min-qv override for merscope_mouse_liver
-                             (empty by default; e.g. 0.1 or 0.2)
   EXPORT_WALL_TIME_DEFAULT   Default wall time for export jobs
+  ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT
+                             Optional --min-similarity-shift passed to AnnData
+                             exports (0..1, default: 0.0)
   SEGGER_BIN                 Segger executable (default: segger)
   CLUSTER_CODE_ROOT          Cluster checkout used inside LSF scripts
   MAMBA_ACTIVATE_CMD         Optional shell snippet used inside LSF scripts
@@ -45,6 +47,8 @@ Environment overrides:
   ALIGNMENT_REFERENCE_MODE   One of: auto|path (default: path)
   ALIGNMENT_SCRNA_CELLTYPE_COLUMN
                              Cell-type column in local scRNA refs (default: cell_type)
+  JOB_SPECS_FILE             Optional path to a custom pipe-delimited job-spec file
+                             (same 15-column schema as job_specs()).
   LSF_EXEC_SHELL             Shell used by LSF to interpret the job script
   LSF_SUBMIT_HOST            Host used for remote bsub/bjobs (default: local)
   SCRNA_REF_ROOT             Shared root that contains .segger_references
@@ -57,12 +61,14 @@ Environment overrides:
   EXPORT_QUEUE               Queue for export jobs (default: long)
   ALIGNMENT_GPU_QUEUE        Optional override queue only for align_* jobs
   GPU_QUEUE_MAX_GMEM         Max GPU memory (GB) for GPU_QUEUE_DEFAULT routing (default: 31)
-  GPU_QUEUE_MAX_MEM_GB       Max RAM (GB) for GPU_QUEUE_DEFAULT routing (default: 384)
+  GPU_QUEUE_MAX_MEM_GB       Max RAM (GB) for GPU_QUEUE_DEFAULT routing (default: 84)
   GPU_QUEUE_MAX_WALL_H       Max wall-time hours for GPU_QUEUE_DEFAULT routing (default: 24)
   GPU_QUEUE_PRO_MAX_GMEM     Max GPU memory (GB) requested on GPU_QUEUE_PRO
-                             (default: 36; cluster doc warns against 40G+)
+                             (default: 39; cluster doc warns against 40G+)
+  GPU_QUEUE_PRO_MAX_MEM_GB   Max RAM (GB) requested on GPU_QUEUE_PRO
+                             (default: 84)
   FORCE_GPU_PRO_DATASETS     CSV dataset keys always forced to GPU_QUEUE_PRO
-                             (default: empty)
+                             (default: xenium_crc,xenium_nsclc,xenium_mouse_liver,xenium_breast)
   REQUIRE_SUCCESS_STATUS_FOR_RESUME
                              1 to only reuse outputs with segment_status in
                              {segment_ok,predict_ok} (default: 1)
@@ -75,7 +81,7 @@ Environment overrides:
   GPU_FALLBACK_MIN_GMEM      Minimum gmem (GB) after retry fallback/bump (default: 36)
   GPU_FALLBACK_FRAGMENT_GMEM Minimum gmem (GB) for fragment-mode retry fallback/bump
                              (default: GPU_QUEUE_PRO_MAX_GMEM)
-  GPU_FALLBACK_MIN_MEM_GB    Minimum host RAM (GB) after retry fallback (default: 512)
+  GPU_FALLBACK_MIN_MEM_GB    Minimum host RAM (GB) after retry fallback (default: 84)
   GPU_FALLBACK_MIN_WALL_H    Minimum wall-clock hours after retry fallback (default: 12)
   GPU_USAGE_POLL_SEC         GPU-memory polling interval (seconds) for peak VRAM capture
                              in primary jobs (default: 15)
@@ -242,7 +248,6 @@ xenium_breast
 xenium_v1_breast
 xenium_mouse_brain
 merscope_mouse_brain
-merscope_mouse_liver
 cosmx_human_pancreas
 EOF
 }
@@ -267,7 +272,7 @@ root_known_dataset_keys() {
 
 is_known_dataset() {
   case "${1:-}" in
-    xenium_crc|xenium_nsclc|xenium_v1_colon|xenium_mouse_liver|xenium_breast|xenium_v1_breast|xenium_mouse_brain|merscope_mouse_brain|merscope_mouse_liver|cosmx_human_pancreas)
+    xenium_crc|xenium_nsclc|xenium_v1_colon|xenium_mouse_liver|xenium_breast|xenium_v1_breast|xenium_mouse_brain|merscope_mouse_brain|cosmx_human_pancreas)
       return 0
       ;;
     *)
@@ -286,7 +291,6 @@ dataset_input_dir() {
     xenium_v1_breast) printf '%s' "/dkfz/cluster/gpu/data/OE0606/fengyun/data/xenium_v1_breast_fixed" ;;
     xenium_mouse_brain) printf '%s' "/dkfz/cluster/gpu/data/OE0606/fengyun/data/xenium_mouse_brain_fixed" ;;
     merscope_mouse_brain) printf '%s' "/dkfz/cluster/gpu/data/OE0606/fengyun/data/MERSCOPE_brain" ;;
-    merscope_mouse_liver) printf '%s' "/dkfz/cluster/gpu/data/OE0606/fengyun/data/merscope_mouse_liver/processed" ;;
     cosmx_human_pancreas) printf '%s' "/dkfz/cluster/gpu/data/OE0606/fengyun/data/CosMx_pancreas" ;;
     *)
       return 1
@@ -311,9 +315,6 @@ dataset_primary_ref() {
       ;;
     xenium_breast|xenium_v1_breast)
       printf '%s' "${cache_root}/homo_sapiens/breast/breast.h5ad"
-      ;;
-    merscope_mouse_liver)
-      printf '%s' "${cache_root}/mus_musculus/liver/liver.h5ad"
       ;;
     xenium_mouse_brain|merscope_mouse_brain)
       printf '%s' "${cache_root}/mus_musculus/brain/brain.h5ad"
@@ -341,9 +342,6 @@ dataset_fallback_ref() {
     xenium_breast|xenium_v1_breast)
       printf '%s' "${SCRNA_REF_ROOT}/breast_cancer_annotated.h5ad"
       ;;
-    merscope_mouse_liver)
-      printf '%s' "${SCRNA_REF_ROOT}/mouse_liver_cellxgene_a34c8af2.h5ad"
-      ;;
     xenium_mouse_brain|merscope_mouse_brain)
       printf '%s' "${SCRNA_REF_ROOT}/mouse_brain.h5ad"
       ;;
@@ -360,7 +358,7 @@ dataset_tissue_type() {
   case "${1:-}" in
     xenium_crc|xenium_v1_colon) printf '%s' "colon" ;;
     xenium_nsclc) printf '%s' "lung" ;;
-    xenium_mouse_liver|merscope_mouse_liver) printf '%s' "liver" ;;
+    xenium_mouse_liver) printf '%s' "liver" ;;
     xenium_breast|xenium_v1_breast) printf '%s' "breast" ;;
     xenium_mouse_brain|merscope_mouse_brain) printf '%s' "brain" ;;
     cosmx_human_pancreas) printf '%s' "pancreas" ;;
@@ -375,7 +373,7 @@ dataset_organism() {
     xenium_crc|xenium_nsclc|xenium_v1_colon|xenium_breast|xenium_v1_breast|cosmx_human_pancreas)
       printf '%s' "homo_sapiens"
       ;;
-    xenium_mouse_liver|xenium_mouse_brain|merscope_mouse_brain|merscope_mouse_liver)
+    xenium_mouse_liver|xenium_mouse_brain|merscope_mouse_brain)
       printf '%s' "mus_musculus"
       ;;
     *)
@@ -388,16 +386,37 @@ alignment_reference_args() {
   local scrna_ref="$1"
   local mode="$2"
   local ref_args=""
+  local with_celltype="0"
+
+  if [[ "${CLI_IO_STYLE}" == "named" ]]; then
+    if [[ "${CLI_SEGMENT_SUPPORTS_SCRNA_REFERENCE_PATH:-1}" != "1" ]]; then
+      printf '%s' ""
+      return 0
+    fi
+    if [[ "${CLI_SEGMENT_SUPPORTS_SCRNA_CELLTYPE_COLUMN:-1}" == "1" ]]; then
+      with_celltype="1"
+    fi
+  else
+    with_celltype="1"
+  fi
 
   case "${mode}" in
     path)
       if [[ -n "${scrna_ref}" ]]; then
-        ref_args="$(shell_join --scrna-reference-path "${scrna_ref}" --scrna-celltype-column "${ALIGNMENT_SCRNA_CELLTYPE_COLUMN}")"
+        if [[ "${with_celltype}" == "1" ]]; then
+          ref_args="$(shell_join --scrna-reference-path "${scrna_ref}" --scrna-celltype-column "${ALIGNMENT_SCRNA_CELLTYPE_COLUMN}")"
+        else
+          ref_args="$(shell_join --scrna-reference-path "${scrna_ref}")"
+        fi
       fi
       ;;
     auto)
       if [[ -n "${scrna_ref}" && -f "${scrna_ref}" ]]; then
-        ref_args="$(shell_join --scrna-reference-path "${scrna_ref}" --scrna-celltype-column "${ALIGNMENT_SCRNA_CELLTYPE_COLUMN}")"
+        if [[ "${with_celltype}" == "1" ]]; then
+          ref_args="$(shell_join --scrna-reference-path "${scrna_ref}" --scrna-celltype-column "${ALIGNMENT_SCRNA_CELLTYPE_COLUMN}")"
+        else
+          ref_args="$(shell_join --scrna-reference-path "${scrna_ref}")"
+        fi
       fi
       ;;
   esac
@@ -406,6 +425,20 @@ alignment_reference_args() {
 }
 
 job_specs() {
+  if [[ -n "${JOB_SPECS_FILE:-}" ]]; then
+    if [[ ! -f "${JOB_SPECS_FILE}" ]]; then
+      echo "ERROR: JOB_SPECS_FILE not found: ${JOB_SPECS_FILE}" >&2
+      exit 1
+    fi
+    # Allow comment/blank lines in custom spec files.
+    awk '
+      /^[[:space:]]*$/ { next }
+      /^[[:space:]]*#/ { next }
+      { print }
+    ' "${JOB_SPECS_FILE}"
+    return
+  fi
+
   cat <<'EOF'
 baseline|A|segment|false|2.2|5|20|2|4|5|0|false|0.0|2.2|false
 use3d_true|A|segment|true|2.2|5|20|2|4|5|0|false|0.0|2.2|false
@@ -423,6 +456,22 @@ align_0p03|A|segment|false|2.2|5|20|2|4|5|0|true|0.03|2.2|false
 align_0p10|A|segment|false|2.2|5|20|2|4|5|0|true|0.1|2.2|false
 EOF
   fi
+}
+
+job_specs_contains_mode() {
+  local target_mode="$1"
+  local line=""
+  local mode=""
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    IFS='|' read -r _job _group mode _rest <<< "${line}"
+    if [[ "${mode}" == "${target_mode}" ]]; then
+      return 0
+    fi
+  done <<EOF
+$(job_specs)
+EOF
+  return 1
 }
 
 paired_non_fragment_job() {
@@ -845,8 +894,9 @@ xenium_export_supported_for_input() {
 
 dataset_segment_mem_gb() {
   case "${1:-}" in
-    xenium_mouse_brain) printf '384' ;;
-    xenium_nsclc|xenium_mouse_liver|merscope_mouse_liver) printf '192' ;;
+    xenium_mouse_brain) printf '512' ;;
+    xenium_nsclc|xenium_mouse_liver) printf '256' ;;
+    xenium_breast) printf '128' ;;
     xenium_crc|xenium_v1_colon) printf '128' ;;
     *) printf '96' ;;
   esac
@@ -855,6 +905,7 @@ dataset_segment_mem_gb() {
 dataset_segment_gmem() {
   case "${1:-}" in
     xenium_mouse_brain) printf '39' ;;
+    xenium_crc) printf '25' ;;
     *) printf '30' ;;
   esac
 }
@@ -862,7 +913,7 @@ dataset_segment_gmem() {
 dataset_segment_wall_time() {
   case "${1:-}" in
     xenium_mouse_brain) printf '12:00' ;;
-    xenium_nsclc|xenium_mouse_liver|merscope_mouse_liver) printf '10:00' ;;
+    xenium_nsclc|xenium_mouse_liver) printf '10:00' ;;
     *) printf '%s' "${SEGMENT_WALL_TIME_DEFAULT}" ;;
   esac
 }
@@ -873,11 +924,12 @@ dataset_predict_mem_gb() {
   if [[ "${fragment}" == "true" ]]; then
     case "${dataset}" in
       xenium_mouse_brain|merscope_mouse_brain) printf '512' ;;
+      cosmx_human_pancreas) printf '384' ;;
       *) printf '256' ;;
     esac
   else
     case "${dataset}" in
-      xenium_nsclc|xenium_mouse_liver|merscope_mouse_liver) printf '160' ;;
+      xenium_nsclc|xenium_mouse_liver) printf '160' ;;
       xenium_crc|xenium_v1_colon) printf '128' ;;
       *) printf '96' ;;
     esac
@@ -885,9 +937,17 @@ dataset_predict_mem_gb() {
 }
 
 dataset_predict_gmem() {
-  local fragment="$1"
+  local dataset="$1"
+  local fragment="$2"
+  if [[ "${dataset}" == "xenium_crc" ]]; then
+    printf '25'
+    return 0
+  fi
   if [[ "${fragment}" == "true" ]]; then
-    printf '%s' "${PREDICT_FRAGMENT_GMEM_GB}"
+    case "${dataset}" in
+      cosmx_human_pancreas) printf '39' ;;
+      *) printf '%s' "${PREDICT_FRAGMENT_GMEM_GB}" ;;
+    esac
   else
     printf '30'
   fi
@@ -899,14 +959,14 @@ dataset_predict_wall_time() {
   if [[ "${fragment}" == "true" ]]; then
     case "${dataset}" in
       xenium_mouse_brain) printf '16:00' ;;
-      xenium_nsclc|xenium_mouse_liver|merscope_mouse_liver|xenium_crc|xenium_v1_colon) printf '12:00' ;;
+      xenium_nsclc|xenium_mouse_liver|xenium_crc|xenium_v1_colon) printf '12:00' ;;
       *) printf '10:00' ;;
     esac
     return 0
   fi
   case "${dataset}" in
     xenium_mouse_brain) printf '12:00' ;;
-    xenium_nsclc|xenium_mouse_liver|merscope_mouse_liver) printf '10:00' ;;
+    xenium_nsclc|xenium_mouse_liver) printf '10:00' ;;
     *) printf '%s' "${SEGMENT_WALL_TIME_DEFAULT}" ;;
   esac
 }
@@ -926,6 +986,21 @@ clamp_gmem_for_queue() {
   printf '%s' "${gmem}"
 }
 
+clamp_mem_for_queue() {
+  local queue_name="$1"
+  local mem_gb="$2"
+  local upper=""
+  if [[ "${queue_name}" == "${GPU_QUEUE_DEFAULT}" ]]; then
+    upper="${GPU_QUEUE_MAX_MEM_GB}"
+  elif [[ "${queue_name}" == "${GPU_QUEUE_PRO}" ]]; then
+    upper="${GPU_QUEUE_PRO_MAX_MEM_GB}"
+  fi
+  if [[ -n "${upper}" ]]; then
+    mem_gb="$(number_min "${mem_gb}" "${upper}")"
+  fi
+  printf '%s' "${mem_gb}"
+}
+
 dataset_tiling_margin_training() {
   case "${1:-}" in
     xenium_mouse_brain) printf '4' ;;
@@ -943,29 +1018,21 @@ dataset_tiling_margin_prediction() {
 }
 
 dataset_segment_prediction_mode() {
-  case "${1:-}" in
-    # This MERSCOPE sample has no nucleus-assigned transcripts in recent runs.
-    # Request cell mode directly to avoid unnecessary nucleus-mode fallback.
-    merscope_mouse_liver) printf 'cell' ;;
-    *) printf 'nucleus' ;;
+  local mode_lc
+  mode_lc="$(printf '%s' "${SEGMENT_PREDICTION_MODE:-nucleus}" | tr '[:upper:]' '[:lower:]')"
+  case "${mode_lc}" in
+    nucleus|cell)
+      printf '%s' "${mode_lc}"
+      ;;
+    *)
+      printf '%s' "nucleus"
+      ;;
   esac
 }
 
 dataset_effective_min_qv() {
-  local dataset="$1"
   local default_min_qv="$2"
-  case "${dataset}" in
-    merscope_mouse_liver)
-      if [[ -n "${MERSCOPE_MOUSE_LIVER_MIN_QV}" ]]; then
-        printf '%s' "${MERSCOPE_MOUSE_LIVER_MIN_QV}"
-      else
-        printf '%s' "${default_min_qv}"
-      fi
-      ;;
-    *)
-      printf '%s' "${default_min_qv}"
-      ;;
-  esac
+  printf '%s' "${default_min_qv}"
 }
 
 resolve_primary_resources() {
@@ -979,24 +1046,28 @@ resolve_primary_resources() {
   local wall_time=""
   local wall_minutes=0
   local max_wall_minutes=0
+  local route_mem_gb=""
 
   if [[ "${mode}" == "segment" ]]; then
     gmem="$(dataset_segment_gmem "${dataset}")"
     mem_gb="$(dataset_segment_mem_gb "${dataset}")"
     wall_time="$(dataset_segment_wall_time "${dataset}")"
   else
-    gmem="$(dataset_predict_gmem "${fragment}")"
+    gmem="$(dataset_predict_gmem "${dataset}" "${fragment}")"
     mem_gb="$(dataset_predict_mem_gb "${dataset}" "${fragment}")"
     wall_time="$(dataset_predict_wall_time "${dataset}" "${fragment}")"
   fi
 
   if [[ "${ROUTE_ELIGIBLE_TO_GPU}" == "1" ]]; then
+    # Routing should use the effective RAM request that would be used on gpu.
+    route_mem_gb="$(clamp_mem_for_queue "${GPU_QUEUE_DEFAULT}" "${mem_gb}")"
     wall_minutes="$(wall_to_minutes "${wall_time}")"
     max_wall_minutes=$((GPU_QUEUE_MAX_WALL_H * 60))
     if number_le "${gmem}" "${GPU_QUEUE_MAX_GMEM}" && \
-       number_le "${mem_gb}" "${GPU_QUEUE_MAX_MEM_GB}" && \
+       number_le "${route_mem_gb}" "${GPU_QUEUE_MAX_MEM_GB}" && \
        [[ "${wall_minutes}" -le "${max_wall_minutes}" ]]; then
       queue_name="${GPU_QUEUE_DEFAULT}"
+      mem_gb="${route_mem_gb}"
     fi
   fi
 
@@ -1010,12 +1081,16 @@ resolve_primary_resources() {
   fi
 
   gmem="$(clamp_gmem_for_queue "${queue_name}" "${gmem}")"
+  mem_gb="$(clamp_mem_for_queue "${queue_name}" "${mem_gb}")"
 
   printf "%s\t%s\t%s\t%s\n" "${queue_name}" "${gmem}" "${mem_gb}" "${wall_time}"
 }
 
 resolve_export_resources() {
-  printf "%s\t128\t%s\n" "${EXPORT_QUEUE}" "${EXPORT_WALL_TIME_DEFAULT}"
+  local queue_name="${EXPORT_QUEUE}"
+  local mem_gb="128"
+  mem_gb="$(clamp_mem_for_queue "${queue_name}" "${mem_gb}")"
+  printf "%s\t%s\t%s\n" "${queue_name}" "${mem_gb}" "${EXPORT_WALL_TIME_DEFAULT}"
 }
 
 primary_success_status() {
@@ -1114,28 +1189,88 @@ render_primary_attempt_script() {
   if [[ "${mode}" == "segment" ]]; then
     segment_prediction_mode="$(dataset_segment_prediction_mode "${dataset}")"
     effective_minqv="$(dataset_effective_min_qv "${dataset}" "${minqv}")"
-    segger_cmd_line="$(shell_join \
-      "${SEGGER_BIN}" segment \
-      "${input_dir}" \
-      "${seg_dir}" \
-      --n-epochs "${N_EPOCHS}" \
-      --prediction-mode "${segment_prediction_mode}" \
-      --prediction-scale-factor "${pred_scale}" \
-      --use-3d "${use_3d}" \
-      --transcripts-max-k "${txk}" \
-      --transcripts-max-dist "${txdist}" \
-      --tiling-margin-training "${tiling_margin_training}" \
-      --tiling-margin-prediction "${tiling_margin_prediction}" \
-      --n-mid-layers "${layers}" \
-      --n-heads "${heads}" \
-      --cells-min-counts "${cellsmin}" \
-      --min-qv "${effective_minqv}")"
+    if [[ "${CLI_IO_STYLE}" == "named" ]]; then
+      # Main branch: pass only flags detected in `segger segment --help`.
+      segger_cmd_line="$(shell_join \
+        "${SEGGER_BIN}" segment \
+        -i "${input_dir}" \
+        -o "${seg_dir}")"
+      if [[ "${CLI_SEGMENT_SUPPORTS_N_EPOCHS}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --n-epochs "${N_EPOCHS}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_PREDICTION_MODE}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --prediction-mode "${segment_prediction_mode}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_EXPANSION_FLAG}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join "${CLI_EXPANSION_FLAG}" "${pred_scale}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_K}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --transcripts-max-k "${txk}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_DIST}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --transcripts-max-dist "${txdist}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_TILING_MARGIN_TRAINING}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --tiling-margin-training "${tiling_margin_training}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_TILING_MARGIN_PREDICTION}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --tiling-margin-prediction "${tiling_margin_prediction}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_N_MID_LAYERS}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --n-mid-layers "${layers}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_N_HEADS}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --n-heads "${heads}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_CELLS_MIN_COUNTS}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --cells-min-counts "${cellsmin}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_MIN_QV}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --min-qv "${effective_minqv}")"
+      fi
+      if [[ "${CLI_SEGMENT_SUPPORTS_USE_3D}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --use-3d "${use_3d}")"
+      fi
+    else
+      # v2-incremental: segger segment <in> <out> --prediction-scale-factor ...
+      segger_cmd_line="$(shell_join \
+        "${SEGGER_BIN}" segment \
+        "${input_dir}" \
+        "${seg_dir}" \
+        --n-epochs "${N_EPOCHS}" \
+        --prediction-mode "${segment_prediction_mode}" \
+        "${CLI_EXPANSION_FLAG}" "${pred_scale}" \
+        --use-3d "${use_3d}" \
+        --transcripts-max-k "${txk}" \
+        --transcripts-max-dist "${txdist}" \
+        --tiling-margin-training "${tiling_margin_training}" \
+        --tiling-margin-prediction "${tiling_margin_prediction}" \
+        --n-mid-layers "${layers}" \
+        --n-heads "${heads}" \
+        --cells-min-counts "${cellsmin}" \
+        --min-qv "${effective_minqv}")"
+    fi
     if [[ "${alignment}" == "true" ]]; then
       align_ref_args="$(alignment_reference_args "${scrna_ref}" "${ALIGNMENT_REFERENCE_MODE}")"
-      segger_cmd_line+=" $(shell_join \
-        --alignment-loss \
-        --alignment-loss-weight-start 0.0 \
-        --alignment-loss-weight-end "${align_weight}")"
+      if [[ "${CLI_IO_STYLE}" == "named" ]]; then
+        if [[ "${CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS}" == "1" ]]; then
+          segger_cmd_line+=" $(shell_join --alignment-loss)"
+        else
+          printf "[%s] WARN dataset=%s job=%s alignment requested but --alignment-loss is not supported by segment CLI; skipping alignment flags.\n" \
+            "$(timestamp)" "${dataset}" "${job}" >&2
+        fi
+        if [[ "${CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_START}" == "1" ]]; then
+          segger_cmd_line+=" $(shell_join --alignment-loss-weight-start 0.0)"
+        fi
+        if [[ "${CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_END}" == "1" ]]; then
+          segger_cmd_line+=" $(shell_join --alignment-loss-weight-end "${align_weight}")"
+        fi
+      else
+        segger_cmd_line+=" $(shell_join \
+          --alignment-loss \
+          --alignment-loss-weight-start 0.0 \
+          --alignment-loss-weight-end "${align_weight}")"
+      fi
       if [[ -n "${align_ref_args}" ]]; then
         segger_cmd_line+=" ${align_ref_args}"
       fi
@@ -1158,11 +1293,17 @@ render_primary_attempt_script() {
       "${SEGGER_BIN}" predict \
       -c "${baseline_ckpt}" \
       -i "${input_dir}" \
-      -o "${seg_dir}" \
-      --prediction-scale-factor "${pred_scale}" \
-      --use-3d checkpoint)"
+      -o "${seg_dir}")"
+    if [[ "${CLI_PREDICT_SUPPORTS_EXPANSION_FLAG}" == "1" ]]; then
+      segger_cmd_line+=" $(shell_join "${CLI_EXPANSION_FLAG}" "${pred_scale}")"
+    fi
+    if [[ "${CLI_PREDICT_SUPPORTS_USE_3D}" == "1" ]]; then
+      segger_cmd_line+=" $(shell_join --use-3d checkpoint)"
+    fi
     if [[ "${fragment}" == "true" ]]; then
-      segger_cmd_line+=" $(shell_join --fragment-mode)"
+      if [[ "${CLI_PREDICT_SUPPORTS_FRAGMENT_MODE}" == "1" ]]; then
+        segger_cmd_line+=" $(shell_join --fragment-mode)"
+      fi
     fi
   fi
 
@@ -1350,6 +1491,7 @@ render_export_attempt_script() {
   local xenium_supported="0"
   local export_anndata_cmd=""
   local export_xenium_cmd=""
+  local -a export_anndata_parts=()
 
   if [[ -n "${primary_dependency_name}" ]]; then
     dependency_directive="#BSUB -w \"done(${primary_dependency_name})\""
@@ -1359,12 +1501,17 @@ render_export_attempt_script() {
     xenium_supported="1"
   fi
 
-  export_anndata_cmd="$(shell_join \
-    "${SEGGER_BIN}" export \
-    -s "${seg_file}" \
-    -i "${input_dir}" \
-    -o "${anndata_dir}" \
-    --format anndata)"
+  export_anndata_parts=(
+    "${SEGGER_BIN}" export
+    -s "${seg_file}"
+    -i "${input_dir}"
+    -o "${anndata_dir}"
+    --format anndata
+  )
+  if awk -v v="${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT}" 'BEGIN { exit !((v + 0.0) > 0) }'; then
+    export_anndata_parts+=(--min-similarity-shift "${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT}")
+  fi
+  export_anndata_cmd="$(shell_join "${export_anndata_parts[@]}")"
   export_xenium_cmd="$(shell_join \
     "${SEGGER_BIN}" export \
     -s "${seg_file}" \
@@ -1645,6 +1792,7 @@ apply_retry_gpu_fallback() {
   gmem="$(number_max "${bumped_gmem}" "${fallback_gmem}")"
   mem_gb="$(number_max "${mem_gb}" "${fallback_mem}")"
   gmem="$(clamp_gmem_for_queue "${queue_name}" "${gmem}")"
+  mem_gb="$(clamp_mem_for_queue "${queue_name}" "${mem_gb}")"
   wall_minutes="$(wall_to_minutes "${wall_time}")"
   fallback_wall_minutes=$((GPU_FALLBACK_MIN_WALL_H * 60))
   if [[ "${wall_minutes}" -lt "${fallback_wall_minutes}" ]]; then
@@ -1721,10 +1869,12 @@ query_job_state() {
 
 submit_attempt_script() {
   local script_path="$1"
+  local qtmp=""
+  printf -v qtmp '%q' "${WORK_TMP_ROOT}"
   if is_remote_submit_enabled; then
-    ssh -o BatchMode=yes "${LSF_SUBMIT_HOST}" bsub < "${script_path}"
+    ssh -o BatchMode=yes "${LSF_SUBMIT_HOST}" "mkdir -p ${qtmp} && TMPDIR=${qtmp} TMP=${qtmp} TEMP=${qtmp} bsub" < "${script_path}"
   else
-    bsub < "${script_path}"
+    TMPDIR="${WORK_TMP_ROOT}" TMP="${WORK_TMP_ROOT}" TEMP="${WORK_TMP_ROOT}" bsub < "${script_path}"
   fi
 }
 
@@ -1755,6 +1905,19 @@ require_segger_binary() {
   if [[ -z "${SEGGER_BIN}" ]]; then
     echo "ERROR: SEGGER_BIN is empty." >&2
     exit 1
+  fi
+}
+
+detect_cli_flag_support() {
+  local subcommand="$1"
+  local flag="$2"
+  local help_out=""
+
+  help_out="$("${SEGGER_BIN}" "${subcommand}" --help 2>&1 || true)"
+  if printf '%s\n' "${help_out}" | grep -Fq -- "${flag}"; then
+    printf '1'
+  else
+    printf '0'
   fi
 }
 
@@ -2159,8 +2322,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CLUSTER_CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-/omics/groups/OE0606/internal/elihei/projects/segger_lsf_benchmark_fixed}"
+WORK_TMP_ROOT="${WORK_TMP_ROOT:-${OUTPUT_ROOT}/_workflow/tmp}"
 DATASET_KEYS="${DATASET_KEYS:-root_missing}"
-MERSCOPE_MOUSE_LIVER_MIN_QV="${MERSCOPE_MOUSE_LIVER_MIN_QV:-}"
 DRY_RUN="$(normalize_bool "${DRY_RUN:-1}")"
 AUTO_SUBMIT="$(normalize_bool "${AUTO_SUBMIT:-0}")"
 RUN_PRIMARY_JOBS="$(normalize_bool "${RUN_PRIMARY_JOBS:-1}")"
@@ -2188,10 +2351,11 @@ GPU_QUEUE_PRO="${GPU_QUEUE_PRO:-gpu-pro}"
 EXPORT_QUEUE="${EXPORT_QUEUE:-long}"
 ALIGNMENT_GPU_QUEUE="${ALIGNMENT_GPU_QUEUE:-}"
 GPU_QUEUE_MAX_GMEM="${GPU_QUEUE_MAX_GMEM:-31}"
-GPU_QUEUE_MAX_MEM_GB="${GPU_QUEUE_MAX_MEM_GB:-384}"
+GPU_QUEUE_MAX_MEM_GB="${GPU_QUEUE_MAX_MEM_GB:-84}"
 GPU_QUEUE_MAX_WALL_H="${GPU_QUEUE_MAX_WALL_H:-24}"
-GPU_QUEUE_PRO_MAX_GMEM="${GPU_QUEUE_PRO_MAX_GMEM:-36}"
-FORCE_GPU_PRO_DATASETS="${FORCE_GPU_PRO_DATASETS:-}"
+GPU_QUEUE_PRO_MAX_GMEM="${GPU_QUEUE_PRO_MAX_GMEM:-39}"
+GPU_QUEUE_PRO_MAX_MEM_GB="${GPU_QUEUE_PRO_MAX_MEM_GB:-84}"
+FORCE_GPU_PRO_DATASETS="${FORCE_GPU_PRO_DATASETS:-xenium_crc,xenium_nsclc,xenium_mouse_liver,xenium_breast}"
 REQUIRE_SUCCESS_STATUS_FOR_RESUME="$(normalize_bool "${REQUIRE_SUCCESS_STATUS_FOR_RESUME:-1}")"
 ALLOW_UNVERIFIED_PRIMARY_OUTPUTS="$(normalize_bool "${ALLOW_UNVERIFIED_PRIMARY_OUTPUTS:-0}")"
 GPU_FALLBACK_ON_RETRY="$(normalize_bool "${GPU_FALLBACK_ON_RETRY:-1}")"
@@ -2199,9 +2363,10 @@ GPU_FALLBACK_QUEUE="${GPU_FALLBACK_QUEUE:-${GPU_QUEUE_PRO}}"
 GPU_RETRY_GMEM_BUMP_GB="${GPU_RETRY_GMEM_BUMP_GB:-20}"
 GPU_FALLBACK_MIN_GMEM="${GPU_FALLBACK_MIN_GMEM:-36}"
 GPU_FALLBACK_FRAGMENT_GMEM="${GPU_FALLBACK_FRAGMENT_GMEM:-${GPU_QUEUE_PRO_MAX_GMEM}}"
-GPU_FALLBACK_MIN_MEM_GB="${GPU_FALLBACK_MIN_MEM_GB:-512}"
+GPU_FALLBACK_MIN_MEM_GB="${GPU_FALLBACK_MIN_MEM_GB:-84}"
 GPU_FALLBACK_MIN_WALL_H="${GPU_FALLBACK_MIN_WALL_H:-12}"
 GPU_USAGE_POLL_SEC="${GPU_USAGE_POLL_SEC:-15}"
+ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT="${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT:-0.0}"
 if ! [[ "${GPU_RETRY_GMEM_BUMP_GB}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: GPU_RETRY_GMEM_BUMP_GB must be a non-negative integer (got: ${GPU_RETRY_GMEM_BUMP_GB})." >&2
   exit 1
@@ -2210,16 +2375,40 @@ if ! [[ "${GPU_QUEUE_PRO_MAX_GMEM}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: GPU_QUEUE_PRO_MAX_GMEM must be a non-negative integer (got: ${GPU_QUEUE_PRO_MAX_GMEM})." >&2
   exit 1
 fi
+if ! [[ "${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]; then
+  echo "ERROR: ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT must be a decimal in [0,1] (got: ${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT})." >&2
+  exit 1
+fi
+if ! awk -v v="${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT}" 'BEGIN { exit !((v + 0.0) >= 0 && (v + 0.0) <= 1) }'; then
+  echo "ERROR: ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT must be in [0,1] (got: ${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT})." >&2
+  exit 1
+fi
+if ! [[ "${GPU_QUEUE_PRO_MAX_MEM_GB}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: GPU_QUEUE_PRO_MAX_MEM_GB must be a non-negative integer (got: ${GPU_QUEUE_PRO_MAX_MEM_GB})." >&2
+  exit 1
+fi
 if ! [[ "${GPU_QUEUE_MAX_WALL_H}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: GPU_QUEUE_MAX_WALL_H must be a non-negative integer (got: ${GPU_QUEUE_MAX_WALL_H})." >&2
   exit 1
 fi
 N_EPOCHS="${N_EPOCHS:-20}"
 SEGGER_BIN="${SEGGER_BIN:-segger}"
+CLI_EXPANSION_FLAG="${CLI_EXPANSION_FLAG:---prediction-scale-factor}"
+CLI_IO_STYLE="${CLI_IO_STYLE:-positional}"  # "positional" (v2) or "named" (main: -i/-o)
 CLUSTER_CODE_ROOT="${CLUSTER_CODE_ROOT:-${DEFAULT_CLUSTER_CODE_ROOT}}"
 SEGMENT_WALL_TIME_DEFAULT="${SEGMENT_WALL_TIME_DEFAULT:-6:00}"
 PREDICT_FRAGMENT_GMEM_GB="${PREDICT_FRAGMENT_GMEM_GB:-36}"
 EXPORT_WALL_TIME_DEFAULT="${EXPORT_WALL_TIME_DEFAULT:-6:00}"
+SEGMENT_PREDICTION_MODE="${SEGMENT_PREDICTION_MODE:-nucleus}"
+SEGMENT_PREDICTION_MODE="$(printf '%s' "${SEGMENT_PREDICTION_MODE}" | tr '[:upper:]' '[:lower:]')"
+case "${SEGMENT_PREDICTION_MODE}" in
+  nucleus|cell)
+    ;;
+  *)
+    echo "ERROR: SEGMENT_PREDICTION_MODE must be nucleus|cell (got: ${SEGMENT_PREDICTION_MODE})." >&2
+    exit 1
+    ;;
+esac
 if ! [[ "${PREDICT_FRAGMENT_GMEM_GB}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: PREDICT_FRAGMENT_GMEM_GB must be a non-negative integer (got: ${PREDICT_FRAGMENT_GMEM_GB})." >&2
   exit 1
@@ -2231,6 +2420,7 @@ if [[ -z "${RUN_LABEL}" ]]; then
 fi
 ALIGNMENT_REFERENCE_MODE="$(normalize_alignment_reference_mode "${ALIGNMENT_REFERENCE_MODE:-path}")"
 ALIGNMENT_SCRNA_CELLTYPE_COLUMN="${ALIGNMENT_SCRNA_CELLTYPE_COLUMN:-cell_type}"
+JOB_SPECS_FILE="${JOB_SPECS_FILE:-}"
 LSF_SUBMIT_HOST="${LSF_SUBMIT_HOST:-local}"
 case "${LSF_SUBMIT_HOST}" in
   local|LOCAL|none|NONE|-)
@@ -2268,9 +2458,13 @@ EOF
 )"
 MAMBA_ACTIVATE_CMD="${MAMBA_ACTIVATE_CMD:-${DEFAULT_ACTIVATE_CMD}}"
 
-mkdir -p "${OUTPUT_ROOT}/datasets" "${OUTPUT_ROOT}/summaries"
+mkdir -p "${OUTPUT_ROOT}/datasets" "${OUTPUT_ROOT}/summaries" "${WORK_TMP_ROOT}"
+export TMPDIR="${WORK_TMP_ROOT}"
+export TMP="${WORK_TMP_ROOT}"
+export TEMP="${WORK_TMP_ROOT}"
 
 printf "[%s] OUTPUT_ROOT=%s\n" "$(timestamp)" "${OUTPUT_ROOT}"
+printf "[%s] WORK_TMP_ROOT=%s\n" "$(timestamp)" "${WORK_TMP_ROOT}"
 printf "[%s] DATASET_KEYS=%s\n" "$(timestamp)" "${DATASET_KEYS}"
 printf "[%s] DRY_RUN=%s AUTO_SUBMIT=%s RUN_PRIMARY_JOBS=%s RUN_EXPORT_JOBS=%s RUN_ANNDATA_EXPORT=%s RUN_XENIUM_EXPORT=%s SKIP_UNSUPPORTED_XENIUM_EXPORT=%s RUN_VALIDATION_TABLE=%s RUN_STATUS_SNAPSHOT=%s\n" \
   "$(timestamp)" "${DRY_RUN}" "${AUTO_SUBMIT}" "${RUN_PRIMARY_JOBS}" "${RUN_EXPORT_JOBS}" "${RUN_ANNDATA_EXPORT}" "${RUN_XENIUM_EXPORT}" "${SKIP_UNSUPPORTED_XENIUM_EXPORT}" "${RUN_VALIDATION_TABLE}" "${RUN_STATUS_SNAPSHOT}"
@@ -2283,6 +2477,7 @@ printf "[%s] ONLY_RETRY_OOM_JOBS=%s\n" \
   "$(timestamp)" "${ONLY_RETRY_OOM_JOBS}"
 printf "[%s] ALIGNMENT_REFERENCE_MODE=%s\n" "$(timestamp)" "${ALIGNMENT_REFERENCE_MODE}"
 printf "[%s] ALIGNMENT_SCRNA_CELLTYPE_COLUMN=%s\n" "$(timestamp)" "${ALIGNMENT_SCRNA_CELLTYPE_COLUMN}"
+printf "[%s] JOB_SPECS_FILE=%s\n" "$(timestamp)" "${JOB_SPECS_FILE:-<default_matrix>}"
 if is_remote_submit_enabled; then
   printf "[%s] LSF submit transport=ssh host=%s\n" "$(timestamp)" "${LSF_SUBMIT_HOST}"
 else
@@ -2300,10 +2495,14 @@ printf "[%s] AUTO_FETCH_SCRNA_REFS=%s FORCE_SCRNA_REFETCH=%s\n" \
   "$(timestamp)" "${AUTO_FETCH_SCRNA_REFS}" "${FORCE_SCRNA_REFETCH}"
 printf "[%s] SEGMENT_WALL_TIME_DEFAULT=%s EXPORT_WALL_TIME_DEFAULT=%s PREDICT_FRAGMENT_GMEM_GB=%s PRESERVE_PYTHONPATH=%s\n" \
   "$(timestamp)" "${SEGMENT_WALL_TIME_DEFAULT}" "${EXPORT_WALL_TIME_DEFAULT}" "${PREDICT_FRAGMENT_GMEM_GB}" "${PRESERVE_PYTHONPATH}"
+printf "[%s] SEGMENT_PREDICTION_MODE=%s\n" \
+  "$(timestamp)" "${SEGMENT_PREDICTION_MODE}"
+printf "[%s] ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT=%s\n" \
+  "$(timestamp)" "${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT}"
 printf "[%s] MAX_ACTIVE_STANDARD=%s MAX_ACTIVE_FRAGMENT=%s (currently informational)\n" \
   "$(timestamp)" "${MAX_ACTIVE_STANDARD}" "${MAX_ACTIVE_FRAGMENT}"
-printf "[%s] QUEUE_ROUTING route_eligible=%s gpu_default=%s gpu_pro=%s export=%s align_override=%s max_gmem=%sG pro_max_gmem=%sG max_mem=%sG max_wall=%sh\n" \
-  "$(timestamp)" "${ROUTE_ELIGIBLE_TO_GPU}" "${GPU_QUEUE_DEFAULT}" "${GPU_QUEUE_PRO}" "${EXPORT_QUEUE}" "${ALIGNMENT_GPU_QUEUE:-<none>}" "${GPU_QUEUE_MAX_GMEM}" "${GPU_QUEUE_PRO_MAX_GMEM}" "${GPU_QUEUE_MAX_MEM_GB}" "${GPU_QUEUE_MAX_WALL_H}"
+printf "[%s] QUEUE_ROUTING route_eligible=%s gpu_default=%s gpu_pro=%s export=%s align_override=%s max_gmem=%sG pro_max_gmem=%sG max_mem=%sG pro_max_mem=%sG max_wall=%sh\n" \
+  "$(timestamp)" "${ROUTE_ELIGIBLE_TO_GPU}" "${GPU_QUEUE_DEFAULT}" "${GPU_QUEUE_PRO}" "${EXPORT_QUEUE}" "${ALIGNMENT_GPU_QUEUE:-<none>}" "${GPU_QUEUE_MAX_GMEM}" "${GPU_QUEUE_PRO_MAX_GMEM}" "${GPU_QUEUE_MAX_MEM_GB}" "${GPU_QUEUE_PRO_MAX_MEM_GB}" "${GPU_QUEUE_MAX_WALL_H}"
 printf "[%s] FORCE_GPU_PRO_DATASETS=%s\n" \
   "$(timestamp)" "${FORCE_GPU_PRO_DATASETS}"
 printf "[%s] RESUME_STATUS_CHECK require_success=%s allow_unverified=%s\n" \
@@ -2315,6 +2514,91 @@ printf "[%s] GPU_USAGE_POLL_SEC=%s\n" \
 
 require_submit_transport
 require_segger_binary
+
+CLI_SEGMENT_SUPPORTS_N_EPOCHS="1"
+CLI_SEGMENT_SUPPORTS_PREDICTION_MODE="1"
+CLI_SEGMENT_SUPPORTS_EXPANSION_FLAG="1"
+CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_K="1"
+CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_DIST="1"
+CLI_SEGMENT_SUPPORTS_TILING_MARGIN_TRAINING="1"
+CLI_SEGMENT_SUPPORTS_TILING_MARGIN_PREDICTION="1"
+CLI_SEGMENT_SUPPORTS_N_MID_LAYERS="1"
+CLI_SEGMENT_SUPPORTS_N_HEADS="1"
+CLI_SEGMENT_SUPPORTS_CELLS_MIN_COUNTS="1"
+CLI_SEGMENT_SUPPORTS_MIN_QV="1"
+CLI_SEGMENT_SUPPORTS_USE_3D="1"
+CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS="1"
+CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_START="1"
+CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_END="1"
+CLI_SEGMENT_SUPPORTS_SCRNA_REFERENCE_PATH="1"
+CLI_SEGMENT_SUPPORTS_SCRNA_CELLTYPE_COLUMN="1"
+
+CLI_PREDICT_SUPPORTS_EXPANSION_FLAG="1"
+CLI_PREDICT_SUPPORTS_USE_3D="1"
+CLI_PREDICT_SUPPORTS_FRAGMENT_MODE="1"
+HAS_PREDICT_JOBS="1"
+
+if [[ "${CLI_IO_STYLE}" == "named" ]]; then
+  if ! job_specs_contains_mode "predict"; then
+    HAS_PREDICT_JOBS="0"
+  fi
+  CLI_SEGMENT_SUPPORTS_N_EPOCHS="$(detect_cli_flag_support segment "--n-epochs")"
+  CLI_SEGMENT_SUPPORTS_PREDICTION_MODE="$(detect_cli_flag_support segment "--prediction-mode")"
+  CLI_SEGMENT_SUPPORTS_EXPANSION_FLAG="$(detect_cli_flag_support segment "${CLI_EXPANSION_FLAG}")"
+  CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_K="$(detect_cli_flag_support segment "--transcripts-max-k")"
+  CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_DIST="$(detect_cli_flag_support segment "--transcripts-max-dist")"
+  CLI_SEGMENT_SUPPORTS_TILING_MARGIN_TRAINING="$(detect_cli_flag_support segment "--tiling-margin-training")"
+  CLI_SEGMENT_SUPPORTS_TILING_MARGIN_PREDICTION="$(detect_cli_flag_support segment "--tiling-margin-prediction")"
+  CLI_SEGMENT_SUPPORTS_N_MID_LAYERS="$(detect_cli_flag_support segment "--n-mid-layers")"
+  CLI_SEGMENT_SUPPORTS_N_HEADS="$(detect_cli_flag_support segment "--n-heads")"
+  CLI_SEGMENT_SUPPORTS_CELLS_MIN_COUNTS="$(detect_cli_flag_support segment "--cells-min-counts")"
+  CLI_SEGMENT_SUPPORTS_MIN_QV="$(detect_cli_flag_support segment "--min-qv")"
+  CLI_SEGMENT_SUPPORTS_USE_3D="$(detect_cli_flag_support segment "--use-3d")"
+  CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS="$(detect_cli_flag_support segment "--alignment-loss")"
+  CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_START="$(detect_cli_flag_support segment "--alignment-loss-weight-start")"
+  CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_END="$(detect_cli_flag_support segment "--alignment-loss-weight-end")"
+  CLI_SEGMENT_SUPPORTS_SCRNA_REFERENCE_PATH="$(detect_cli_flag_support segment "--scrna-reference-path")"
+  CLI_SEGMENT_SUPPORTS_SCRNA_CELLTYPE_COLUMN="$(detect_cli_flag_support segment "--scrna-celltype-column")"
+
+  if [[ "${HAS_PREDICT_JOBS}" == "1" ]]; then
+    CLI_PREDICT_SUPPORTS_EXPANSION_FLAG="$(detect_cli_flag_support predict "${CLI_EXPANSION_FLAG}")"
+    CLI_PREDICT_SUPPORTS_USE_3D="$(detect_cli_flag_support predict "--use-3d")"
+    CLI_PREDICT_SUPPORTS_FRAGMENT_MODE="$(detect_cli_flag_support predict "--fragment-mode")"
+  else
+    CLI_PREDICT_SUPPORTS_EXPANSION_FLAG="0"
+    CLI_PREDICT_SUPPORTS_USE_3D="0"
+    CLI_PREDICT_SUPPORTS_FRAGMENT_MODE="0"
+  fi
+fi
+printf "[%s] CLI_FLAG_SUPPORT segment: n_epochs=%s prediction_mode=%s expansion=%s tx_k=%s tx_dist=%s tile_train=%s tile_pred=%s mid_layers=%s heads=%s cells_min=%s min_qv=%s use_3d=%s align=%s align_w_start=%s align_w_end=%s\n" \
+  "$(timestamp)" \
+  "${CLI_SEGMENT_SUPPORTS_N_EPOCHS}" \
+  "${CLI_SEGMENT_SUPPORTS_PREDICTION_MODE}" \
+  "${CLI_SEGMENT_SUPPORTS_EXPANSION_FLAG}" \
+  "${CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_K}" \
+  "${CLI_SEGMENT_SUPPORTS_TRANSCRIPTS_MAX_DIST}" \
+  "${CLI_SEGMENT_SUPPORTS_TILING_MARGIN_TRAINING}" \
+  "${CLI_SEGMENT_SUPPORTS_TILING_MARGIN_PREDICTION}" \
+  "${CLI_SEGMENT_SUPPORTS_N_MID_LAYERS}" \
+  "${CLI_SEGMENT_SUPPORTS_N_HEADS}" \
+  "${CLI_SEGMENT_SUPPORTS_CELLS_MIN_COUNTS}" \
+  "${CLI_SEGMENT_SUPPORTS_MIN_QV}" \
+  "${CLI_SEGMENT_SUPPORTS_USE_3D}" \
+  "${CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS}" \
+  "${CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_START}" \
+  "${CLI_SEGMENT_SUPPORTS_ALIGNMENT_LOSS_WEIGHT_END}"
+printf "[%s] CLI_FLAG_SUPPORT segment refs: scrna_reference_path=%s scrna_celltype_column=%s\n" \
+  "$(timestamp)" \
+  "${CLI_SEGMENT_SUPPORTS_SCRNA_REFERENCE_PATH}" \
+  "${CLI_SEGMENT_SUPPORTS_SCRNA_CELLTYPE_COLUMN}"
+printf "[%s] CLI_FLAG_SUPPORT predict: expansion=%s use_3d=%s fragment_mode=%s\n" \
+  "$(timestamp)" \
+  "${CLI_PREDICT_SUPPORTS_EXPANSION_FLAG}" \
+  "${CLI_PREDICT_SUPPORTS_USE_3D}" \
+  "${CLI_PREDICT_SUPPORTS_FRAGMENT_MODE}"
+if [[ "${HAS_PREDICT_JOBS}" != "1" ]]; then
+  printf "[%s] CLI_FLAG_SUPPORT predict probe skipped (no predict jobs in JOB_SPECS_FILE)\n" "$(timestamp)"
+fi
 
 REQUESTED_DATASETS="$(resolve_requested_datasets)"
 if [[ -z "${REQUESTED_DATASETS//[[:space:]]/}" ]]; then

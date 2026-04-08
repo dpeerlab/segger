@@ -6,8 +6,11 @@ import scanpy as sc
 import numpy as np
 import torch
 import pandas as pd
+import logging
 
 from ...io import TrainingBoundaryFields, TrainingTranscriptFields
+
+LOGGER = logging.getLogger(__name__)
 from ...models.alignment_loss import compute_me_gene_edges
 from .neighbors import (
     setup_segmentation_graph,
@@ -49,23 +52,33 @@ def setup_heterodata(
         tx_fields.gene_cluster,
     ]
 
-    # Convert feature_name from cat to string for joining
+    # Convert feature_name to string on both sides so the inner join
+    # matches correctly regardless of the upstream dtype (Categorical,
+    # Enum, Utf8, etc.).
     if transcripts[tx_fields.feature].dtype != pl.Utf8:
         transcripts = transcripts.with_columns(pl.col(tx_fields.feature).cast(pl.Utf8))
+
+    _var_df = pl.from_pandas(
+        adata.var[[genes_encoding_column, genes_clusters_column]],
+        include_index=True,
+    )
+    _var_index_name = adata.var.index.name if adata.var.index.name else 'None'
+    if _var_df[_var_index_name].dtype != pl.Utf8:
+        _var_df = _var_df.with_columns(pl.col(_var_index_name).cast(pl.Utf8))
+
+    n_tx_before = transcripts.height
 
     # Update transcripts with fields for training
     transcripts = (
         transcripts
         # Reset columns
         .drop(drop_columns, strict=False)
-        # Add gene embedding and clusters
+        # Add gene embedding and clusters (inner join: keeps only
+        # transcripts whose gene is in the AnnData vocabulary).
         .join(
-            pl.from_pandas(
-                adata.var[[genes_encoding_column, genes_clusters_column]],
-                include_index=True
-            ),
+            _var_df,
             left_on=tx_fields.feature,
-            right_on=adata.var.index.name if adata.var.index.name else 'None',
+            right_on=_var_index_name,
         )
         .rename(
             {
@@ -106,7 +119,31 @@ def setup_heterodata(
             tx_fields.cell_encoding: pl.UInt32,
         })
     )
-    
+
+    n_tx_after = transcripts.height
+    n_dropped = n_tx_before - n_tx_after
+    if n_dropped > 0:
+        LOGGER.info(
+            "Gene vocabulary join: %d / %d transcripts matched (dropped %d "
+            "with genes not in AnnData).",
+            n_tx_after, n_tx_before, n_dropped,
+        )
+    if n_tx_after < n_tx_before * 0.5:
+        LOGGER.warning(
+            "Gene vocabulary join dropped >50%% of transcripts (%d → %d). "
+            "This usually means a dtype mismatch between transcript feature "
+            "names and AnnData var index. Check that both are plain strings.",
+            n_tx_before, n_tx_after,
+        )
+    if n_tx_after == 0:
+        raise ValueError(
+            f"Gene vocabulary join produced 0 transcripts (started with "
+            f"{n_tx_before}). The transcript feature column "
+            f"(dtype={transcripts.schema.get(tx_fields.feature, 'N/A')}) "
+            f"has no overlap with AnnData var index. This is likely a dtype "
+            f"or naming mismatch."
+        )
+
     # Sort boundaries by AnnData ordering
     obs_cell_ids = adata.obs[bd_fields.id].astype(str)
     boundaries = boundaries.reset_index(names=bd_fields.index).copy()

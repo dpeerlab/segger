@@ -129,7 +129,8 @@ The `docs/` folder contains detailed guides for each command:
 | [`docs/PREDICT.md`](docs/PREDICT.md) | Prediction-only mode, scale factor/fragment tuning, runtime estimates |
 | [`docs/EXPORT.md`](docs/EXPORT.md) | Export formats (Xenium Explorer, AnnData, SpatialData, merged), boundary methods |
 | [`docs/PLOT.md`](docs/PLOT.md) | Loss curve visualization, interpreting training metrics |
-| [`docs/VALIDATION_METRICS.md`](docs/VALIDATION_METRICS.md) | All 11 quality metrics with formulas, parameters, and output keys |
+| [`docs/VALIDATION.md`](docs/VALIDATION.md) | Validation guide — all metrics with interpretation, robustness analysis, and troubleshooting |
+| [`docs/SKILL_WORKFLOWS.md`](docs/SKILL_WORKFLOWS.md) | Generic skill-update playbook mapped to repo scripts (parameter sweep, DKFZ LSF, plots, segmentation evaluation) |
 
 ## Help per mode
 
