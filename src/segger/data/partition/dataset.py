@@ -498,6 +498,13 @@ class PartitionDataset(torch.utils.data.Dataset):
         dst_perm: torch.Tensor,
     ):
         """Remaps the `edge_index` to the new permuted node indices."""
+        src_perm = src_perm.to(torch.long)
+        dst_perm = dst_perm.to(torch.long)
+        edge_index = edge_store.edge_index.to(torch.long)
+        if edge_index.numel() == 0:
+            edge_store.edge_index = edge_index
+            return
+
         # Map edge index and attributes to new indices
         inv_src_perm = torch.empty_like(src_perm)
         inv_src_perm[src_perm] = torch.arange(
@@ -510,9 +517,58 @@ class PartitionDataset(torch.utils.data.Dataset):
             device=dst_perm.device,
         )
         edge_store.edge_index = torch.stack([
-            inv_src_perm[edge_store.edge_index[0]],
-            inv_dst_perm[edge_store.edge_index[1]],
+            inv_src_perm[edge_index[0]],
+            inv_dst_perm[edge_index[1]],
         ])
+
+    def _drop_invalid_edges(
+        self,
+        edge_store: Data | EdgeStorage,
+        src_perm: torch.Tensor,
+        dst_perm: torch.Tensor,
+    ) -> None:
+        """Drops edges with non-finite or out-of-range node indices."""
+        edge_index_raw = edge_store.edge_index
+        edge_index = edge_index_raw.to(torch.long)
+        if edge_index.numel() == 0:
+            edge_store.edge_index = edge_index
+            return
+
+        valid = torch.ones(
+            edge_index.size(1),
+            dtype=torch.bool,
+            device=edge_index.device,
+        )
+        if torch.is_floating_point(edge_index_raw):
+            finite_mask = torch.isfinite(edge_index_raw).all(dim=0)
+            valid &= finite_mask.to(edge_index.device)
+
+        valid &= edge_index[0].ge(0) & edge_index[0].lt(src_perm.numel())
+        valid &= edge_index[1].ge(0) & edge_index[1].lt(dst_perm.numel())
+
+        if valid.all():
+            edge_store.edge_index = edge_index
+            return
+
+        n_invalid = int((~valid).sum().item())
+        n_total = int(edge_index.size(1))
+        warnings.warn(
+            "Dropping invalid edges with out-of-range/non-finite indices "
+            f"({n_invalid}/{n_total} edges removed).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+        valid_idx = torch.nonzero(valid, as_tuple=False).reshape(-1)
+        edge_store.edge_index = edge_index[:, valid]
+        for attr in edge_store.edge_attrs():
+            if attr == 'edge_index':
+                continue
+            edge_store[attr] = self._index_select(
+                edge_store[attr],
+                valid_idx,
+                dim=0,
+            )
 
     def _permute_edge_store(
         self,
@@ -523,6 +579,8 @@ class PartitionDataset(torch.utils.data.Dataset):
         dst_labels: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculates and applies the permutation for a single edge type."""
+        self._drop_invalid_edges(edge_store, src_perm, dst_perm)
+
         # Map edge index to new indices
         self._map_edge_index(edge_store, src_perm, dst_perm)
         src_labels = self._sanitize_partition_labels(

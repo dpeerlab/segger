@@ -2,6 +2,7 @@ from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
+import warnings
 import shapely
 import torch
 
@@ -199,6 +200,11 @@ class TilePredictDataset(Dataset):
         elif 'pos' not in self.data.node_attrs():
             raise ValueError("Graph must contain 'pos' attribute.")
 
+        # Some datasets can carry float/non-finite edge indices after IO fallback.
+        # Normalize once so PyG subgraph indexing is stable during prediction.
+        if self._is_hetero:
+            self._sanitize_edge_indices()
+
     def __len__(self) -> int:
         """Number of tiles in the dataset."""
         return len(self.tiling.tiles)
@@ -216,6 +222,71 @@ class TilePredictDataset(Dataset):
             )
         geometry = self.tiling.tiles[idx]
         return self._subset(geometry)
+
+    def _sanitize_edge_indices(self) -> None:
+        if not self._is_hetero:
+            return
+
+        for edge_type, edge_store in self.data.edge_items():
+            if 'edge_index' not in edge_store:
+                continue
+            edge_index = edge_store.edge_index
+            if edge_index is None:
+                continue
+            if edge_index.dim() != 2 or edge_index.size(0) != 2:
+                continue
+            if edge_index.numel() == 0:
+                edge_store.edge_index = edge_index.to(torch.long)
+                continue
+
+            src_type, _, dst_type = edge_type
+            src_n = self.data[src_type].num_nodes
+            dst_n = self.data[dst_type].num_nodes
+            if src_n is None:
+                src_n = int(self.data[src_type]['pos'].size(0))
+            if dst_n is None:
+                dst_n = int(self.data[dst_type]['pos'].size(0))
+
+            valid = torch.ones(
+                edge_index.size(1),
+                dtype=torch.bool,
+                device=edge_index.device,
+            )
+
+            if torch.is_floating_point(edge_index):
+                finite = torch.isfinite(edge_index).all(dim=0)
+                rounded = edge_index.round()
+                integral = torch.isclose(edge_index, rounded, rtol=0.0, atol=1e-6).all(dim=0)
+                valid &= finite & integral
+                edge_index = rounded
+
+            edge_index = edge_index.to(torch.long)
+            valid &= edge_index[0].ge(0) & edge_index[0].lt(int(src_n))
+            valid &= edge_index[1].ge(0) & edge_index[1].lt(int(dst_n))
+
+            if not valid.all():
+                n_invalid = int((~valid).sum().item())
+                n_total = int(valid.numel())
+                warnings.warn(
+                    "Dropping invalid edges before tile subgraph extraction "
+                    f"for edge_type={edge_type} ({n_invalid}/{n_total}).",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                keep_idx = torch.nonzero(valid, as_tuple=False).reshape(-1)
+                edge_index = edge_index[:, keep_idx]
+                for attr_name in edge_store.edge_attrs():
+                    if attr_name == 'edge_index':
+                        continue
+                    attr_value = edge_store[attr_name]
+                    if (
+                        isinstance(attr_value, torch.Tensor)
+                        and attr_value.dim() > 0
+                        and attr_value.size(0) == n_total
+                    ):
+                        edge_store[attr_name] = attr_value[keep_idx]
+
+            edge_store.edge_index = edge_index
 
     def _subset(self, bounds: shapely.Polygon) -> Data | HeteroData:
         """Slices all node attributes within bounds.

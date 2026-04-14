@@ -68,13 +68,36 @@ Environment overrides:
   GPU_QUEUE_PRO_MAX_MEM_GB   Max RAM (GB) requested on GPU_QUEUE_PRO
                              (default: 84)
   FORCE_GPU_PRO_DATASETS     CSV dataset keys always forced to GPU_QUEUE_PRO
-                             (default: xenium_crc,xenium_nsclc,xenium_mouse_liver,xenium_breast)
+                             (default: all benchmark datasets)
+  FORCE_TILING_MARGIN_TRAINING
+                             Optional global override for --tiling-margin-training
+                             (applies to all datasets/jobs).
+  FORCE_TILING_MARGIN_PREDICTION
+                             Optional global override for --tiling-margin-prediction
+                             (applies to all datasets/jobs).
+  FORCE_TILING_MARGIN_DATASETS
+                             Optional CSV dataset filter for FORCE_TILING_MARGIN_*.
+                             When set, forced margin only applies to listed datasets.
+  FORCE_TILING_MARGIN_JOBS   Optional CSV job-name filter for FORCE_TILING_MARGIN_*.
+                             When set, forced margin only applies to listed jobs.
+  SEGMENT_GMEM_GB_<DATASET_KEY_UPPER>
+                             Optional per-dataset segment gmem override, e.g.
+                             SEGMENT_GMEM_GB_COSMX_HUMAN_PANCREAS=39
+  SEGMENT_MEM_GB_<DATASET_KEY_UPPER>
+                             Optional per-dataset segment RAM override.
+  SEGMENT_WALL_TIME_<DATASET_KEY_UPPER>
+                             Optional per-dataset segment wall-time override.
   REQUIRE_SUCCESS_STATUS_FOR_RESUME
                              1 to only reuse outputs with segment_status in
                              {segment_ok,predict_ok} (default: 1)
   ALLOW_UNVERIFIED_PRIMARY_OUTPUTS
                              1 to trust existing seg outputs when status files
                              are missing (default: 0)
+  MIN_ASSIGNED_PCT_FOR_RESUME
+                             Minimum assigned_pct required to reuse an existing
+                             segmentation output (default: 0, disabled).
+                             If >0 and validation row exists with assigned_pct
+                             below threshold, job will be rerun.
   GPU_FALLBACK_ON_RETRY      1 to bump queue/VRAM on GPU-like failures in prior attempt
   GPU_FALLBACK_QUEUE         Queue used for retry fallback (default: GPU_QUEUE_PRO)
   GPU_RETRY_GMEM_BUMP_GB     gmem bump (GB) added on retry fallback (default: 20)
@@ -225,6 +248,77 @@ read_stage_field() {
     return 0
   fi
   awk -F'=' -v key="${field}" '$1 == key { print $2; exit }' "${stage_file}" 2>/dev/null || true
+}
+
+metric_token_missing() {
+  local value="${1:-}"
+  local lc
+  lc="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  case "${lc}" in
+    ""|nan|na|none|null|-) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validation_table_for_dataset_root() {
+  local dataset_root="$1"
+  local primary="${dataset_root}/summaries/validation_metrics_.tsv"
+  local legacy="${dataset_root}/summaries/validation_metrics.tsv"
+  if [[ -f "${primary}" ]]; then
+    printf '%s' "${primary}"
+    return 0
+  fi
+  if [[ -f "${legacy}" ]]; then
+    printf '%s' "${legacy}"
+    return 0
+  fi
+  printf '%s' ""
+}
+
+validation_assigned_pct_for_job() {
+  local dataset_root="$1"
+  local job="$2"
+  local validation_tsv=""
+  validation_tsv="$(validation_table_for_dataset_root "${dataset_root}")"
+  if [[ -z "${validation_tsv}" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  awk -F'\t' -v target="${job}" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "job") job_col = i
+        if ($i == "assigned_pct") assigned_col = i
+      }
+      if (job_col == 0) job_col = 1
+      next
+    }
+    $job_col == target {
+      if (assigned_col > 0) print $assigned_col
+      exit
+    }
+  ' "${validation_tsv}" 2>/dev/null || true
+}
+
+job_meets_resume_coverage_threshold() {
+  local dataset_root="$1"
+  local job="$2"
+  local threshold="$3"
+  local assigned_pct=""
+
+  if ! awk -v t="${threshold}" 'BEGIN { exit !((t + 0.0) > 0) }'; then
+    return 0
+  fi
+
+  assigned_pct="$(validation_assigned_pct_for_job "${dataset_root}" "${job}")"
+  if metric_token_missing "${assigned_pct}"; then
+    return 0
+  fi
+
+  if awk -v a="${assigned_pct}" -v t="${threshold}" 'BEGIN { exit !((a + 0.0) < (t + 0.0)) }'; then
+    return 1
+  fi
+  return 0
 }
 
 is_primary_success_status() {
@@ -728,6 +822,10 @@ job_primary_output_exists() {
     return 1
   fi
 
+  if ! job_meets_resume_coverage_threshold "${dataset_root}" "${job}" "${MIN_ASSIGNED_PCT_FOR_RESUME}"; then
+    return 1
+  fi
+
   if [[ "${REQUIRE_SUCCESS_STATUS_FOR_RESUME}" != "1" ]]; then
     return 0
   fi
@@ -893,9 +991,15 @@ xenium_export_supported_for_input() {
 }
 
 dataset_segment_mem_gb() {
+  local override_var="SEGMENT_MEM_GB_$(printf '%s' "${1:-}" | tr '[:lower:]-' '[:upper:]_')"
+  local override_val="${!override_var:-}"
+  if [[ -n "${override_val}" ]]; then
+    printf '%s' "${override_val}"
+    return 0
+  fi
   case "${1:-}" in
     xenium_mouse_brain) printf '512' ;;
-    xenium_nsclc|xenium_mouse_liver) printf '256' ;;
+    xenium_nsclc|xenium_mouse_liver|merscope_mouse_brain|cosmx_human_pancreas) printf '256' ;;
     xenium_breast) printf '128' ;;
     xenium_crc|xenium_v1_colon) printf '128' ;;
     *) printf '96' ;;
@@ -903,17 +1007,29 @@ dataset_segment_mem_gb() {
 }
 
 dataset_segment_gmem() {
+  local override_var="SEGMENT_GMEM_GB_$(printf '%s' "${1:-}" | tr '[:lower:]-' '[:upper:]_')"
+  local override_val="${!override_var:-}"
+  if [[ -n "${override_val}" ]]; then
+    printf '%s' "${override_val}"
+    return 0
+  fi
   case "${1:-}" in
-    xenium_mouse_brain) printf '39' ;;
-    xenium_crc) printf '25' ;;
+    xenium_mouse_brain|merscope_mouse_brain|cosmx_human_pancreas) printf '39' ;;
+    xenium_crc) printf '30' ;;
     *) printf '30' ;;
   esac
 }
 
 dataset_segment_wall_time() {
+  local override_var="SEGMENT_WALL_TIME_$(printf '%s' "${1:-}" | tr '[:lower:]-' '[:upper:]_')"
+  local override_val="${!override_var:-}"
+  if [[ -n "${override_val}" ]]; then
+    printf '%s' "${override_val}"
+    return 0
+  fi
   case "${1:-}" in
-    xenium_mouse_brain) printf '12:00' ;;
-    xenium_nsclc|xenium_mouse_liver) printf '10:00' ;;
+    xenium_mouse_brain|merscope_mouse_brain|cosmx_human_pancreas) printf '24:00' ;;
+    xenium_nsclc|xenium_mouse_liver) printf '16:00' ;;
     *) printf '%s' "${SEGMENT_WALL_TIME_DEFAULT}" ;;
   esac
 }
@@ -1001,8 +1117,32 @@ clamp_mem_for_queue() {
   printf '%s' "${mem_gb}"
 }
 
+should_apply_forced_tiling_margin() {
+  local dataset="${1:-}"
+  local job="${2:-}"
+  local force_datasets="${FORCE_TILING_MARGIN_DATASETS:-}"
+  local force_jobs="${FORCE_TILING_MARGIN_JOBS:-}"
+
+  if [[ -n "${force_datasets//[[:space:]]/}" ]] && \
+     ! csv_contains "${force_datasets}" "${dataset}"; then
+    return 1
+  fi
+  if [[ -n "${force_jobs//[[:space:]]/}" ]] && \
+     ! csv_contains "${force_jobs}" "${job}"; then
+    return 1
+  fi
+  return 0
+}
+
 dataset_tiling_margin_training() {
-  case "${1:-}" in
+  local dataset="${1:-}"
+  local job="${2:-}"
+  if [[ -n "${FORCE_TILING_MARGIN_TRAINING:-}" ]] && \
+     should_apply_forced_tiling_margin "${dataset}" "${job}"; then
+    printf '%s' "${FORCE_TILING_MARGIN_TRAINING}"
+    return 0
+  fi
+  case "${dataset}" in
     xenium_mouse_brain) printf '4' ;;
     xenium_breast|xenium_v1_breast) printf '6' ;;
     *) printf '8' ;;
@@ -1010,7 +1150,14 @@ dataset_tiling_margin_training() {
 }
 
 dataset_tiling_margin_prediction() {
-  case "${1:-}" in
+  local dataset="${1:-}"
+  local job="${2:-}"
+  if [[ -n "${FORCE_TILING_MARGIN_PREDICTION:-}" ]] && \
+     should_apply_forced_tiling_margin "${dataset}" "${job}"; then
+    printf '%s' "${FORCE_TILING_MARGIN_PREDICTION}"
+    return 0
+  fi
+  case "${dataset}" in
     xenium_mouse_brain) printf '4' ;;
     xenium_breast|xenium_v1_breast) printf '6' ;;
     *) printf '8' ;;
@@ -1183,8 +1330,8 @@ render_primary_attempt_script() {
     failure_prefix="predict"
   fi
 
-  tiling_margin_training="$(dataset_tiling_margin_training "${dataset}")"
-  tiling_margin_prediction="$(dataset_tiling_margin_prediction "${dataset}")"
+  tiling_margin_training="$(dataset_tiling_margin_training "${dataset}" "${job}")"
+  tiling_margin_prediction="$(dataset_tiling_margin_prediction "${dataset}" "${job}")"
 
   if [[ "${mode}" == "segment" ]]; then
     segment_prediction_mode="$(dataset_segment_prediction_mode "${dataset}")"
@@ -1702,8 +1849,8 @@ detect_prior_gpu_failure() {
     return 0
   fi
 
-  if contains_pattern "${out_log}" 'cudaerrorillegaladdress|cuda_error_illegal_address|illegal memory access|cudadrivererror' || \
-     contains_pattern "${err_log}" 'cudaerrorillegaladdress|cuda_error_illegal_address|illegal memory access|cudadrivererror'; then
+  if contains_pattern "${out_log}" 'cudaerrorillegaladdress|cuda_error_illegal_address|illegal memory access|cudadrivererror|device-side assert|cuda_error_assert' || \
+     contains_pattern "${err_log}" 'cudaerrorillegaladdress|cuda_error_illegal_address|illegal memory access|cudadrivererror|device-side assert|cuda_error_assert'; then
     printf 'gpu_illegal_access'
     return 0
   fi
@@ -1740,7 +1887,7 @@ detect_prior_gpu_failure() {
         note = tolower(field("note"))
 
         combined = status " " seg_status " " note
-        if (combined ~ /cudaerrorillegaladdress|cuda_error_illegal_address|illegal memory access|cudadrivererror/) {
+        if (combined ~ /cudaerrorillegaladdress|cuda_error_illegal_address|illegal memory access|cudadrivererror|device-side assert|cuda_error_assert/) {
           print "gpu_illegal_access"
           exit
         }
@@ -2101,7 +2248,7 @@ run_or_plan_job() {
   if [[ "${previous_attempt}" -ge 1 && "${prior_gpu_failure}" == "none" ]]; then
     prior_gpu_failure="$(detect_prior_gpu_failure "${dataset_root}" "${job}" "${previous_attempt}")"
   fi
-  if [[ "${previous_attempt}" -ge 1 && "${prior_gpu_failure}" != "none" ]]; then
+  if [[ "${previous_attempt}" -ge 1 && "${prior_gpu_failure}" == "gpu_oom_or_memlimit" ]]; then
     if [[ "${GPU_FALLBACK_ON_RETRY}" == "1" || "${ONLY_RETRY_OOM_JOBS}" == "1" ]]; then
       IFS=$'\t' read -r queue_name gmem mem_gb wall_time fallback_note <<< \
         "$(apply_retry_gpu_fallback "${dataset}" "${mode}" "${fragment}" "${queue_name}" "${gmem}" "${mem_gb}" "${wall_time}" "${prior_gpu_failure}")"
@@ -2355,9 +2502,10 @@ GPU_QUEUE_MAX_MEM_GB="${GPU_QUEUE_MAX_MEM_GB:-84}"
 GPU_QUEUE_MAX_WALL_H="${GPU_QUEUE_MAX_WALL_H:-24}"
 GPU_QUEUE_PRO_MAX_GMEM="${GPU_QUEUE_PRO_MAX_GMEM:-39}"
 GPU_QUEUE_PRO_MAX_MEM_GB="${GPU_QUEUE_PRO_MAX_MEM_GB:-84}"
-FORCE_GPU_PRO_DATASETS="${FORCE_GPU_PRO_DATASETS:-xenium_crc,xenium_nsclc,xenium_mouse_liver,xenium_breast}"
+FORCE_GPU_PRO_DATASETS="${FORCE_GPU_PRO_DATASETS:-xenium_crc,xenium_nsclc,xenium_v1_colon,xenium_mouse_liver,xenium_breast,xenium_v1_breast,xenium_mouse_brain,merscope_mouse_brain,cosmx_human_pancreas}"
 REQUIRE_SUCCESS_STATUS_FOR_RESUME="$(normalize_bool "${REQUIRE_SUCCESS_STATUS_FOR_RESUME:-1}")"
 ALLOW_UNVERIFIED_PRIMARY_OUTPUTS="$(normalize_bool "${ALLOW_UNVERIFIED_PRIMARY_OUTPUTS:-0}")"
+MIN_ASSIGNED_PCT_FOR_RESUME="${MIN_ASSIGNED_PCT_FOR_RESUME:-0}"
 GPU_FALLBACK_ON_RETRY="$(normalize_bool "${GPU_FALLBACK_ON_RETRY:-1}")"
 GPU_FALLBACK_QUEUE="${GPU_FALLBACK_QUEUE:-${GPU_QUEUE_PRO}}"
 GPU_RETRY_GMEM_BUMP_GB="${GPU_RETRY_GMEM_BUMP_GB:-20}"
@@ -2391,6 +2539,14 @@ if ! [[ "${GPU_QUEUE_MAX_WALL_H}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: GPU_QUEUE_MAX_WALL_H must be a non-negative integer (got: ${GPU_QUEUE_MAX_WALL_H})." >&2
   exit 1
 fi
+if ! [[ "${MIN_ASSIGNED_PCT_FOR_RESUME}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]; then
+  echo "ERROR: MIN_ASSIGNED_PCT_FOR_RESUME must be a decimal in [0,100] (got: ${MIN_ASSIGNED_PCT_FOR_RESUME})." >&2
+  exit 1
+fi
+if ! awk -v v="${MIN_ASSIGNED_PCT_FOR_RESUME}" 'BEGIN { exit !((v + 0.0) >= 0 && (v + 0.0) <= 100) }'; then
+  echo "ERROR: MIN_ASSIGNED_PCT_FOR_RESUME must be in [0,100] (got: ${MIN_ASSIGNED_PCT_FOR_RESUME})." >&2
+  exit 1
+fi
 N_EPOCHS="${N_EPOCHS:-20}"
 SEGGER_BIN="${SEGGER_BIN:-segger}"
 CLI_EXPANSION_FLAG="${CLI_EXPANSION_FLAG:---prediction-scale-factor}"
@@ -2400,6 +2556,8 @@ SEGMENT_WALL_TIME_DEFAULT="${SEGMENT_WALL_TIME_DEFAULT:-6:00}"
 PREDICT_FRAGMENT_GMEM_GB="${PREDICT_FRAGMENT_GMEM_GB:-36}"
 EXPORT_WALL_TIME_DEFAULT="${EXPORT_WALL_TIME_DEFAULT:-6:00}"
 SEGMENT_PREDICTION_MODE="${SEGMENT_PREDICTION_MODE:-nucleus}"
+FORCE_TILING_MARGIN_DATASETS="${FORCE_TILING_MARGIN_DATASETS:-}"
+FORCE_TILING_MARGIN_JOBS="${FORCE_TILING_MARGIN_JOBS:-}"
 SEGMENT_PREDICTION_MODE="$(printf '%s' "${SEGMENT_PREDICTION_MODE}" | tr '[:upper:]' '[:lower:]')"
 case "${SEGMENT_PREDICTION_MODE}" in
   nucleus|cell)
@@ -2497,6 +2655,8 @@ printf "[%s] SEGMENT_WALL_TIME_DEFAULT=%s EXPORT_WALL_TIME_DEFAULT=%s PREDICT_FR
   "$(timestamp)" "${SEGMENT_WALL_TIME_DEFAULT}" "${EXPORT_WALL_TIME_DEFAULT}" "${PREDICT_FRAGMENT_GMEM_GB}" "${PRESERVE_PYTHONPATH}"
 printf "[%s] SEGMENT_PREDICTION_MODE=%s\n" \
   "$(timestamp)" "${SEGMENT_PREDICTION_MODE}"
+printf "[%s] TILING_MARGIN_OVERRIDE train=%s pred=%s datasets=%s jobs=%s\n" \
+  "$(timestamp)" "${FORCE_TILING_MARGIN_TRAINING:-<none>}" "${FORCE_TILING_MARGIN_PREDICTION:-<none>}" "${FORCE_TILING_MARGIN_DATASETS:-<all>}" "${FORCE_TILING_MARGIN_JOBS:-<all>}"
 printf "[%s] ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT=%s\n" \
   "$(timestamp)" "${ANNDATA_EXPORT_MIN_SIMILARITY_SHIFT}"
 printf "[%s] MAX_ACTIVE_STANDARD=%s MAX_ACTIVE_FRAGMENT=%s (currently informational)\n" \
@@ -2507,6 +2667,8 @@ printf "[%s] FORCE_GPU_PRO_DATASETS=%s\n" \
   "$(timestamp)" "${FORCE_GPU_PRO_DATASETS}"
 printf "[%s] RESUME_STATUS_CHECK require_success=%s allow_unverified=%s\n" \
   "$(timestamp)" "${REQUIRE_SUCCESS_STATUS_FOR_RESUME}" "${ALLOW_UNVERIFIED_PRIMARY_OUTPUTS}"
+printf "[%s] RESUME_COVERAGE_CHECK min_assigned_pct=%s\n" \
+  "$(timestamp)" "${MIN_ASSIGNED_PCT_FOR_RESUME}"
 printf "[%s] RETRY_FALLBACK enabled=%s queue=%s gmem_bump=+%sG min_gmem=%sG fragment_min_gmem=%sG min_mem=%sG min_wall=%sh\n" \
   "$(timestamp)" "${GPU_FALLBACK_ON_RETRY}" "${GPU_FALLBACK_QUEUE}" "${GPU_RETRY_GMEM_BUMP_GB}" "${GPU_FALLBACK_MIN_GMEM}" "${GPU_FALLBACK_FRAGMENT_GMEM}" "${GPU_FALLBACK_MIN_MEM_GB}" "${GPU_FALLBACK_MIN_WALL_H}"
 printf "[%s] GPU_USAGE_POLL_SEC=%s\n" \
