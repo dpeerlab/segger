@@ -15,7 +15,6 @@ dependencies = [
     "anndata",
     "cyclopts",
     "geopandas",
-    "lightning",
     "numba",
     "numpy",
     "opencv-python",
@@ -27,8 +26,7 @@ dependencies = [
     "shapely",
     "scikit-image",
     "scikit-learn",
-    "tifffile",
-    "torch_geometric",
+    "tifffile"
 ]
 
 [build-system]

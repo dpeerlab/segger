@@ -1,8 +1,30 @@
 # Installation
 
-## pip
+We recommend CUDA 12.1 with `cu*` packages version ≥24.2 and <26.0. Ensure your CUDA driver version matches or exceeds your toolkit version (≥12.1 for CUDA 12.1). 
+Adjust package versions in the environment files below if your system requires a different package versions.
 
-Before installing **segger**, please install GPU-accelerated versions of PyTorch, RAPIDS, and related packages compatible with your system. *Please ensure all CUDA-enabled packages are compiled for the same CUDA version.*
+## Clone the repository
+```bash
+git clone https://github.com/dpeerlab/segger.git segger && cd segger
+```
+
+## Using `conda`
+```bash
+conda env create -n segger -f environment_cuda121.yml
+```
+
+Adjust `environment_cuda121.yml` for other CUDA versions (e.g., `environment_cuda118.yml` for CUDA 11.8).
+
+## Using `pixi`
+```bash
+pixi install -e cuda121
+```
+
+Adjust the environment name in `pixi.toml` as needed for other CUDA versions.
+
+## `pip`
+
+Install GPU-accelerated PyTorch and RAPIDS compatible with your CUDA version before installing **segger**. All CUDA-enabled packages must be compiled for the same CUDA version.
 
 - **PyTorch & torchvision:** [Installation guide](https://pytorch.org/get-started/locally/)
 - **torch_scatter:** [Installation guide](https://github.com/rusty1s/pytorch_scatter#installation)
@@ -28,7 +50,6 @@ pip install cupy-cuda12x
 
 ```bash
 # Clone segger repo and install locally
-git clone https://github.com/dpeerlab/segger.git segger && cd segger
 pip install -e .
 ```
 
