@@ -6,6 +6,7 @@ from lightning.pytorch import LightningDataModule
 from torchvision.transforms import Compose
 from dataclasses import dataclass
 from typing import Literal
+import scanpy as sc
 from pathlib import Path
 import polars as pl
 import torch
@@ -125,6 +126,7 @@ class ISTDataModule(LightningDataModule):
         Fraction of tiles used for training; the rest for validation.
     edges_per_batch : int, default=1_000_000
         Maximum number of edges per batch in the DataLoader.
+    gene_corr_reference : sc.AnnData or None, default=None
     """
     input_directory: Path
     num_workers: int = 8
@@ -150,6 +152,7 @@ class ISTDataModule(LightningDataModule):
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
     edges_per_batch: int = 1_000_000
+    gene_corr_reference_path: Path | None = None #ADDED
     
     def __post_init__(self):
         """TODO: Description
@@ -190,6 +193,10 @@ class ISTDataModule(LightningDataModule):
         tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
         bd_mask = bd[bd_fields.boundary_type] == boundary_type
 
+
+        #NEWLY ADDED: load in the reference anndata if provided-------------------------------------
+        gene_corr_reference = sc.read_h5ad(self.gene_corr_reference_path) if self.gene_corr_reference_path is not None else None
+
         # Generate reference AnnData
         self.logger.debug("Generating reference AnnData object...")
         self.ad = setup_anndata(
@@ -204,6 +211,8 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
+            gene_corr_reference = gene_corr_reference #ADDED
+
         )
 
         self.logger.debug("Setting up HeteroData object...")

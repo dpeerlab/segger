@@ -184,8 +184,9 @@ def setup_anndata(
     #NEW ADDITIONS: -------------------------------------------------------------------
     #if gene corr reference is passed in, ensure it has normalized counts, and ensure reference is not missing any genes (reference should be filtered by min_counts)
     if gene_corr_reference is not None:
-        # assert set(ad.var.index) <= set(gene_corr_reference.var.index), ("gene_corr_reference is missing genes present in this sample")
+        assert set(ad.var.index) <= set(gene_corr_reference.var.index), ("gene_corr_reference is missing genes present in this sample")
         assert 'norm' in gene_corr_reference.layers, ("gene_corr_reference must have a 'norm' layer with pre normalized counts")
+    
     #------------------------------------------------------------------------------
 
     # Add raw counts
@@ -203,23 +204,13 @@ def setup_anndata(
 
     #NEW ADDITIONS: -------------------------------------------------------------------
     if gene_corr_reference is not None:
-        if set(ad.var.index) != set(gene_corr_reference.var.index):
-            print("Warning: some of the genes present in this sample are not present in the gene correlation reference or visa versa.")
-            genes_not_in_reference = set(ad.var.index) - set(gene_corr_reference.var.index)
-            print("The following genes are present in this sample but not in the gene correlation reference:", genes_not_in_reference)
-
-            #put reference genes in same order as sample genes
-            ref = gene_corr_reference[:, ad.var.index]
-            counts = ref.layers['norm']
-            for gene in genes_not_in_reference:
-                counts.append(ad.layers['norm'][:, ad.var.index.get_loc(gene)])
-        else: 
-            ref = gene_corr_reference[:, ad.var.index]
-            counts = ref.layers['norm']
+        #put reference genes in same order as sample genes
+        ref = gene_corr_reference[:, ad.var.index]
+        counts = ref.layers['norm']
     else:
         #create counts from the sample the same way
         counts = ad[ad.obs['filtered']].layers['norm']
-
+    
     #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
     C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
