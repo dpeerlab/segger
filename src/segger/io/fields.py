@@ -24,6 +24,26 @@ class XeniumTranscriptFields:
     ]
 
 @dataclass
+class XeniumTranscriptFieldsV1:
+    filename: str = 'transcripts.parquet'
+    x: str = 'x_location'
+    y: str = 'y_location'
+    feature: str = 'feature_name'
+    cell_id: str = 'cell_id'
+    null_cell_id: str = "-1"
+    compartment: str = 'overlaps_nucleus'
+    nucleus_value: int = 1
+    quality: str = 'qv'
+    filter_substrings = [
+        'NegControlProbe_*',
+        'antisense_*',
+        'NegControlCodeword*',
+        'BLANK_*',
+        'DeprecatedCodeword_*',
+        'UnassignedCodeword_*',
+    ]
+
+@dataclass
 class XeniumBoundaryFields:
     cell_filename: str = 'cell_boundaries.parquet'
     nucleus_filename: str = 'nucleus_boundaries.parquet'
