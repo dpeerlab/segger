@@ -1,3 +1,5 @@
+from email.message import Message
+
 from torch.nn.functional import normalize
 from scipy import sparse as sp
 import geopandas as gpd
@@ -130,7 +132,7 @@ def get_cluster_cosine_similarity(
 def setup_anndata(
     transcripts: pl.DataFrame,
     boundaries: gpd.GeoDataFrame,
-    cell_column: str,
+    cell_column: str, 
     cells_embedding_size: int,
     cells_min_counts: int,
     cells_clusters_n_neighbors: int,
@@ -139,9 +141,9 @@ def setup_anndata(
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
     compute_morphology: bool = False,
+    gene_corr_reference: sc.AnnData | None = None,
 ):
-    """TODO: Add description.
-    """
+    """TODO: Add description."""
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
@@ -178,7 +180,14 @@ def setup_anndata(
 
     # Explicitly sort indices for reproducibility
     ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
-    
+
+    #NEW ADDITIONS: -------------------------------------------------------------------
+    #if gene corr reference is passed in, ensure it has normalized counts, and ensure reference is not missing any genes (reference should be filtered by min_counts)
+    if gene_corr_reference is not None:
+        # assert set(ad.var.index) <= set(gene_corr_reference.var.index), ("gene_corr_reference is missing genes present in this sample")
+        assert 'norm' in gene_corr_reference.layers, ("gene_corr_reference must have a 'norm' layer with pre normalized counts")
+    #------------------------------------------------------------------------------
+
     # Add raw counts
     ad.raw = ad.copy()
     ad.layers['counts'] = ad.raw.X.copy()
@@ -192,11 +201,37 @@ def setup_anndata(
     target_sum = ad.obs.loc[ad.obs['filtered'], 'n_counts'].median()
     sc.pp.normalize_total(ad, target_sum=target_sum, layer='norm')
 
-    # Build gene embedding on filtered dataset
-    C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)
+    #NEW ADDITIONS: -------------------------------------------------------------------
+    if gene_corr_reference is not None:
+        if set(ad.var.index) != set(gene_corr_reference.var.index):
+            print("Warning: some of the genes present in this sample are not present in the gene correlation reference or visa versa.")
+            genes_not_in_reference = set(ad.var.index) - set(gene_corr_reference.var.index)
+            print("The following genes are present in this sample but not in the gene correlation reference:", genes_not_in_reference)
+
+            #put reference genes in same order as sample genes
+            ref = gene_corr_reference[:, ad.var.index]
+            counts = ref.layers['norm']
+            for gene in genes_not_in_reference:
+                counts.append(ad.layers['norm'][:, ad.var.index.get_loc(gene)])
+        else: 
+            ref = gene_corr_reference[:, ad.var.index]
+            counts = ref.layers['norm']
+    else:
+        #create counts from the sample the same way
+        counts = ad[ad.obs['filtered']].layers['norm']
+
+    #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
+    C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
     model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
     ad.varm['X_corr'] = model.fit_transform(C)
+    #---------------------------------------------------------------------------------
+
+    # Build gene embedding on filtered dataset
+    #C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)
+    #C = np.nan_to_num(C, 0, posinf=True, neginf=True)
+    #model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
+    #ad.varm['X_corr'] = model.fit_transform(C)
 
     # Build PCs on filtered cells and project all cells
     counts_sparse_gpu = cupyx.scipy.sparse.csr_matrix(ad.layers['norm'])
@@ -207,11 +242,11 @@ def setup_anndata(
     # Compute clusters on filtered cells
     cell_clusters = phenograph_rapids(
         ad[ad.obs['filtered']].obsm['X_pca'],
-        n_neighbors=cells_clusters_n_neighbors, 
+        n_neighbors=cells_clusters_n_neighbors,
         resolution=cells_clusters_resolution,
         min_size=100,
     )
-    ad.obs['phenograph_cluster'] = -1  # removed cells have no cluster
+    ad.obs['phenograph_cluster'] = -1 # removed cells have no cluster
     ad.obs.loc[ad.obs['filtered'], 'phenograph_cluster'] = cell_clusters
     ad.obs['phenograph_cluster'] = pd.Categorical(ad.obs['phenograph_cluster'])
 
