@@ -3,6 +3,7 @@ import geopandas as gpd
 import numpy as np
 import cuspatial
 import cudf
+import cupy as cp
 
 from .conversion import (
     polygons_to_geoseries,
@@ -47,14 +48,15 @@ def _points_in_polygons_contains(
         mapping each contained point to its containing polygon.
     """
     # Setup inputs for spatial join
+    cp.get_default_memory_pool().free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
     if max_size is None:
         max_size = 10000 if len(points) > 5e7 else 1000  # heuristic
-    point_indices, quadtree = get_quadtree_index(
+    point_indices, quadtree, kwargs = get_quadtree_index(
         points,
         max_size,
         with_bounds=False
     )
-    kwargs = get_quadtree_kwargs(points)
 
     # Perform spatial join in batches
     batch_idx = np.linspace(0, len(polygons), (batches or 1) + 1, dtype=int)

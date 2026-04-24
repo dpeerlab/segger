@@ -203,7 +203,7 @@ class QuadTreeTiling(Tiling):
     ):
         # Calculate QuadTree on points and set as tiles
         points = points_to_geoseries(positions, backend='cuspatial')
-        _, quadtree = get_quadtree_index(
+        _, quadtree, _ = get_quadtree_index(
             points,
             max_tile_size,
             with_bounds=True,
