@@ -48,8 +48,6 @@ def _points_in_polygons_contains(
         mapping each contained point to its containing polygon.
     """
     # Setup inputs for spatial join
-    cp.get_default_memory_pool().free_all_blocks()
-    cp.get_default_pinned_memory_pool().free_all_blocks()
     if max_size is None:
         max_size = 10000 if len(points) > 5e7 else 1000  # heuristic
     point_indices, quadtree, kwargs = get_quadtree_index(
