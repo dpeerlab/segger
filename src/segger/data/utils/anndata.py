@@ -214,7 +214,7 @@ def setup_anndata(
     #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
     C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
-    model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
+    model = sklearn.decomposition.PCA(n_components=cells_embedding_size, random_state=0)
     ad.varm['X_corr'] = model.fit_transform(C)
     #---------------------------------------------------------------------------------
 
@@ -226,7 +226,7 @@ def setup_anndata(
 
     # Build PCs on filtered cells and project all cells
     counts_sparse_gpu = cupyx.scipy.sparse.csr_matrix(ad.layers['norm'])
-    model = cuml.PCA(n_components=cells_embedding_size)
+    model = cuml.PCA(n_components=cells_embedding_size, random_state=0)
     model.fit(counts_sparse_gpu[ad.obs['filtered'].values])
     ad.obsm['X_pca'] = model.transform(counts_sparse_gpu).get()
 
