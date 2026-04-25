@@ -1,5 +1,5 @@
 import rmm
-rmm.reinitialize(pool_allocator=True, initial_pool_size="16GB")
+rmm.mr.set_current_device_resource(rmm.mr.CudaAsyncMemoryResource())
 
 from rmm.allocators.cupy import rmm_cupy_allocator
 import cupy as cp
