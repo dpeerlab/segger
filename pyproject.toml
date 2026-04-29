@@ -11,23 +11,7 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.11"
 
-dependencies = [
-    "anndata",
-    "cyclopts",
-    "geopandas",
-    "numba",
-    "numpy",
-    "opencv-python",
-    "pandas",
-    "polars",
-    "pyarrow",
-    "scanpy",
-    "scipy",
-    "shapely",
-    "scikit-image",
-    "scikit-learn",
-    "tifffile"
-]
+dependencies = []
 
 [build-system]
 requires = ["hatchling"]

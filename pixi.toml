@@ -2,10 +2,28 @@
 channels = ["pytorch", "nvidia", "rapidsai", "conda-forge"]
 platforms = ["linux-64"]
 
+[activation]
+env = { PYTHONNOUSERSITE = "1" }
+
 [dependencies]
 python = ">=3.11"
+numpy = "<2"
+anndata = "*"
+numba = "*"
+pandas = "<2.2.3"
+polars = "*"
+pyarrow = "<18"
+scanpy = "*"
+scipy = "*"
+shapely = "*"
+scikit-image = "*"
+scikit-learn = "*"
+tifffile = "*"
+dask = "==2024.9.0"
 
 [pypi-dependencies]
+opencv-python = "*"
+cyclopts = "*"
 segger = { path = ".", editable = true }
 
 [feature.cuda121.dependencies]
