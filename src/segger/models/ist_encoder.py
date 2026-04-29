@@ -1,5 +1,5 @@
 from torch_geometric.nn import GATv2Conv, Linear, HeteroDictLinear, HeteroConv
-from typing import Dict, Tuple, List, Union, Optional
+from typing import Dict, Tuple, List, Union
 from torch import Tensor
 from torch.nn import (
     Sequential,
@@ -29,11 +29,13 @@ def sinusoidal_embedding(x, dim, max_period=1000):
 
 class Positional2dEmbedder(Module):
     """
-    Embeds scalar timesteps into vector representations.
+    Embeds 2D spatial coordinates into vector representations using sinusoidal
+    encoding. Coordinates are normalized against global tissue extent (set via
+    pos_min / pos_max buffers) so the encoding is consistent across tiles.
     """
     def __init__(
-            self, 
-            hidden_size:int, 
+            self,
+            hidden_size:int,
             frequency_embedding_size:int=256):
         super().__init__()
         self.dim = hidden_size//2
@@ -43,6 +45,9 @@ class Positional2dEmbedder(Module):
             NNLinear(self.dim, self.dim, bias=True),
         )
         self.frequency_embedding_size = frequency_embedding_size
+        # Buffers are overwritten in LitISTEncoder.setup() with global extents.
+        self.register_buffer('pos_min', torch.zeros(2))
+        self.register_buffer('pos_max', torch.ones(2))
 
     @staticmethod
     def embed(x:torch.Tensor, dim:int, max_period:int=10000):
@@ -51,28 +56,11 @@ class Positional2dEmbedder(Module):
         embedding = embedding_flat.reshape(shape+(dim,))
         return embedding
 
-    def forward(
-            self, 
-            pos: torch.Tensor,
-            batch: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if batch is None:
-            pos = pos - pos.min(dim=0).values
-            pos = pos / pos.max(dim=0).values
-        else:
-            # normalize per batch
-            mins = torch.zeros((batch.max()+1, 2), device=pos.device)
-            maxs = torch.zeros((batch.max()+1, 2), device=pos.device)
-            for b in range(batch.max()+1):
-                mask = batch == b
-                if mask.any():
-                    mins[b] = pos[mask].min(dim=0).values
-                    maxs[b] = pos[mask].max(dim=0).values
-            pos = (pos - mins[batch]) / (maxs[batch] - mins[batch] + 1e-8)
-
-        pos_freq = self.embed(pos, self.frequency_embedding_size)  # ... x 2 x freq_dim
-        pos_emb = self.mlp(pos_freq)  # ... x 2 x dim
-        pos_emb = pos_emb.flatten(-2)  # ... x 2*dim
+    def forward(self, pos: torch.Tensor) -> torch.Tensor:
+        pos = (pos - self.pos_min) / (self.pos_max - self.pos_min + 1e-8)
+        pos_freq = self.embed(pos, self.frequency_embedding_size)
+        pos_emb = self.mlp(pos_freq)
+        pos_emb = pos_emb.flatten(-2)
         return pos_emb
 
 # --- Test positional encoding ---
@@ -287,7 +275,6 @@ class ISTEncoder(torch.nn.Module):
         x_dict: dict[str, Tensor],
         edge_index_dict: dict[str, Tensor],
         pos_dict: dict[str, Tensor],
-        batch_dict: dict[str, Tensor],
     ) -> dict[str, Tensor]:
         """
         Forward pass for the Segger model.
@@ -298,24 +285,23 @@ class ISTEncoder(torch.nn.Module):
             Node features for each node type.
         edge_index_dict : dict[str, Tensor]
             Edge indices for each edge type.
+        pos_dict : dict[str, Tensor]
+            Node positions for each node type (used for positional encoding).
 
         Returns
         -------
-        Tensor
-            Output node features after passing through the Segger model.
+        dict[str, Tensor]
+            Output node embeddings for each node type.
         """
         # Linearly project embedding to input dim
         x_dict = {k: self.lin_first[k](x) for k, x in x_dict.items()}
 
+        # Add positional embedding
         if self.use_positional_embeddings:
             x_dict = {
-            k: torch.cat((x, self.pos_emb(pos_dict[k], batch_dict[k])), -1)
-            for k, x in x_dict.items()
+                k: torch.cat((x, self.pos_emb(pos_dict[k])), -1)
+                for k, x in x_dict.items()
             }
-
-        x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
-
-        # Add positional embedding
 
         # GeLu for some reason
         x_dict = {k: F.gelu(x) for k, x in x_dict.items()}

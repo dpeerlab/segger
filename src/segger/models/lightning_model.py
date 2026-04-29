@@ -91,6 +91,11 @@ class LitISTEncoder(LightningModule):
                 f"{type(self.trainer.datamodule).__name__}."
             )
 
+        # Set global positional encoding extents from data module
+        dm = self.trainer.datamodule
+        self.model.pos_emb.pos_min.copy_(dm.pos_min)
+        self.model.pos_emb.pos_max.copy_(dm.pos_max)
+
         # Only set gene embeddings if exist in data module
         if hasattr(self.trainer.datamodule, "gene_embedding"):
             tx_fields = StandardTranscriptFields()
@@ -130,7 +135,6 @@ class LitISTEncoder(LightningModule):
             batch.x_dict,
             batch.edge_index_dict,
             batch.pos_dict,
-            batch.batch_dict,
         )
 
     def _scheduled_weights(

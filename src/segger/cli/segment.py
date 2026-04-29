@@ -77,6 +77,22 @@ def segment(
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
+
+    transcripts_cell_id: Annotated[str | None, Parameter(
+        help="Column in the raw transcripts file to use as cell assignments "
+             "instead of the platform default (e.g. a custom segmentation "
+             "column added to the transcripts parquet).",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    cells_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom cell boundaries file to use instead of the "
+             "platform default. Must be in the same format as the platform's "
+             "default boundaries file (e.g. vertex-list parquet for Xenium).",
+        group=group_io,
+        required=False,
+    )] = None,
     
 
     # Cell Representation
@@ -190,7 +206,7 @@ def segment(
         validator=validators.Number(gt=0),
         group=group_model,
         help="Number of training epochs.",
-    )] = 20,
+    )] = 10,
 
     n_mid_layers: Annotated[int, registry.get_parameter(
         "n_mid_layers",
@@ -312,6 +328,8 @@ def segment(
     from ..data import ISTDataModule
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        transcript_field_overrides={'cell_id': transcripts_cell_id} if transcripts_cell_id else None,
+        boundary_field_overrides={'cell_filename': cells_boundaries_file} if cells_boundaries_file else None,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,

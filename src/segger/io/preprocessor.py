@@ -1,6 +1,7 @@
 from pandas.errors import DtypeWarning
 from functools import cached_property
 from abc import ABC, abstractmethod
+from dataclasses import replace as dc_replace
 from anndata import AnnData
 from typing import Literal
 from pathlib import Path
@@ -60,16 +61,31 @@ class ISTPreprocessor(ABC):
     transcript and boundary GeoDataFrames for the given platform.
     """
 
-    def __init__(self, data_dir: Path):
+    def __init__(
+        self,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
         """
         Parameters
         ----------
         data_dir : Path
             Path to the raw data directory for the spatial platform.
+        transcript_field_overrides : dict or None
+            Overrides applied to the platform's TranscriptFields dataclass via
+            ``dataclasses.replace``. Keys must be valid field names (e.g.
+            ``{'cell_id': 'my_col', 'x': 'my_x'}``).
+        boundary_field_overrides : dict or None
+            Overrides applied to the platform's BoundaryFields dataclass via
+            ``dataclasses.replace`` (e.g.
+            ``{'cell_filename': 'my_boundaries.parquet'}``).
         """
         data_dir = Path(data_dir)
         type(self)._validate_directory(data_dir)
         self.data_dir = data_dir
+        self._tx_overrides = transcript_field_overrides or {}
+        self._bd_overrides = boundary_field_overrides or {}
 
     @staticmethod
     @abstractmethod
@@ -276,8 +292,8 @@ class CosMXPreprocessor(ISTPreprocessor):
     @cached_property
     def transcripts(self) -> pl.DataFrame:
 
-        # Field names
-        raw = CosMxTranscriptFields()
+        # Field names (user overrides applied via dataclasses.replace)
+        raw = dc_replace(CosMxTranscriptFields(), **self._tx_overrides)
         std = StandardTranscriptFields()
 
         return (
@@ -324,9 +340,9 @@ class CosMXPreprocessor(ISTPreprocessor):
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        
-        # Field names
-        raw = CosMxBoundaryFields()
+
+        # Field names (user overrides applied via dataclasses.replace)
+        raw = dc_replace(CosMxBoundaryFields(), **self._bd_overrides)
         std = StandardBoundaryFields()
 
         # Join boundary datasets
@@ -393,8 +409,8 @@ class XeniumPreprocessor(ISTPreprocessor):
     @cached_property
     def transcripts(self) -> pl.DataFrame:
 
-        # Field names
-        raw = XeniumTranscriptFields()
+        # Field names (user overrides applied via dataclasses.replace)
+        raw = dc_replace(XeniumTranscriptFields(), **self._tx_overrides)
         std = StandardTranscriptFields()
 
         return (
@@ -463,7 +479,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
         # TODO: Add documentation
-        raw = XeniumBoundaryFields()
+        raw = dc_replace(XeniumBoundaryFields(), **self._bd_overrides)
         std = StandardBoundaryFields()
 
         # Join boundary datasets
@@ -540,15 +556,21 @@ def _infer_platform(data_dir: Path) -> str:
 
 def get_preprocessor(
     data_dir: Path,
-    platform: str | None = None
+    platform: str | None = None,
+    transcript_field_overrides: dict | None = None,
+    boundary_field_overrides: dict | None = None,
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
-        platform = _infer_platform(data_dir) 
+        platform = _infer_platform(data_dir)
     if platform not in PREPROCESSORS:
         raise ValueError(
             f"Unknown platform: '{platform}'. "
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir)
+    return cls(
+        data_dir,
+        transcript_field_overrides=transcript_field_overrides,
+        boundary_field_overrides=boundary_field_overrides,
+    )
