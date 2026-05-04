@@ -260,6 +260,7 @@ def setup_anndata(
     model = cuml.PCA(n_components=cells_embedding_size, random_state=0)
     model.fit(counts_sparse_gpu[ad.obs['filtered'].values])
     ad.obsm['X_pca'] = model.transform(counts_sparse_gpu).get()
+    del counts_sparse_gpu, model
 
     # Compute clusters on filtered cells
     cell_clusters = phenograph_rapids(

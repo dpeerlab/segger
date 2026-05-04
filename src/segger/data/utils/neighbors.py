@@ -135,6 +135,8 @@ def kdtree_neighbors(
         distance_upper_bound=max_dist,
         workers=-1,
     )
+    del tree
+    
     indices = torch.from_numpy(indices)
     gc.collect()  # make sure numpy copy is gone before conversion
     edge_index, index_pointer = knn_to_edge_index(indices)
