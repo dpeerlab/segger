@@ -1,6 +1,7 @@
+import os
 import rmm
-rmm.mr.set_current_device_resource(rmm.mr.CudaAsyncMemoryResource())
-
-from rmm.allocators.cupy import rmm_cupy_allocator
 import cupy as cp
+import rmm.allocators.cupy as rmm_cupy_allocator
+
+rmm.reinitialize(pool_allocator=True, managed_memory=True)
 cp.cuda.set_allocator(rmm_cupy_allocator)
