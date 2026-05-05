@@ -152,7 +152,7 @@ class ISTDataModule(LightningDataModule):
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
     edges_per_batch: int = 1_000_000
-    gene_corr_reference_path: Path | None = None 
+    gene_corr_reference_path: Path | None = None #ADDED
     
     def __post_init__(self):
         """TODO: Description
@@ -194,6 +194,7 @@ class ISTDataModule(LightningDataModule):
         bd_mask = bd[bd_fields.boundary_type] == boundary_type
 
 
+        #NEWLY ADDED: load in the reference anndata if provided-------------------------------------
         gene_corr_reference = sc.read_h5ad(self.gene_corr_reference_path) if self.gene_corr_reference_path is not None else None
 
         # Generate reference AnnData
@@ -210,7 +211,7 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
-            gene_corr_reference = gene_corr_reference 
+            gene_corr_reference = gene_corr_reference #ADDED
 
         )
 
