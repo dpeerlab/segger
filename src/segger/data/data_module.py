@@ -277,7 +277,6 @@ class ISTDataModule(LightningDataModule):
             prediction_graph_max_k=self.prediction_graph_max_k,
             prediction_graph_buffer_ratio=self.prediction_graph_buffer_ratio,
             use_3d=self.use_3d,
-            me_gene_pairs=self.me_gene_pairs,
         )
 
         # Tile graph dataset

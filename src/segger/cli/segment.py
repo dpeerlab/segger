@@ -411,6 +411,7 @@ def segment(
     
     csvlogger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(
+        input_directory,
         output_directory,
         save_anndata=save_anndata,
         save_spatialdata=save_spatialdata,

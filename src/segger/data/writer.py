@@ -12,6 +12,7 @@ import torch
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 from .utils.anndata import anndata_from_transcripts
+from ..export.spatialdata_writer import SpatialDataWriter
 
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
@@ -23,14 +24,18 @@ class ISTSegmentationWriter(BasePredictionWriter):
     """
     def __init__(
             self,
+            input_directory: Path,
             output_directory: Path,
             save_anndata: bool = True,
+            save_spatialdata: bool = True,
             debug: bool = False
         ):
         # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
+        self.input_directory = Path (input_directory)
         self.output_directory = Path(output_directory)
         self.save_anndata = save_anndata
+        self.save_spatialdata = save_spatialdata
         self.segger_logger = logging.getLogger(__name__)
 
         # setup debugging
@@ -123,6 +128,24 @@ class ISTSegmentationWriter(BasePredictionWriter):
             coordinate_columns=[tx_fields.x, tx_fields.y],
         )
         adata.write_h5ad(self.output_directory / 'segger_anndata.h5ad')
+
+        if self.save_spatialdata:
+            writer = SpatialDataWriter(
+            include_boundaries="True",
+            boundary_method='convex_hull',
+            # boundary_n_jobs=max(num_workers, 1),
+            )
+            tx, _ = _resolve_transcripts_and_boundaries(self.input_directory)
+            output_path = writer.write(
+                predictions=segmentation,
+                output_dir=self.output_directory,
+                transcripts=tx,
+                # boundaries=bd,
+                output_name="segger_segmentation.zarr",
+            )
+            print(f"Written SpatialData output: {output_path}")
+
+
 
     @classmethod
     def assign_transcripts_to_cells(
@@ -286,3 +309,47 @@ class ISTSegmentationWriter(BasePredictionWriter):
             self.segger_logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
             trainer.save_checkpoint(self.path_debug / "trainer_state_final.ckpt")
 
+def _is_spatialdata_path(path: Path | str) -> bool:
+    try:
+        from ..io.spatialdata_loader import is_spatialdata_path as _impl
+        return _impl(path)
+    except Exception:
+        p = Path(path)
+        return (
+            p.suffix == ".zarr"
+            or (p / ".zgroup").exists()
+            or (p / "zarr.json").exists()
+            or (p / "points").exists()
+            or (p / "shapes").exists()
+        )
+
+
+def _resolve_transcripts_and_boundaries(source_path):
+    "Spatialdata loader for tx/bd. Hardcoded to Xenium naming."
+    if _is_spatialdata_path(source_path):
+        try:
+            from ..io.spatialdata_loader import load_from_spatialdata
+        except Exception as exc:
+            raise ImportError(
+                "SpatialData input requested, but spatialdata support is unavailable. "
+                "Install with: pip install segger[spatialdata]"
+            ) from exc
+        tx, bd = load_from_spatialdata(
+            source_path,
+            points_key="transcripts",
+            cell_shapes_key="cell_boundaries",
+            nucleus_shapes_key="nucleus_boundaries",
+            boundary_type="all",
+        )
+        return (tx.collect() if isinstance(tx, pl.LazyFrame) else tx), bd
+
+    from ..io import get_preprocessor
+    pp = get_preprocessor(source_path)
+    tx = pp.transcripts
+    if isinstance(tx, pl.LazyFrame):
+        tx = tx.collect()
+    try:
+        bd = pp.boundaries
+    except Exception:
+        bd = None
+    return tx, bd
