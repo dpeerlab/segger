@@ -26,6 +26,7 @@ Requires the spatialdata optional dependency:
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Optional
 
@@ -82,7 +83,8 @@ class SpatialDataWriter:
         points_key: str = "transcripts",
         shapes_key: str = "cells",
         include_table: bool = True,
-        table_key: str = "cell_table",
+        table_key: str = "cells_table",  # no duplicate names allowed
+        # fragment_table_key: str = "fragments_table",
         table_region_key: str = "cell_id",
     ):
         require_spatialdata()
@@ -247,6 +249,7 @@ class SpatialDataWriter:
         """Create SpatialData object from transcripts and boundaries."""
         import spatialdata
         from spatialdata.models import PointsModel, ShapesModel, TableModel
+        import spatialdata.models._accessor  # for points parsing on pre-release (https://github.com/scverse/spatialdata/issues/1093)
         import dask.dataframe as dd
 
         identity = self._identity_transform()
@@ -257,7 +260,10 @@ class SpatialDataWriter:
 
         # SOPA expects "cell_id" assignment in points.
         if cell_id_column in tx_pd.columns and "cell_id" not in tx_pd.columns:
-            tx_pd["cell_id"] = tx_pd[cell_id_column]
+            tx_pd['cell_id']= tx_pd[cell_id_column]
+        #NOTE: having both 'cell_id' and 'segger_cell_id' creates confusion     
+        # tx_pd = tx_pd.rename(columns={cell_id_column: "cell_id"})
+        # this would be better but fails as later code still relies on cell_id_column
 
         # Check for z-coordinate
         has_z = z_column and z_column in tx_pd.columns
@@ -274,7 +280,7 @@ class SpatialDataWriter:
                 tx_pd[col] = tx_pd[col].astype(float)
 
         # Create Dask DataFrame for points
-        tx_dask = dd.from_pandas(tx_pd, npartitions=1)
+        tx_dask = dd.from_pandas(tx_pd)
 
         # Points element
         points_parse_kwargs = {
@@ -283,33 +289,68 @@ class SpatialDataWriter:
                 "y": y_column,
                 **({"z": z_column} if has_z else {}),
             },
+            "instance_key": cell_id_column,  # or 'cell_id' which is hard-coded now
+            "feature_key": feature_column,
         }
         if transformations is not None:
             points_parse_kwargs["transformations"] = transformations
 
         points = PointsModel.parse(tx_dask, **points_parse_kwargs)
         points_elements = {self.points_key: points}
+
+        # Shapes
+        def _ensure_cell_id(gdf):
+            if gdf is None:
+                return None
+            if "cell_id" in gdf.columns:
+                return gdf
+            if cell_id_column in gdf.columns:
+                gdf = gdf.copy()
+                gdf["cell_id"] = gdf[cell_id_column]
+                return gdf
+            gdf = gdf.reset_index(drop=False)
+            if "cell_id" not in gdf.columns and len(gdf.columns) > 0:
+                gdf["cell_id"] = gdf[gdf.columns[0]]
+            return gdf
+
+
+        def _parse_shapes(shapes):
+            if shapes is None or len(shapes) == 0:
+                return None
+            kwargs = {"transformations": transformations} if transformations is not None else {}
+            return ShapesModel.parse(shapes, **kwargs)
+
+
         shapes_elements = {}
 
-        # Shapes element (if boundaries provided or generated)
         if self.include_boundaries and self.boundary_method != "skip":
-            shapes = self._get_boundaries(
-                transcripts=tx_pd,
-                boundaries=boundaries,
-                x_column=x_column,
-                y_column=y_column,
-                cell_id_column=cell_id_column,
-            )
-            if shapes is not None and len(shapes) > 0:
-                shapes_parse_kwargs = {}
-                if transformations is not None:
-                    shapes_parse_kwargs["transformations"] = transformations
-                shapes_parsed = ShapesModel.parse(shapes, **shapes_parse_kwargs)
-                shapes_elements[self.shapes_key] = shapes_parsed
+            if self.boundary_method == "input":
+                for bd_type in ["cell", "nucleus"]:  # these are segger hard-coded
+                    shapes = self._get_input_boundaries(
+                        cell_tx_pd,
+                        cell_id_column,
+                        boundaries,
+                        bd_type)
+                    shapes = _ensure_cell_id(shapes)
+                    parsed = _parse_shapes(shapes)
+                    if parsed is not None:
+                        shapes_elements[f"{bd_type}_boundaries"] = parsed  
+                        # this naming convention is very Xenium-based (ideally one would maintain the input one which is currently lost)
+            else:
+                shape_specs = [(self.shapes_key, cell_tx_pd)]
+                if has_fragments and fragment_tx_pd is not None:
+                    shape_specs.append((self.fragment_shapes_key, fragment_tx_pd))
 
-        tables_elements = {}
+                for shape_key, shape_tx_pd in shape_specs:
+                    shapes = self._get_generated_boundaries(shape_tx_pd, x_column, y_column, cell_id_column)
+                    shapes = _ensure_cell_id(shapes)
+                    parsed = _parse_shapes(shapes)
+                    if parsed is not None:
+                        shapes_elements[shape_key] = parsed
+                
 
         # Optional AnnData table
+        tables_elements = {}
         if self.include_table:
             region = self.shapes_key if self.shapes_key in shapes_elements else None
             instance_key = self.table_region_key if region is not None else None
@@ -340,12 +381,12 @@ class SpatialDataWriter:
                     pass
             tables_elements[self.table_key] = table
 
-        # Create SpatialData (prefer modern constructor methods, keep fallback)
+        # Create SpatialData (prefer modern constructor methods, keep fallback on single elemnts)
         sdata = self._build_spatialdata(
             spatialdata=spatialdata,
-            points=points_elements,
-            shapes=shapes_elements,
-            tables=tables_elements,
+            points_elements=points_elements,
+            shapes_elements=shapes_elements,
+            tables_elements=tables_elements,
         )
 
         return sdata
@@ -358,34 +399,61 @@ class SpatialDataWriter:
         except Exception:
             return None
 
-    def _build_spatialdata(self, spatialdata, points: dict, shapes: dict, tables: dict):
+    def _build_spatialdata(self, spatialdata, points_elements: dict, shapes_elements: dict, tables_elements: dict):
         """Build a SpatialData object across SpatialData API variants."""
-        shapes_arg = shapes or None
-        tables_arg = tables or None
 
         if hasattr(spatialdata.SpatialData, "init_from_elements"):
-            return spatialdata.SpatialData.init_from_elements(
-                points=points,
-                shapes=shapes_arg,
-                tables=tables_arg,
-            )
-
-        try:
+            return spatialdata.SpatialData.init_from_elements(points_elements | shapes_elements | tables_elements)
+        else:
             return spatialdata.SpatialData(
-                points=points,
-                shapes=shapes_arg,
-                tables=tables_arg,
+                points=points_elements,
+                shapes=shapes_elements,
+                tables=tables_elements,
+            )
+      
+
+    def _build_table_element(
+        self,
+        TableModel,
+        transcripts: pl.DataFrame,
+        var_transcripts: pl.DataFrame,
+        region: Optional[str],
+        cell_id_column: str,
+        feature_column: str,
+        x_column: str,
+        y_column: str,
+        z_column: Optional[str],
+    ):
+        """Build a SpatialData table and attach region metadata when available."""
+        table = build_anndata_table(
+            transcripts=transcripts,
+            var_transcripts=var_transcripts,
+            cell_id_column=cell_id_column,
+            feature_column=feature_column,
+            x_column=x_column,
+            y_column=y_column,
+            z_column=z_column,
+            unassigned_value=-1,
+            region=None,
+            region_key=None,
+            obs_index_as_str=True,
+        )
+        if region is None:
+            return table
+
+        instance_key = self.table_region_key
+        table.obs["region"] = region
+        if instance_key and instance_key not in table.obs.columns:
+            table.obs[instance_key] = table.obs.index.astype(str)
+        try:
+            return TableModel.parse(
+                table,
+                region=region,
+                region_key="region",
+                instance_key=instance_key or "instance_id",
             )
         except Exception:
-            elements = {}
-            for key, value in points.items():
-                elements[f"points/{key}"] = value
-            for key, value in shapes.items():
-                elements[f"shapes/{key}"] = value
-            sdata = spatialdata.SpatialData.from_elements_dict(elements)
-            for key, value in (tables or {}).items():
-                sdata.tables[key] = value
-            return sdata
+            return table
 
     def _write_spatialdata_zarr(self, sdata, output_path: Path, overwrite: bool) -> None:
         """Write SpatialData object with compatibility fallback."""
@@ -400,77 +468,63 @@ class SpatialDataWriter:
             shutil.rmtree(output_path)
         sdata.write(output_path)
 
-    def _get_boundaries(
+
+    
+    def _get_input_boundaries(self, cell_tx_pd, cell_id_column, boundaries, bd_type):
+
+        selected_ids = cell_tx_pd[cell_id_column].dropna().unique()
+        if len(selected_ids) == 0 or boundaries is None:
+            if boundaries is None:
+                warnings.warn("No input boundaries were found. Skipping boundary generation.")
+            return None
+
+        boundaries_filtered = boundaries.loc[boundaries['boundary_type'] == bd_type]
+        boundaries_gdf = boundaries_filtered[boundaries_filtered["cell_id"].isin(selected_ids)].copy()
+
+        return boundaries_gdf if not boundaries_gdf.empty else None
+            
+    
+
+    def _get_generated_boundaries(
         self,
-        transcripts: "pd.DataFrame",
-        boundaries: Optional["gpd.GeoDataFrame"],
+        transcripts: pd.DataFrame,
         x_column: str,
         y_column: str,
         cell_id_column: str,
-    ) -> Optional["gpd.GeoDataFrame"]:
-        """Get or generate cell boundaries."""
+    ) -> Optional[gpd.GeoDataFrame]:
+        """Generate cell boundaries based on the selected boundary method.
+            Args
+                transcripts: dataframe of group transcripts (cells or fragments)
+                x_column, y_column: transcripts 2D coordinates
+                cell_id_column: cell ID
+        """
         import geopandas as gpd
-        import pandas as pd
-        from shapely.geometry import MultiPoint
-
-        def _ensure_cell_id(gdf: "gpd.GeoDataFrame") -> "gpd.GeoDataFrame":
-            if "cell_id" in gdf.columns:
-                return gdf
-            if cell_id_column in gdf.columns:
-                gdf = gdf.copy()
-                gdf["cell_id"] = gdf[cell_id_column]
-                return gdf
-            gdf = gdf.reset_index(drop=False)
-            if "cell_id" not in gdf.columns and len(gdf.columns) > 0:
-                gdf["cell_id"] = gdf[gdf.columns[0]]
-            return gdf
-
-        # Use input boundaries if available
-        if boundaries is not None:
-            return _ensure_cell_id(boundaries)
-
-        # Generate boundaries based on method
-        if self.boundary_method == "input":
-            # No input boundaries, skip
+        
+        assigned = transcripts[transcripts[cell_id_column] != -1].copy()
+        if assigned.empty:
             return None
 
-        elif self.boundary_method == "convex_hull":
-            # Generate convex hulls from transcript positions
-            assigned = transcripts[transcripts[cell_id_column] != -1].copy()
+        if self.boundary_method == "convex_hull":
+            from shapely.geometry import MultiPoint
 
-            if len(assigned) == 0:
-                return None
-
-            # Group by cell and create convex hulls
-            hulls = []
-            cell_ids = []
+            hulls, cell_ids = [], []
 
             for cell_id, group in assigned.groupby(cell_id_column):
                 if len(group) < 3:
-                    continue  # Need at least 3 points for convex hull
-
+                    continue
                 points = list(zip(group[x_column], group[y_column]))
-                mp = MultiPoint(points)
-                hull = mp.convex_hull
-
-                if not hull.is_empty:
-                    hulls.append(hull)
-                    cell_ids.append(cell_id)
+                hull = MultiPoint(points).convex_hull
+                if hull.is_empty or hull.geom_type != "Polygon":
+                    continue
+                hulls.append(hull)
+                cell_ids.append(cell_id)
 
             if not hulls:
                 return None
-
-            return _ensure_cell_id(gpd.GeoDataFrame(
-                {"cell_id": cell_ids},
-                geometry=hulls,
-            ))
+            return gpd.GeoDataFrame({"cell_id": cell_ids}, geometry=hulls)
 
         elif self.boundary_method == "delaunay":
             from segger.export.boundary import generate_boundaries
-
-            assigned = transcripts[transcripts[cell_id_column] != -1].copy()
-            if len(assigned) == 0:
-                return None
 
             boundaries_gdf = generate_boundaries(
                 assigned,
@@ -479,9 +533,12 @@ class SpatialDataWriter:
                 cell_id=cell_id_column,
                 n_jobs=self.boundary_n_jobs,
             )
-            if boundaries_gdf is None or len(boundaries_gdf) == 0:
+            boundaries_gdf = boundaries_gdf[
+                boundaries_gdf.geometry.notna() & ~boundaries_gdf.geometry.is_empty
+            ]
+            if len(boundaries_gdf) == 0:
                 return None
-            return _ensure_cell_id(boundaries_gdf)
+            return boundaries_gdf
 
         return None
 
