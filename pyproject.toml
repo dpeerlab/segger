@@ -21,7 +21,9 @@ dependencies = [
     "opencv-python",
     "pandas",
     "polars",
+    "pqdm",
     "pyarrow",
+    "rtree",
     "scanpy",
     "scipy",
     "shapely",
@@ -29,6 +31,33 @@ dependencies = [
     "scikit-learn",
     "tifffile",
     "torch_geometric",
+    "zarr",
+]
+
+[project.optional-dependencies]
+spatialdata = [
+    "spatialdata>=0.7.2",
+    "spatialdata-io>=0.6.0",
+]
+
+spatialdata-io = [
+    "spatialdata-io>=0.6.0",
+]
+
+sopa = [
+    "sopa>=2.0.0",
+    "spatialdata>=0.7.2",
+]
+
+spatialdata-all = [
+    "spatialdata>=0.7.2",
+    "spatialdata-io>=0.6.0",
+    "sopa>=2.0.0",
+]
+
+plot = [
+    "matplotlib>=3.7",
+    "uniplot>=0.10.0",
 ]
 
 [build-system]
