@@ -139,6 +139,7 @@ def setup_anndata(
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
     compute_morphology: bool = False,
+    gene_corr_reference: sc.AnnData | None = None
 ):
     """TODO: Add description.
     """
@@ -178,7 +179,29 @@ def setup_anndata(
 
     # Explicitly sort indices for reproducibility
     ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
-    
+
+
+    if gene_corr_reference is not None:
+
+        assert set(ad.var.index) <= set(gene_corr_reference.var.index), ("gene_corr_reference is missing genes present in this sample")
+
+        #ensure the gene_corr_reference contains raw counts:
+        assert gene_corr_reference.X.dtype in (np.int32, np.int64), "X does not contain raw counts"        
+        #normalize counts based on filtered cells to create 'norm' layer (like below)
+        gene_corr_reference.obs['n_counts'] = gene_corr_reference.X.sum(1).A.flatten()
+        gene_corr_reference.obs['filtered'] = gene_corr_reference.obs['n_counts'] >= cells_min_counts
+        gene_corr_reference.layers['norm'] = gene_corr_reference.X.copy()
+        target_sum = gene_corr_reference.obs.loc[gene_corr_reference.obs['filtered'], 'n_counts'].median()
+        sc.pp.normalize_total(gene_corr_reference, target_sum=target_sum, layer='norm')
+
+
+
+        #assert that all genes in gene_corr_reference pass the genes_min_counts threshold set by segger
+        gene_corr_reference.var['n_counts'] = gene_corr_reference.X.sum(0).A.flatten()
+        failing_genes = gene_corr_reference.var[gene_corr_reference.var['n_counts'] < genes_min_counts]
+        assert len(failing_genes) == 0, (f"{len(failing_genes)} in gene_corr_reference fail the genes_min_counts threshold.")
+
+
     # Add raw counts
     ad.raw = ad.copy()
     ad.layers['counts'] = ad.raw.X.copy()
@@ -192,8 +215,16 @@ def setup_anndata(
     target_sum = ad.obs.loc[ad.obs['filtered'], 'n_counts'].median()
     sc.pp.normalize_total(ad, target_sum=target_sum, layer='norm')
 
-    # Build gene embedding on filtered dataset
-    C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)
+    if gene_corr_reference is not None:
+        #put reference genes in same order as sample genes
+        ref = gene_corr_reference[:, ad.var.index]
+        counts = ref.layers['norm']
+    else:
+        #create counts from the sample the same way
+        counts = ad[ad.obs['filtered']].layers['norm']
+    
+    #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
+    C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
     model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
     ad.varm['X_corr'] = model.fit_transform(C)

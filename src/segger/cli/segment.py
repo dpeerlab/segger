@@ -78,6 +78,16 @@ def segment(
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
     
+    gene_corr_reference_path: Annotated[Path | None, Parameter(
+        help=(
+            "Path to a reference AnnData .h5ad file used to compute the shared "
+            "gene-gene correlation matrix. Must have a 'norm' layer with "
+            "pre-normalized counts and must contain all genes present in the "
+            "sample after filtering. If not provided, the correlation matrix "
+            "is computed per-sample."
+        ),
+        group=group_io,
+    )] = None,
 
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
@@ -328,6 +338,7 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
+        gene_corr_reference_path = gene_corr_reference_path 
     )
     
     # Setup Lightning Model
