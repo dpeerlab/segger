@@ -58,6 +58,21 @@ group_loss = Group(
     help="Related to loss function parameters.",
     sort_key=7,
 )
+group_quality = Group(
+    name="Quality Filtering",
+    help="Related to transcript quality filtering.",
+    sort_key=8,
+)
+group_3d = Group(
+    name="3D Support",
+    help="Related to 3D coordinate handling.",
+    sort_key=9,
+)
+
+def _resolve_use_3d_flag(use_3d: Literal["auto", "true", "false"]) -> bool | str:
+    if use_3d == "auto":
+        return "auto"
+    return use_3d == "true"
 
 app_segment = App(name="segment", help="Run cell segmentation on spatial transcriptomics data.")
 
@@ -293,15 +308,45 @@ def segment(
         "save_anndata",
         group=group_io,
     )] = registry.get_default("save_anndata"),
+
+    save_spatialdata: Annotated[bool, registry.get_parameter(
+        "save_spatialdata",
+        group=group_io,
+    )] = registry.get_default("save_spatialdata"),
     
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = "none",
+
+    # Quality filtering
+    min_qv: Annotated[float | None, Parameter(
+        help="Minimum transcript quality threshold. Set to 0 to disable.",
+        validator=validators.Number(gte=0),
+        group=group_quality,
+    )] = 20.0,
+
+    # 3D support
+    use_3d: Annotated[
+        Literal["auto", "true", "false"],
+        Parameter(
+            help="Use 3D coordinates for graph construction ('false' default).",
+            group=group_3d,
+        ),
+    ] = "false",
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 
     # Setup logger and debug directory
     logger = logging.getLogger(__name__)
+
+    use_3d_value = _resolve_use_3d_flag(use_3d)
+
+    output_directory = Path(output_directory)
+    if output_directory.exists() and not output_directory.is_dir():
+        raise ValueError(
+            f"Output path exists and is not a directory: {output_directory}"
+        )
+    output_directory.mkdir(parents=True, exist_ok=True)
 
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
@@ -328,6 +373,8 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
+        use_3d=use_3d_value,
+        min_qv=min_qv,
     )
     
     # Setup Lightning Model
@@ -366,6 +413,7 @@ def segment(
     writer = ISTSegmentationWriter(
         output_directory,
         save_anndata=save_anndata,
+        save_spatialdata=save_spatialdata,
         debug=debug,
     )
     trainer = Trainer(
