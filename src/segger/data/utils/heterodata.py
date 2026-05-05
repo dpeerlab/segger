@@ -24,6 +24,7 @@ def setup_heterodata(
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"],
     prediction_graph_max_k: int,
     prediction_graph_buffer_ratio: float,
+    use_3d: bool | Literal["auto"] = False,
     cells_embedding_key: str = 'X_pca',
     cells_clusters_column: str = 'phenograph_cluster',
     cells_encoding_column: str = 'cell_encoding',
@@ -135,6 +136,7 @@ def setup_heterodata(
         transcripts,
         max_k=transcripts_graph_max_k,
         max_dist=transcripts_graph_max_dist,
+        use_3d=use_3d,
     )
 
     # Reference segmentation graph
@@ -150,6 +152,7 @@ def setup_heterodata(
         max_k=prediction_graph_max_k,
         buffer_ratio=prediction_graph_buffer_ratio,
         mode=prediction_graph_mode,
+        use_3d=use_3d if prediction_graph_mode == "uniform" else False,
     )
 
     return data
