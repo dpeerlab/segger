@@ -78,17 +78,6 @@ def segment(
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
     
-    gene_corr_reference_path: Annotated[Path | None, Parameter(
-        help=(
-            "Path to a reference AnnData .h5ad file used to compute the shared "
-            "gene-gene correlation matrix. Must have a 'norm' layer with "
-            "pre-normalized counts and must contain all genes present in the "
-            "sample after filtering. If not provided, the correlation matrix "
-            "is computed per-sample."
-        ),
-        group=group_io,
-    )] = None,
-
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -133,6 +122,20 @@ def segment(
         validator=validators.Number(gt=0, lte=5),
         group=group_nodes,
     )] = registry.get_default("genes_clusters_resolution"),
+
+    gene_corr_reference_path: Annotated[Path | None, Parameter(
+        help=(
+            "Path to a reference AnnData .h5ad file used to compute a shared "
+            "gene-gene correlation matrix."
+        ),
+        group=group_nodes,
+    )] = None,
+
+
+    gene_missing_strategy: Annotated[Literal["error", "remove", "fill"], registry.get_parameter(
+        "gene_missing_strategy",
+        group=group_nodes,
+    )] = registry.get_default("gene_missing_strategy"),
 
 
     # Transcript-Transcript Graph
@@ -300,11 +303,6 @@ def segment(
     )] = registry.get_default("sg_weight_end"),
 
     # Reference
-    gene_missing_strategy: Annotated[Literal["error", "remove", "fill"], registry.get_parameter(
-        "gene_missing_strategy",
-        group=group_io,
-    )] = registry.get_default("gene_missing_strategy"),
-
     save_anndata: Annotated[bool, registry.get_parameter(
         "save_anndata",
         group=group_io,
