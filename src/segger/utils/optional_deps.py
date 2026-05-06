@@ -1,7 +1,7 @@
 """Optional dependency handling with informative warnings.
 
 This module provides lazy import wrappers for optional dependencies
-(spatialdata, spatialdata-io, sopa) with clear installation instructions
+(spatialdata, spatialdata-io) with clear installation instructions
 when the dependencies are not available.
 
 Usage
@@ -58,18 +58,9 @@ def _check_spatialdata_io() -> bool:
         return False
 
 
-def _check_sopa() -> bool:
-    """Check if sopa is available."""
-    try:
-        return importlib.util.find_spec("sopa") is not None
-    except Exception:
-        return False
-
-
 # Availability flags (evaluated once at import time)
 SPATIALDATA_AVAILABLE: bool = _check_spatialdata()
 SPATIALDATA_IO_AVAILABLE: bool = _check_spatialdata_io()
-SOPA_AVAILABLE: bool = _check_sopa()
 
 
 # -----------------------------------------------------------------------------
@@ -100,24 +91,6 @@ Or install spatialdata-io directly:
     pip install spatialdata-io>=0.6.0
 """
 
-SOPA_INSTALL_MSG = """
-sopa is not installed. This package is required for SOPA compatibility features.
-
-To install SOPA support:
-    pip install segger[sopa]
-
-Or install sopa directly:
-    pip install sopa>=2.0.0
-
-For all SpatialData features including SOPA:
-    pip install segger[spatialdata-all]
-"""
-
-RAPIDS_INSTALL_MSG = """
-RAPIDS GPU packages are not installed. Segger requires CuPy/cuDF/cuML/cuGraph/cuSpatial and a CUDA-enabled GPU.
-
-See docs/INSTALLATION.md for RAPIDS/CUDA setup.
-"""
 
 
 # -----------------------------------------------------------------------------
@@ -160,25 +133,6 @@ def require_spatialdata_io() -> "types.ModuleType":
         raise ImportError(SPATIALDATA_IO_INSTALL_MSG)
     import spatialdata_io
     return spatialdata_io
-
-
-def require_sopa() -> "types.ModuleType":
-    """Import and return sopa, raising ImportError if not available.
-
-    Returns
-    -------
-    types.ModuleType
-        The sopa module.
-
-    Raises
-    ------
-    ImportError
-        If sopa is not installed, with installation instructions.
-    """
-    if not SOPA_AVAILABLE:
-        raise ImportError(SOPA_INSTALL_MSG)
-    import sopa
-    return sopa
 
 
 # -----------------------------------------------------------------------------
@@ -232,26 +186,6 @@ def requires_spatialdata_io(func: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
-def requires_sopa(func: F) -> F:
-    """Decorator that raises ImportError if sopa is not available.
-
-    Parameters
-    ----------
-    func
-        Function that requires sopa.
-
-    Returns
-    -------
-    F
-        Wrapped function that checks for sopa before execution.
-    """
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        require_sopa()
-        return func(*args, **kwargs)
-    return wrapper  # type: ignore[return-value]
-
-
 # -----------------------------------------------------------------------------
 # Warning functions for soft failures
 # -----------------------------------------------------------------------------
@@ -283,22 +217,6 @@ def warn_spatialdata_io_unavailable(feature: str = "Platform-specific SpatialDat
     warnings.warn(
         f"{feature} requires spatialdata-io. "
         "Install with: pip install segger[spatialdata-io]",
-        UserWarning,
-        stacklevel=2,
-    )
-
-
-def warn_sopa_unavailable(feature: str = "SOPA compatibility") -> None:
-    """Emit a warning that sopa is not available.
-
-    Parameters
-    ----------
-    feature
-        Description of the feature requiring sopa.
-    """
-    warnings.warn(
-        f"{feature} requires sopa. "
-        "Install with: pip install segger[sopa]",
         UserWarning,
         stacklevel=2,
     )
@@ -362,17 +280,6 @@ def get_spatialdata_version() -> str | None:
     try:
         import spatialdata
         return getattr(spatialdata, "__version__", "unknown")
-    except Exception:
-        return None
-
-
-def get_sopa_version() -> str | None:
-    """Get the installed sopa version, or None if not installed."""
-    if not SOPA_AVAILABLE:
-        return None
-    try:
-        import sopa
-        return getattr(sopa, "__version__", "unknown")
     except Exception:
         return None
 
