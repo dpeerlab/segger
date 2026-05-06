@@ -214,8 +214,8 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
-            gene_corr_reference = gene_corr_reference,
-            gene_missing_strategy = gene_missing_strategy,
+            gene_corr_reference=gene_corr_reference,
+            gene_missing_strategy=self.gene_missing_strategy,
 
         )
 
