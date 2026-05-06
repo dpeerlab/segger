@@ -45,6 +45,11 @@ def setup_heterodata(
         tx_fields.cell_cluster,
         tx_fields.gene_cluster,
     ]
+
+    transcripts = transcripts.with_columns(
+        pl.col(tx_fields.feature).cast(pl.Utf8)
+    )
+    
     # Update transcripts with fields for training
     
     transcripts = (
@@ -56,9 +61,14 @@ def setup_heterodata(
             pl.from_pandas(
                 adata.var[[genes_encoding_column, genes_clusters_column]],
                 include_index=True
-            ),
+            ).rename({
+                pl.from_pandas(
+                    adata.var[[genes_encoding_column, genes_clusters_column]],
+                    include_index=True
+                ).columns[0]: tx_fields.feature
+            }),
             left_on=tx_fields.feature,
-            right_on=adata.var.index.name if adata.var.index.name else 'None',
+            right_on=tx_fields.feature,
         )
         .rename(
             {

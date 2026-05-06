@@ -159,7 +159,7 @@ def setup_anndata(
         ad.obs
         .join(
             (
-                boundaries
+                boundaries.drop_duplicates(subset=bd_fields.id)  # some data oddly has duplicate boundary entries on the same cell id
                 .reset_index(names=bd_fields.index)
                 .set_index(bd_fields.id, verify_integrity=True)
                 .get(bd_fields.index)
