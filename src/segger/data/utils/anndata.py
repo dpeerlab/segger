@@ -200,7 +200,7 @@ def setup_anndata(
 
         # assert that reference contains raw counts
         is_int_dtype = np.issubdtype(gene_corr_reference.X.dtype, np.integer)
-        is_int_value = np.all(gene_corr_reference.X.data.astype(int)[:1e4] == gene_corr_reference.X.data[:1e4])
+        is_int_value = np.all(gene_corr_reference.X.data.astype(int)[:1000] == gene_corr_reference.X.data[:1000])
         assert is_int_dtype or not is_int_value, "adata_reference.X should contain raw counts, but appears to be normalized. Please provide raw counts for gene_corr_reference.X."      
 
         # assert that all genes in the data are in the reference too.
