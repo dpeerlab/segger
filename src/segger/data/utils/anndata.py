@@ -204,7 +204,7 @@ def setup_anndata(
         assert is_int_dtype or not is_int_value, "adata_reference.X should contain raw counts, but appears to be normalized. Please provide raw counts for gene_corr_reference.X."      
 
         # assert that all genes in the data are in the reference too.
-        genes_not_in_reference = set(ad.var.index) - set(gene_corr_reference.var.index)
+        genes_not_in_reference = list(set(ad.var.index) - set(gene_corr_reference.var.index))
         if len(genes_not_in_reference) > 0:
             msg = f"WARNING: {len(genes_not_in_reference)} genes are in the data, but not in the provided gene correlation reference."
             for gene in genes_not_in_reference[:5]: # print up to 5 missing genes
@@ -221,7 +221,7 @@ def setup_anndata(
         assert len(failing_genes) == 0, (f"{len(failing_genes)} genes in the gene_corr_reference fail the genes_min_counts threshold, including: {', '.join(failing_genes.index[:5])} and {len(failing_genes) - 5} more.")
 
         # subset and put reference genes in same order as sample genes
-        ref = gene_corr_reference[:, ad.var.index]
+        ref = gene_corr_reference[:, ad.var.index].copy()
 
         # normalise
         ref = _normalise(ref)
