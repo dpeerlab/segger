@@ -195,7 +195,6 @@ def setup_anndata(
     # Build gene embedding on filtered dataset
     C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
-    # model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
     model = sklearn.decomposition.PCA(n_components=min(cells_embedding_size, ad.var.shape[0]))
     if ad.var.shape[0] < cells_embedding_size:
         import warnings
