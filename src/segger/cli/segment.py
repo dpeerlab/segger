@@ -311,8 +311,15 @@ def segment(
 
     save_spatialdata: Annotated[bool, registry.get_parameter(
         "save_spatialdata",
-        group=group_io,
+        group=group_io,  # might change
     )] = registry.get_default("save_spatialdata"),
+
+    boundary_method: Annotated[
+        Literal["convex_hull", "delaunay", "skip"],
+        registry.get_parameter(
+            "boundary_method",
+            group=group_io,  # might change
+        )] = registry.get_default("boundary_method"),
     
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
@@ -415,6 +422,7 @@ def segment(
         output_directory,
         save_anndata=save_anndata,
         save_spatialdata=save_spatialdata,
+        boundary_method=boundary_method,
         debug=debug,
     )
     trainer = Trainer(

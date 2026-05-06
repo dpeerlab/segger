@@ -28,6 +28,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             output_directory: Path,
             save_anndata: bool = True,
             save_spatialdata: bool = True,
+            boundary_method: str = "convex_hull",
             debug: bool = False
         ):
         # "write" callback at the end of prediction epoch
@@ -36,6 +37,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         self.output_directory = Path(output_directory)
         self.save_anndata = save_anndata
         self.save_spatialdata = save_spatialdata
+        self.boundary_method = boundary_method
         self.segger_logger = logging.getLogger(__name__)
 
         # setup debugging
@@ -132,8 +134,8 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if self.save_spatialdata:
             writer = SpatialDataWriter(
             include_boundaries="True",
-            boundary_method='convex_hull',
-            # boundary_n_jobs=max(num_workers, 1),
+            boundary_method=self.boundary_method,
+            boundary_n_jobs=4,
             )
             tx, _ = _resolve_transcripts_and_boundaries(self.input_directory)
             output_path = writer.write(

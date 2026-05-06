@@ -78,7 +78,7 @@ class SpatialDataWriter:
     def __init__(
         self,
         include_boundaries: bool = True,
-        boundary_method: Literal["input", "convex_hull", "delaunay", "skip"] = "input",
+        boundary_method: Literal["input", "convex_hull", "delaunay", "skip"] = "convex_hull",
         boundary_n_jobs: int = 1,
         points_key: str = "transcripts",
         shapes_key: str = "cells",
@@ -112,7 +112,7 @@ class SpatialDataWriter:
         x_column: str = "x",
         y_column: str = "y",
         z_column: Optional[str] = "z",
-        overwrite: bool = False,
+        overwrite: bool = True,
         **kwargs,
     ) -> Path:
         """Write segmentation results to SpatialData Zarr store.
@@ -320,34 +320,16 @@ class SpatialDataWriter:
             kwargs = {"transformations": transformations} if transformations is not None else {}
             return ShapesModel.parse(shapes, **kwargs)
 
-
         shapes_elements = {}
+  
+        shape_specs = [(self.shapes_key, tx_pd)]
 
-        if self.include_boundaries and self.boundary_method != "skip":
-            if self.boundary_method == "input":
-                bd_types = {"cell": "cells", "nucleus": "nuclei"}
-                for k, v in bd_types.items():
-                    shapes = self._get_input_boundaries(
-                        cell_tx_pd,
-                        cell_id_column,
-                        boundaries,
-                        k)
-                    shapes = _ensure_cell_id(shapes)
-                    parsed = _parse_shapes(shapes)
-                    if parsed is not None:
-                        shapes_elements[v] = parsed  
-            else:
-                shape_specs = [(self.shapes_key, cell_tx_pd)]
-                if has_fragments and fragment_tx_pd is not None:
-                    shape_specs.append((self.fragment_shapes_key, fragment_tx_pd))
-
-                for shape_key, shape_tx_pd in shape_specs:
-                    shapes = self._get_generated_boundaries(shape_tx_pd, x_column, y_column, cell_id_column)
-                    shapes = _ensure_cell_id(shapes)
-                    parsed = _parse_shapes(shapes)
-                    if parsed is not None:
-                        shapes_elements[shape_key] = parsed
-                
+        for shape_key, shape_tx_pd in shape_specs:
+            shapes = self._get_generated_boundaries(shape_tx_pd, x_column, y_column, cell_id_column)
+            shapes = _ensure_cell_id(shapes)
+            parsed = _parse_shapes(shapes)
+            if parsed is not None:
+                shapes_elements[shape_key] = parsed                
 
         # Optional AnnData table
         tables_elements = {}

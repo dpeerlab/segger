@@ -61,8 +61,6 @@ def _safe_to_geodataframe(data: object) -> gpd.GeoDataFrame:
         return data.copy()
     if hasattr(data, "compute"):
         data = data.compute()
-    if isinstance(data, gpd.GeoDataFrame):
-        return data.copy()
     if hasattr(data, "to_geopandas"):
         return data.to_geopandas().copy()
     if hasattr(data, "to_pandas"):
