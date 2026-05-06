@@ -174,51 +174,57 @@ def setup_anndata(
     )
     assert ~ad.obs.index.isna().any()
 
-    # Remove genes with fewer than min counts permanently
-    ad.var['n_counts'] = ad.X.sum(0).A.flatten()
-    ad = ad[:,  ad.var['n_counts'].ge(genes_min_counts)]
-
     # Explicitly sort indices for reproducibility
     ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
 
-
-    if gene_corr_reference is not None:
-
-        assert set(ad.var.index) <= set(gene_corr_reference.var.index), ("gene_corr_reference is missing genes present in this sample")
-
-        #ensure the gene_corr_reference contains raw counts:
-        assert gene_corr_reference.X.dtype in (np.int32, np.int64), "X does not contain raw counts"        
-        #normalize counts based on filtered cells to create 'norm' layer (like below)
-        gene_corr_reference.obs['n_counts'] = gene_corr_reference.X.sum(1).A.flatten()
-        gene_corr_reference.obs['filtered'] = gene_corr_reference.obs['n_counts'] >= cells_min_counts
-        gene_corr_reference.layers['norm'] = gene_corr_reference.X.copy()
-        target_sum = gene_corr_reference.obs.loc[gene_corr_reference.obs['filtered'], 'n_counts'].median()
-        sc.pp.normalize_total(gene_corr_reference, target_sum=target_sum, layer='norm')
-
-
-
-        #assert that all genes in gene_corr_reference pass the genes_min_counts threshold set by segger
-        gene_corr_reference.var['n_counts'] = gene_corr_reference.X.sum(0).A.flatten()
-        failing_genes = gene_corr_reference.var[gene_corr_reference.var['n_counts'] < genes_min_counts]
-        assert len(failing_genes) == 0, (f"{len(failing_genes)} in gene_corr_reference fail the genes_min_counts threshold.")
-
+    # Normalise data
+    def _normalise(adata):
+        adata.obs.loc[:, "n_counts"] = adata.X.sum(1).A.flatten()
+        adata.obs.loc[:, "filtered"] = adata.obs["n_counts"].ge(cells_min_counts)
+        adata.layers["norm"] = adata.X.copy()
+        target_sum = adata.obs.loc[adata.obs["filtered"], "n_counts"].median()
+        sc.pp.normalize_total(adata, target_sum=target_sum, layer="norm")
+        return adata
 
     # Add raw counts
     ad.raw = ad.copy()
     ad.layers['counts'] = ad.raw.X.copy()
 
-    # Keep track of filtered cells
-    ad.obs['n_counts'] = ad.raw.X.sum(1).A.flatten()
-    ad.obs['filtered'] = ad.obs['n_counts'].ge(cells_min_counts)
+    # Filter genes and normalise
+    ad.var['n_counts'] = ad.X.sum(0).A.flatten()
+    ad = ad[:,  ad.var['n_counts'].ge(genes_min_counts)]
+    ad = _normalise(ad)
 
-    # Normalize to filtered dataset counts
-    ad.layers['norm'] = ad.layers['counts'].copy()
-    target_sum = ad.obs.loc[ad.obs['filtered'], 'n_counts'].median()
-    sc.pp.normalize_total(ad, target_sum=target_sum, layer='norm')
-
+    # Prepare reference
     if gene_corr_reference is not None:
-        #put reference genes in same order as sample genes
+
+        # assert that reference contains raw counts
+        is_int_dtype = np.issubdtype(gene_corr_reference.X.dtype, np.integer)
+        is_int_value = np.all(gene_corr_reference.X.data.astype(int)[:1e4] == gene_corr_reference.X.data[:1e4])
+        assert is_int_dtype or not is_int_value, "adata_reference.X should contain raw counts, but appears to be normalized. Please provide raw counts for gene_corr_reference.X."      
+
+        # assert that all genes in the data are in the reference too.
+        genes_not_in_reference = set(ad.var.index) - set(gene_corr_reference.var.index)
+        if len(genes_not_in_reference) > 0:
+            msg = f"WARNING: {len(genes_not_in_reference)} genes are in the data, but not in the provided gene correlation reference."
+            for gene in genes_not_in_reference[:5]: # print up to 5 missing genes
+                msg += f"\n - {gene}"
+            if len(genes_not_in_reference) > 5:
+                msg += f"\n - ... and {len(genes_not_in_reference) - 5} more."
+
+            # TODO: Allow to proceed with missing genes: Add condition for Error below, then impute missing correlations with data.
+            raise ValueError(msg)
+    
+        # assert that genes in reference pass count thresholds
+        gene_corr_reference.var['n_counts'] = gene_corr_reference.X.sum(0).A.flatten()
+        failing_genes = gene_corr_reference.var[gene_corr_reference.var['n_counts'] < genes_min_counts]
+        assert len(failing_genes) == 0, (f"{len(failing_genes)} genes in the gene_corr_reference fail the genes_min_counts threshold, including: {', '.join(failing_genes.index[:5])} and {len(failing_genes) - 5} more.")
+
+        # subset and put reference genes in same order as sample genes
         ref = gene_corr_reference[:, ad.var.index]
+
+        # normalise
+        ref = _normalise(ref)
         counts = ref.layers['norm']
     else:
         #create counts from the sample the same way
