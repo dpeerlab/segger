@@ -11,6 +11,7 @@ import sklearn
 import torch
 import cupyx
 import cuml
+import warnings
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
@@ -142,6 +143,7 @@ def setup_anndata(
     genes_clusters_resolution: float,
     compute_morphology: bool = False,
     gene_corr_reference: sc.AnnData | None = None,
+    gene_missing_strategy: str = "error",
 ):
     """TODO: Add description."""
     # Standard fields
@@ -212,8 +214,18 @@ def setup_anndata(
             if len(genes_not_in_reference) > 5:
                 msg += f"\n - ... and {len(genes_not_in_reference) - 5} more."
 
-            # TODO: Allow to proceed with missing genes: Add condition for Error below, then impute missing correlations with data.
-            raise ValueError(msg)
+            # Handle missing genes
+            if gene_missing_strategy == "error":
+                raise ValueError(msg)
+            elif gene_missing_strategy == "remove":
+                warnings.warn(msg + "\nThese genes will be removed from the data.")
+                ad = ad[:, ~ad.var.index.isin(genes_not_in_reference)]
+                ad = _normalise(ad) # re-normalise after gene removal
+            elif gene_missing_strategy == "fill":
+                # TODO: Fill missing gene correlations with data-based estimates after line 247(?)
+                raise NotImplementedError("gene_missing_strategy='fill' is not implemented yet.")
+            else:
+                raise ValueError(f"Unknown gene_missing_strategy: {gene_missing_strategy}. Choose from 'error', 'warn', 'ignore', or 'fill'.")
     
         # assert that genes in reference pass count thresholds
         gene_corr_reference.var['n_counts'] = gene_corr_reference.X.sum(0).A.flatten()

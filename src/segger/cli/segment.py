@@ -299,6 +299,12 @@ def segment(
         group=group_loss,
     )] = registry.get_default("sg_weight_end"),
 
+    # Reference
+    gene_missing_strategy: Annotated[Literal["error", "remove", "fill"], registry.get_parameter(
+        "gene_missing_strategy",
+        group=group_io,
+    )] = registry.get_default("gene_missing_strategy"),
+
     save_anndata: Annotated[bool, registry.get_parameter(
         "save_anndata",
         group=group_io,
@@ -338,7 +344,8 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
-        gene_corr_reference_path = gene_corr_reference_path 
+        gene_corr_reference_path=gene_corr_reference_path,
+        gene_missing_strategy=gene_missing_strategy,
     )
     
     # Setup Lightning Model
