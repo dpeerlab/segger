@@ -28,21 +28,24 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional, Union
 
+import numpy as np
+import pandas as pd
 import polars as pl
+from anndata import AnnData
+from scipy import sparse as sp
+
 
 from segger.utils.optional_deps import (
     require_spatialdata,
 )
-from segger.export.minimal_apis import OutputFormat, register_writer, build_anndata_table
-
 if TYPE_CHECKING:
     import geopandas as gpd
     from spatialdata import SpatialData
 
 
-@register_writer(OutputFormat.SPATIALDATA)
+# @register_writer(OutputFormat.SPATIALDATA)
 class SpatialDataWriter:
     """Write segmentation results as SpatialData Zarr store.
 
@@ -579,3 +582,216 @@ def write_spatialdata(
         output_name=output_name,
         **kwargs,
     )
+
+
+### APIs from other exporting formats in v2-incremental ###
+
+### ANNDATA EXPORT ###
+
+def build_anndata_table(
+    transcripts: pl.DataFrame,
+    cell_id_column: str = "segger_cell_id",
+    feature_column: str = "feature_name",
+    x_column: Optional[str] = "x",
+    y_column: Optional[str] = "y",
+    z_column: Optional[str] = "z",
+    unassigned_value: Union[int, str, None] = -1,
+    region: Optional[str] = None,
+    region_key: Optional[str] = None,
+    obs_index_as_str: bool = False,
+) -> AnnData:
+    """Build AnnData from assigned transcripts.
+
+    Parameters
+    ----------
+    transcripts
+        Transcript DataFrame with segmentation assignments.
+    cell_id_column
+        Column with assigned cell IDs.
+    feature_column
+        Column with gene/feature names.
+    x_column, y_column, z_column
+        Coordinate columns (optional). If present, centroids are stored in
+        ``obsm["X_spatial"]``.
+    unassigned_value
+        Marker for unassigned transcripts (filtered out).
+    region, region_key
+        SpatialData table linkage metadata.
+    obs_index_as_str
+        If True, cast cell IDs to string for ``obs`` index.
+    """
+    if cell_id_column not in transcripts.columns:
+        raise ValueError(f"Missing cell_id column: {cell_id_column}")
+    if feature_column not in transcripts.columns:
+        raise ValueError(f"Missing feature column: {feature_column}")
+
+    assigned = transcripts.filter(pl.col(cell_id_column).is_not_null())
+    if unassigned_value is not None:
+        col_dtype = transcripts.schema.get(cell_id_column)
+        try:
+            compare_value = pl.Series([unassigned_value]).cast(col_dtype).item()
+            filter_expr = pl.col(cell_id_column) != compare_value
+        except Exception:
+            filter_expr = (
+                pl.col(cell_id_column).cast(pl.Utf8) != str(unassigned_value)
+            )
+        assigned = assigned.filter(filter_expr)
+
+    # Gene list from all transcripts (even if no assignments)
+    var_idx = (
+        transcripts
+        .select(feature_column)
+        .unique()
+        .sort(feature_column)
+        .get_column(feature_column)
+        .to_list()
+    )
+
+    if assigned.height == 0:
+        obs_index = pd.Index([], name=cell_id_column)
+        if obs_index_as_str:
+            var_index = pd.Index([str(v) for v in var_idx], name=feature_column)
+        else:
+            var_index = pd.Index(var_idx, name=feature_column)
+        X = sp.csr_matrix((0, len(var_index)))
+        adata = AnnData(X=X, obs=pd.DataFrame(index=obs_index), var=pd.DataFrame(index=var_index))
+        if region is not None:
+            adata.obs["region"] = region
+        if region_key is not None:
+            adata.obs["region_key"] = region_key
+        return adata
+
+    feature_idx = (
+        assigned
+        .select(feature_column)
+        .unique()
+        .sort(feature_column)
+        .with_row_index(name="_fid")
+    )
+    cell_idx = (
+        assigned
+        .select(cell_id_column)
+        .unique()
+        .sort(cell_id_column)
+        .with_row_index(name="_cid")
+    )
+
+    mapped = (
+        assigned
+        .join(feature_idx, on=feature_column)
+        .join(cell_idx, on=cell_id_column)
+    )
+    counts = (
+        mapped
+        .group_by(["_cid", "_fid"])
+        .agg(pl.len().alias("_count"))
+    )
+    ijv = counts.select(["_cid", "_fid", "_count"]).to_numpy().T
+    rows = ijv[0].astype(np.int64, copy=False)
+    cols = ijv[1].astype(np.int64, copy=False)
+    data = ijv[2].astype(np.int64, copy=False)
+
+    n_cells = cell_idx.height
+    n_genes = feature_idx.height
+    X = sp.coo_matrix((data, (rows, cols)), shape=(n_cells, n_genes)).tocsr()
+
+    obs_ids = cell_idx.get_column(cell_id_column).to_list()
+    var_ids = feature_idx.get_column(feature_column).to_list()
+    if obs_index_as_str:
+        obs_ids = [str(v) for v in obs_ids]
+        var_ids = [str(v) for v in var_ids]
+
+    adata = AnnData(
+        X=X,
+        obs=pd.DataFrame(index=pd.Index(obs_ids, name=cell_id_column)),
+        var=pd.DataFrame(index=pd.Index(var_ids, name=feature_column)),
+    )
+
+    # Add centroid coordinates if present
+    if x_column in assigned.columns and y_column in assigned.columns:
+        coords_cols = [x_column, y_column]
+        if z_column and z_column in assigned.columns:
+            coords_cols.append(z_column)
+        centroids = (
+            assigned
+            .group_by(cell_id_column)
+            .agg([pl.col(c).mean().alias(c) for c in coords_cols])
+        )
+        centroids_pd = (
+            centroids
+            .to_pandas()
+            .set_index(cell_id_column)
+            .reindex(adata.obs.index)
+        )
+        adata.obsm["X_spatial"] = centroids_pd[coords_cols].to_numpy()
+
+    if region is not None:
+        adata.obs["region"] = region
+    if region_key is not None:
+        adata.obs["region_key"] = region_key
+
+    return adata
+
+### MERGED EXPORT ###
+
+def merge_predictions_with_transcripts(
+    predictions: pl.DataFrame,
+    transcripts: pl.DataFrame,
+    row_index_column: str = "row_index",
+    cell_id_column: str = "segger_cell_id",
+    similarity_column: str = "segger_similarity",
+    unassigned_marker: Union[int, str, None] = -1,
+) -> pl.DataFrame:
+    """Merge predictions with transcripts (functional interface).
+
+    Parameters
+    ----------
+    predictions
+        DataFrame with segmentation predictions.
+    transcripts
+        Original transcripts DataFrame.
+    row_index_column
+        Column name for row index.
+    cell_id_column
+        Column name for cell ID in predictions.
+    similarity_column
+        Column name for similarity in predictions.
+    unassigned_marker
+        Value for unassigned transcripts.
+
+    Returns
+    -------
+    pl.DataFrame
+        Merged DataFrame with all original columns plus predictions.
+
+    Examples
+    --------
+    >>> merged = merge_predictions_with_transcripts(predictions, transcripts)
+    >>> print(merged.columns)
+    ['row_index', 'x', 'y', 'feature_name', 'segger_cell_id', 'segger_similarity']
+    """
+    # Prepare predictions
+    pred_cols = [row_index_column, cell_id_column]
+    if similarity_column in predictions.columns:
+        pred_cols.append(similarity_column)
+
+    pred_subset = predictions.select(pred_cols)
+
+    # Add row_index if missing
+    if row_index_column not in transcripts.columns:
+        transcripts = transcripts.with_row_index(name=row_index_column)
+
+    # Join
+    merged = transcripts.join(pred_subset, on=row_index_column, how="left")
+
+    # Fill unassigned
+    if unassigned_marker is not None:
+        merged = merged.with_columns(
+            pl.col(cell_id_column).fill_null(unassigned_marker)
+        )
+        if similarity_column in merged.columns:
+            merged = merged.with_columns(
+                pl.col(similarity_column).fill_null(0.0)
+            )
+
+    return merged
