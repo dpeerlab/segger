@@ -35,8 +35,7 @@ import polars as pl
 from segger.utils.optional_deps import (
     require_spatialdata,
 )
-from segger.export.output_formats import OutputFormat, register_writer
-from segger.export.anndata_writer import build_anndata_table
+from segger.export.minimal_apis import OutputFormat, register_writer, build_anndata_table
 
 if TYPE_CHECKING:
     import geopandas as gpd
