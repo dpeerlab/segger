@@ -1,3 +1,5 @@
+from email.message import Message
+
 from torch.nn.functional import normalize
 from scipy import sparse as sp
 import geopandas as gpd
@@ -9,6 +11,7 @@ import sklearn
 import torch
 import cupyx
 import cuml
+import warnings
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from .neighbors import phenograph_rapids
@@ -130,7 +133,7 @@ def get_cluster_cosine_similarity(
 def setup_anndata(
     transcripts: pl.DataFrame,
     boundaries: gpd.GeoDataFrame,
-    cell_column: str,
+    cell_column: str, 
     cells_embedding_size: int,
     cells_min_counts: int,
     cells_clusters_n_neighbors: int,
@@ -139,10 +142,10 @@ def setup_anndata(
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
     compute_morphology: bool = False,
-    gene_corr_reference: sc.AnnData | None = None
+    gene_corr_reference: sc.AnnData | None = None,
+    gene_missing_strategy: str = "error",
 ):
-    """TODO: Add description.
-    """
+    """TODO: Add description."""
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
@@ -173,38 +176,67 @@ def setup_anndata(
     )
     assert ~ad.obs.index.isna().any()
 
-    # Remove genes with fewer than min counts permanently
-    ad.var['n_counts'] = ad.X.sum(0).A.flatten()
-    ad = ad[:,  ad.var['n_counts'].ge(genes_min_counts)]
-
     # Explicitly sort indices for reproducibility
     ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
 
-    #NEW ADDITIONS: -------------------------------------------------------------------
-    #if gene corr reference is passed in, ensure it has normalized counts, and ensure reference is not missing any genes (reference should be filtered by min_counts)
-    if gene_corr_reference is not None:
-        assert set(ad.var.index) <= set(gene_corr_reference.var.index), ("gene_corr_reference is missing genes present in this sample")
-        assert 'norm' in gene_corr_reference.layers, ("gene_corr_reference must have a 'norm' layer with pre normalized counts")
-    
-    #------------------------------------------------------------------------------
+    # Normalise data
+    def _normalise(adata):
+        adata.obs.loc[:, "n_counts"] = adata.X.sum(1).A.flatten()
+        adata.obs.loc[:, "filtered"] = adata.obs["n_counts"].ge(cells_min_counts)
+        adata.layers["norm"] = adata.X.copy()
+        target_sum = adata.obs.loc[adata.obs["filtered"], "n_counts"].median()
+        sc.pp.normalize_total(adata, target_sum=target_sum, layer="norm")
+        return adata
 
     # Add raw counts
     ad.raw = ad.copy()
     ad.layers['counts'] = ad.raw.X.copy()
 
-    # Keep track of filtered cells
-    ad.obs['n_counts'] = ad.raw.X.sum(1).A.flatten()
-    ad.obs['filtered'] = ad.obs['n_counts'].ge(cells_min_counts)
+    # Filter genes and normalise
+    ad.var['n_counts'] = ad.X.sum(0).A.flatten()
+    ad = ad[:,  ad.var['n_counts'].ge(genes_min_counts)]
+    ad = _normalise(ad)
 
-    # Normalize to filtered dataset counts
-    ad.layers['norm'] = ad.layers['counts'].copy()
-    target_sum = ad.obs.loc[ad.obs['filtered'], 'n_counts'].median()
-    sc.pp.normalize_total(ad, target_sum=target_sum, layer='norm')
-
-    #NEW ADDITIONS: -------------------------------------------------------------------
+    # Prepare reference
     if gene_corr_reference is not None:
-        #put reference genes in same order as sample genes
-        ref = gene_corr_reference[:, ad.var.index]
+
+        # assert that reference contains raw counts
+        is_int_dtype = np.issubdtype(gene_corr_reference.X.dtype, np.integer)
+        is_int_value = np.all(gene_corr_reference.X.data.astype(int)[:1000] == gene_corr_reference.X.data[:1000])
+        assert is_int_dtype or not is_int_value, "adata_reference.X should contain raw counts, but appears to be normalized. Please provide raw counts for gene_corr_reference.X."      
+
+        # assert that all genes in the data are in the reference too.
+        genes_not_in_reference = list(set(ad.var.index) - set(gene_corr_reference.var.index))
+        if len(genes_not_in_reference) > 0:
+            msg = f"WARNING: {len(genes_not_in_reference)} genes are in the data, but not in the provided gene correlation reference."
+            for gene in genes_not_in_reference[:5]: # print up to 5 missing genes
+                msg += f"\n - {gene}"
+            if len(genes_not_in_reference) > 5:
+                msg += f"\n - ... and {len(genes_not_in_reference) - 5} more."
+
+            # Handle missing genes
+            if gene_missing_strategy == "error":
+                raise ValueError(msg)
+            elif gene_missing_strategy == "remove":
+                warnings.warn(msg + "\nThese genes will be removed from the data.")
+                ad = ad[:, ~ad.var.index.isin(genes_not_in_reference)]
+                ad = _normalise(ad) # re-normalise after gene removal
+            elif gene_missing_strategy == "fill":
+                # TODO: Fill missing gene correlations with data-based estimates after line 247(?)
+                raise NotImplementedError("gene_missing_strategy='fill' is not implemented yet.")
+            else:
+                raise ValueError(f"Unknown gene_missing_strategy: {gene_missing_strategy}. Choose from 'error', 'warn', 'ignore', or 'fill'.")
+    
+        # assert that genes in reference pass count thresholds
+        gene_corr_reference.var['n_counts'] = gene_corr_reference.X.sum(0).A.flatten()
+        failing_genes = gene_corr_reference.var[gene_corr_reference.var['n_counts'] < genes_min_counts]
+        assert len(failing_genes) == 0, (f"{len(failing_genes)} genes in the gene_corr_reference fail the genes_min_counts threshold, including: {', '.join(failing_genes.index[:5])} and {len(failing_genes) - 5} more.")
+
+        # subset and put reference genes in same order as sample genes
+        ref = gene_corr_reference[:, ad.var.index].copy()
+
+        # normalise
+        ref = _normalise(ref)
         counts = ref.layers['norm']
     else:
         #create counts from the sample the same way
@@ -213,23 +245,30 @@ def setup_anndata(
     #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
     C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
-    model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
+    model = sklearn.decomposition.PCA(n_components=cells_embedding_size, random_state=0)
     ad.varm['X_corr'] = model.fit_transform(C)
+    #---------------------------------------------------------------------------------
+
+    # Build gene embedding on filtered dataset
+    #C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)
+    #C = np.nan_to_num(C, 0, posinf=True, neginf=True)
+    #model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
+    #ad.varm['X_corr'] = model.fit_transform(C)
 
     # Build PCs on filtered cells and project all cells
     counts_sparse_gpu = cupyx.scipy.sparse.csr_matrix(ad.layers['norm'])
-    model = cuml.PCA(n_components=cells_embedding_size)
+    model = cuml.PCA(n_components=cells_embedding_size, random_state=0)
     model.fit(counts_sparse_gpu[ad.obs['filtered'].values])
     ad.obsm['X_pca'] = model.transform(counts_sparse_gpu).get()
 
     # Compute clusters on filtered cells
     cell_clusters = phenograph_rapids(
         ad[ad.obs['filtered']].obsm['X_pca'],
-        n_neighbors=cells_clusters_n_neighbors, 
+        n_neighbors=cells_clusters_n_neighbors,
         resolution=cells_clusters_resolution,
         min_size=100,
     )
-    ad.obs['phenograph_cluster'] = -1  # removed cells have no cluster
+    ad.obs['phenograph_cluster'] = -1 # removed cells have no cluster
     ad.obs.loc[ad.obs['filtered'], 'phenograph_cluster'] = cell_clusters
     ad.obs['phenograph_cluster'] = pd.Categorical(ad.obs['phenograph_cluster'])
 

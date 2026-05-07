@@ -6,6 +6,7 @@ from lightning.pytorch import LightningDataModule
 from torchvision.transforms import Compose
 from dataclasses import dataclass
 from typing import Literal
+import scanpy as sc
 from pathlib import Path
 import polars as pl
 import torch
@@ -126,7 +127,10 @@ class ISTDataModule(LightningDataModule):
         Fraction of tiles used for training; the rest for validation.
     edges_per_batch : int, default=1_000_000
         Maximum number of edges per batch in the DataLoader.
-    gene_corr_reference_path : path to reference AnnData or None, default=None
+    gene_corr_reference : sc.AnnData or None, default=None
+        Optional reference AnnData object used to compute gene-gene correlation features.
+    gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
+        Strategy for handling genes present in the data but missing from the reference.
     """
     input_directory: Path
     num_workers: int = 8
@@ -152,7 +156,8 @@ class ISTDataModule(LightningDataModule):
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
     edges_per_batch: int = 1_000_000
-    gene_corr_reference_path: Path | None = None #ADDED
+    gene_corr_reference_path: Path | None = None 
+    gene_missing_strategy: Literal["error", "remove", "fill"] = "error"
     
     def __post_init__(self):
         """TODO: Description
@@ -194,7 +199,6 @@ class ISTDataModule(LightningDataModule):
         bd_mask = bd[bd_fields.boundary_type] == boundary_type
 
 
-        #NEWLY ADDED: load in the reference anndata if provided-------------------------------------
         gene_corr_reference = sc.read_h5ad(self.gene_corr_reference_path) if self.gene_corr_reference_path is not None else None
 
         # Generate reference AnnData
@@ -211,7 +215,8 @@ class ISTDataModule(LightningDataModule):
             genes_clusters_n_neighbors=self.genes_clusters_n_neighbors,
             genes_clusters_resolution=self.genes_clusters_resolution,
             compute_morphology=(self.cells_representation_mode == "morphology"),
-            gene_corr_reference = gene_corr_reference #ADDED
+            gene_corr_reference=gene_corr_reference,
+            gene_missing_strategy=self.gene_missing_strategy,
 
         )
 
