@@ -122,7 +122,7 @@ def edge_index_to_knn(
 def kdtree_neighbors(
     points: np.ndarray,
     max_k: int,
-    max_dist: float,
+    max_dist: float = np.inf,
     query: np.ndarray | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Wrapper for KDTree kNN and conversion to edge_index COO format.
@@ -148,11 +148,25 @@ def setup_transcripts_graph(
     tx: pl.DataFrame,
     max_k: int,
     max_dist: float,
+    use_3d: bool | Literal["auto"] = False,
 ) -> torch.Tensor:
     """TODO: Add description.
     """
     tx_fields = TrainingTranscriptFields()
-    points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
+    coord_cols = [tx_fields.x, tx_fields.y]
+    has_z = tx_fields.z in tx.columns
+
+    if use_3d == "auto":
+        use_3d = has_z and tx[tx_fields.z].null_count() < len(tx)
+    elif use_3d is True and not has_z:
+        raise ValueError(
+            f"use_3d=True but z column '{tx_fields.z}' not found in transcripts. "
+            f"Available columns: {tx.columns}"
+        )
+    if use_3d and has_z:
+        coord_cols.append(tx_fields.z)
+
+    points = tx[coord_cols].to_numpy()
     edge_index, _ = kdtree_neighbors(
         points=points,
         max_k=max_k,
@@ -184,6 +198,7 @@ def setup_prediction_graph(
     max_k: int,
     buffer_ratio: float,
     mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
+    use_3d: bool | Literal["auto"] = False,
 ) -> torch.Tensor:
     """TODO: Add description.
     """
@@ -192,12 +207,27 @@ def setup_prediction_graph(
 
     # Uniform kNN graph
     if mode == "uniform":
-        points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
+        coord_cols = [tx_fields.x, tx_fields.y]
+        has_z = tx_fields.z in tx.columns
+        if use_3d == "auto":
+            use_3d = has_z and tx[tx_fields.z].null_count() < len(tx)
+        elif use_3d is True and not has_z:
+            raise ValueError(
+                f"use_3d=True but z column '{tx_fields.z}' not found in transcripts. "
+                f"Available columns: {tx.columns}"
+            )
+        if use_3d and has_z:
+            coord_cols.append(tx_fields.z)
+
+        points = tx[coord_cols].to_numpy()
         query = bd.geometry.centroid.get_coordinates().values
+        if use_3d and len(coord_cols) == 3:
+            query = np.hstack([query, np.zeros((len(query), 1))])
         edge_index, _ = kdtree_neighbors(
             points=points,
             query=query,
             max_k=max_k,
+            max_dist=np.inf,
         )
         return edge_index
     

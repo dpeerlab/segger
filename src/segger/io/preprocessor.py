@@ -2,7 +2,7 @@ from pandas.errors import DtypeWarning
 from functools import cached_property
 from abc import ABC, abstractmethod
 from anndata import AnnData
-from typing import Literal
+from typing import Literal, Optional
 from pathlib import Path
 import geopandas as gpd
 import polars as pl
@@ -34,6 +34,14 @@ warnings.filterwarnings("ignore", category=DtypeWarning)
 # Register of available ISTPreprocessor subclasses keyed by platform name.
 PREPROCESSORS = {}
 
+
+def _lazyframe_column_names(lf: pl.LazyFrame) -> list[str]:
+    """Return column names for a LazyFrame across Polars versions."""
+    try:
+        return lf.collect_schema().names()
+    except AttributeError:
+        return lf.columns
+
 def register_preprocessor(name):
     """
     Decorator to register a preprocessor class under a given platform name.
@@ -60,7 +68,14 @@ class ISTPreprocessor(ABC):
     transcript and boundary GeoDataFrames for the given platform.
     """
 
-    def __init__(self, data_dir: Path):
+    DEFAULT_MIN_QV: Optional[float] = None
+
+    def __init__(
+        self,
+        data_dir: Path,
+        min_qv: Optional[float] = None,
+        include_z: bool = True,
+    ):
         """
         Parameters
         ----------
@@ -70,6 +85,8 @@ class ISTPreprocessor(ABC):
         data_dir = Path(data_dir)
         type(self)._validate_directory(data_dir)
         self.data_dir = data_dir
+        self.min_qv = self.DEFAULT_MIN_QV if min_qv is None else min_qv
+        self.include_z = include_z
 
     @staticmethod
     @abstractmethod
@@ -280,7 +297,7 @@ class CosMXPreprocessor(ISTPreprocessor):
         raw = CosMxTranscriptFields()
         std = StandardTranscriptFields()
 
-        return (
+        lf = (
             # Read in lazily
             pl.scan_csv(next(self.data_dir.glob(raw.filename)))
             .with_row_index(name=std.row_index)
@@ -310,13 +327,22 @@ class CosMXPreprocessor(ISTPreprocessor):
                 .otherwise(None)
                 .alias(std.cell_id)
             )
-            # Map to standard field names
-            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
+        )
 
+        rename_map = {raw.x: std.x, raw.y: std.y, raw.feature: std.feature}
+        select_cols = [std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment]
+        if self.include_z:
+            schema_names = _lazyframe_column_names(lf)
+            if raw.z in schema_names:
+                rename_map[raw.z] = std.z
+                select_cols.append(std.z)
+
+        return (
+            lf
+            # Map to standard field names
+            .rename(rename_map)
+            # Subset to necessary fields
+            .select(select_cols)
             # Add numeric index
             .with_row_index()
             .collect()
@@ -372,6 +398,8 @@ class XeniumPreprocessor(ISTPreprocessor):
     """
     Preprocessor for 10x Genomics Xenium datasets.
     """
+    DEFAULT_MIN_QV: float = 20.0
+
     @staticmethod
     def _validate_directory(data_dir: Path):
 
@@ -397,7 +425,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         raw = XeniumTranscriptFields()
         std = StandardTranscriptFields()
 
-        return (
+        lf = (
             # Read in lazily
             pl.scan_parquet(
                 self.data_dir / raw.filename,
@@ -405,8 +433,12 @@ class XeniumPreprocessor(ISTPreprocessor):
             )
             # Add numeric index at beginning
             .with_row_index(name=std.row_index)
-            # Filter data
-            .filter(pl.col(raw.quality) >= 20)
+        )
+        if self.min_qv is not None and self.min_qv > 0:
+            lf = lf.filter(pl.col(raw.quality) >= self.min_qv)
+
+        lf = (
+            lf
             .filter(pl.col(raw.feature).str.contains(
                 '|'.join(raw.filter_substrings)).not_()
             )
@@ -415,7 +447,7 @@ class XeniumPreprocessor(ISTPreprocessor):
                 pl.when(pl.col(raw.compartment) == raw.nucleus_value)
                 .then(std.nucleus_value)
                 .when(
-                    (pl.col(raw.compartment) != raw.nucleus_value) & 
+                    (pl.col(raw.compartment) != raw.nucleus_value) &
                     (pl.col(raw.cell_id) != raw.null_cell_id)
                 )
                 .then(std.cytoplasmic_value)
@@ -428,12 +460,22 @@ class XeniumPreprocessor(ISTPreprocessor):
                 .replace(raw.null_cell_id, None)
                 .alias(std.cell_id)
             )
+        )
+
+        rename_map = {raw.x: std.x, raw.y: std.y, raw.feature: std.feature}
+        select_cols = [std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment]
+        if self.include_z:
+            schema_names = _lazyframe_column_names(lf)
+            if raw.z in schema_names:
+                rename_map[raw.z] = std.z
+                select_cols.append(std.z)
+
+        return (
+            lf
             # Map to standard field names
-            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
+            .rename(rename_map)
+            # Subset to necessary fields
+            .select(select_cols)
             .collect()
         )
 
@@ -540,7 +582,9 @@ def _infer_platform(data_dir: Path) -> str:
 
 def get_preprocessor(
     data_dir: Path,
-    platform: str | None = None
+    platform: str | None = None,
+    min_qv: Optional[float] = None,
+    include_z: bool = True,
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
@@ -551,4 +595,4 @@ def get_preprocessor(
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir)
+    return cls(data_dir, min_qv=min_qv, include_z=include_z)

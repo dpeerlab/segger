@@ -24,6 +24,7 @@ def setup_heterodata(
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"],
     prediction_graph_max_k: int,
     prediction_graph_buffer_ratio: float,
+    use_3d: bool | Literal["auto"] = False,
     cells_embedding_key: str = 'X_pca',
     cells_clusters_column: str = 'phenograph_cluster',
     cells_encoding_column: str = 'cell_encoding',
@@ -44,6 +45,11 @@ def setup_heterodata(
         tx_fields.cell_cluster,
         tx_fields.gene_cluster,
     ]
+
+    transcripts = transcripts.with_columns(
+        pl.col(tx_fields.feature).cast(pl.Utf8)
+    )
+    
     # Update transcripts with fields for training
     
     transcripts = (
@@ -55,9 +61,14 @@ def setup_heterodata(
             pl.from_pandas(
                 adata.var[[genes_encoding_column, genes_clusters_column]],
                 include_index=True
-            ),
+            ).rename({
+                pl.from_pandas(
+                    adata.var[[genes_encoding_column, genes_clusters_column]],
+                    include_index=True
+                ).columns[0]: tx_fields.feature
+            }),
             left_on=tx_fields.feature,
-            right_on=adata.var.index.name if adata.var.index.name else 'None',
+            right_on=tx_fields.feature,
         )
         .rename(
             {
@@ -135,6 +146,7 @@ def setup_heterodata(
         transcripts,
         max_k=transcripts_graph_max_k,
         max_dist=transcripts_graph_max_dist,
+        use_3d=use_3d,
     )
 
     # Reference segmentation graph
@@ -150,6 +162,7 @@ def setup_heterodata(
         max_k=prediction_graph_max_k,
         buffer_ratio=prediction_graph_buffer_ratio,
         mode=prediction_graph_mode,
+        use_3d=use_3d if prediction_graph_mode == "uniform" else False,
     )
 
     return data

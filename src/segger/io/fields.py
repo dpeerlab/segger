@@ -8,6 +8,7 @@ class XeniumTranscriptFields:
     filename: str = 'transcripts.parquet'
     x: str = 'x_location'
     y: str = 'y_location'
+    z: str = 'z_location'
     feature: str = 'feature_name'
     cell_id: str = 'cell_id'
     null_cell_id: str = 'UNASSIGNED'
@@ -38,6 +39,7 @@ class MerscopeTranscriptFields:
     filename: str = 'detected_transcripts.csv'
     x: str = 'global_x'
     y: str = 'global_y'
+    z: str = 'global_z'
     feature: str = 'gene'
     cell_id: str = 'cell_id'
 
@@ -54,6 +56,7 @@ class CosMxTranscriptFields:
     filename: str = '*_tx_file.csv'
     x: str = 'x_global_px'
     y: str = 'y_global_px'
+    z: str = 'z'
     feature: str = 'target'
     cell_id: str = 'cell'
     compartment: str = 'CellComp'
@@ -87,8 +90,10 @@ class StandardTranscriptFields:
     row_index: str = 'row_index'
     x: str = 'x'
     y: str = 'y'
+    z: str = 'z'
     feature: str = 'feature_name'
     cell_id: str = 'cell_id'
+    quality: str = 'qv'
     compartment: str = 'cell_compartment'
     extracellular_value: int = 0
     cytoplasmic_value: int = 1

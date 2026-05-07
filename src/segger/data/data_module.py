@@ -5,11 +5,12 @@ from torch_geometric.utils import negative_sampling
 from lightning.pytorch import LightningDataModule
 from torchvision.transforms import Compose
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 from pathlib import Path
 import polars as pl
 import torch
 import gc
+import os
 import numpy as np
 
 from .tile_dataset import (
@@ -143,6 +144,8 @@ class ISTDataModule(LightningDataModule):
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"] = "cell"
     prediction_graph_max_k: int = 3
     prediction_graph_buffer_ratio: float = 0.05
+    use_3d: bool | Literal["auto"] = False
+    min_qv: Optional[float] = 20.0
     tiling_mode: Literal["adaptive", "square"] = "adaptive"  # TODO: Remove (benchmarking only)
     tiling_margin_training: float = 20.
     tiling_margin_prediction: float = 20.
@@ -166,11 +169,54 @@ class ISTDataModule(LightningDataModule):
         tx_fields = StandardTranscriptFields()
         bd_fields = StandardBoundaryFields()
 
-        # Load standardized IST data
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
-        pp = get_preprocessor(self.input_directory)
-        tx = self.tx = pp.transcripts
-        bd = self.bd = pp.boundaries
+        # Load standardized IST data (raw platform directory or SpatialData .zarr)
+        input_path = Path(self.input_directory)
+        tx = None
+        bd = None
+
+        try:
+            from ..io.spatialdata_loader import (
+                is_spatialdata_path,
+                load_from_spatialdata,
+            )
+            has_spatialdata_loader = True
+        except Exception:
+            has_spatialdata_loader = False
+
+        if has_spatialdata_loader and is_spatialdata_path(input_path):
+            tx_lf, bd = load_from_spatialdata(
+                input_path,
+                boundary_type="all",
+                normalize=True,
+            )
+            tx = tx_lf.collect() if isinstance(tx_lf, pl.LazyFrame) else tx_lf
+
+            # Keep behavior consistent with raw Xenium filtering when quality exists.
+            quality_col = getattr(tx_fields, "quality", "qv")
+            if (
+                self.min_qv is not None
+                and self.min_qv > 0
+                and quality_col in tx.columns
+            ):
+                tx = tx.filter(pl.col(quality_col) >= self.min_qv)
+        else:
+            pp = get_preprocessor(
+                self.input_directory,
+                min_qv=self.min_qv,
+                include_z=(self.use_3d is not False),
+            )
+            tx = pp.transcripts
+            bd = pp.boundaries
+
+        self.tx = tx
+        self.bd = bd
+
+        if bd is None or len(bd) == 0:
+            raise ValueError(
+                "No boundary shapes found in input data. "
+                "Segger requires cell/nucleus polygons in raw input or SpatialData shapes."
+            )
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":
@@ -187,8 +233,16 @@ class ISTDataModule(LightningDataModule):
                 f"Unrecognized segmentation graph mode: "
                 f"'{self.segmentation_graph_mode}'."
             )
-        tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
-        bd_mask = bd[bd_fields.boundary_type] == boundary_type
+
+        if tx_fields.compartment in tx.columns:
+            tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
+        else:
+            tx_mask = pl.col(tx_fields.cell_id).is_not_null()
+
+        if bd_fields.boundary_type in bd.columns:
+            bd_mask = bd[bd_fields.boundary_type] == boundary_type
+        else:
+            bd_mask = np.ones(len(bd), dtype=bool)
 
         # Generate reference AnnData
         self.logger.debug("Generating reference AnnData object...")
@@ -222,6 +276,7 @@ class ISTDataModule(LightningDataModule):
             prediction_graph_mode=self.prediction_graph_mode,
             prediction_graph_max_k=self.prediction_graph_max_k,
             prediction_graph_buffer_ratio=self.prediction_graph_buffer_ratio,
+            use_3d=self.use_3d,
         )
 
         # Tile graph dataset
