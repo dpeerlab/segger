@@ -12,6 +12,7 @@ import polars as pl
 import torch
 import gc
 import numpy as np
+import scanpy as sc
 
 from .tile_dataset import (
     TileFitDataset,
