@@ -101,11 +101,15 @@ class Tiling(ABC):
                 mitre_limit=margin / 2,
             )
             missing = buffered.is_empty.sum()
+            # handling tiles too small for buffer
             if missing != 0:
-                raise ValueError(
+                import warnings
+                warnings.warn(
                     f"Margin ({margin}) is too large, causing {missing} "
-                    f"tile(s) to disappear. Consider using a smaller margin."
+                    f"tile(s) to disappear. These tiles will be removed from the query."
                 )
+                # Filter out the empty tiles
+                buffered = buffered[~buffered.is_empty]
             tiles = buffered
 
         # Spatial query
