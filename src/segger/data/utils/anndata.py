@@ -247,13 +247,7 @@ def setup_anndata(
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
     model = sklearn.decomposition.PCA(n_components=cells_embedding_size, random_state=0)
     ad.varm['X_corr'] = model.fit_transform(C)
-    #---------------------------------------------------------------------------------
-
-    # Build gene embedding on filtered dataset
-    #C = np.corrcoef(ad[ad.obs['filtered']].layers['norm'].todense().T)
-    #C = np.nan_to_num(C, 0, posinf=True, neginf=True)
-    #model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
-    #ad.varm['X_corr'] = model.fit_transform(C)
+    del C, model
 
     # Build PCs on filtered cells and project all cells
     counts_sparse_gpu = cupyx.scipy.sparse.csr_matrix(ad.layers['norm'])
