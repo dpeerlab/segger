@@ -10,7 +10,6 @@ import pandas as pd
 import json
 import warnings
 import logging
-import sys
 
 from .cosmx import get_cosmx_polygons
 from .utils import (
@@ -32,6 +31,8 @@ from .fields import (
 
 # Ignore pandas warnings in CosMX transcripts file
 warnings.filterwarnings("ignore", category=DtypeWarning)
+
+logger = logging.getLogger(__name__)
 
 # Register of available ISTPreprocessor subclasses keyed by platform name.
 PREPROCESSORS = {}
@@ -137,7 +138,8 @@ class ISTPreprocessor(ABC):
         verbose : bool
             Whether to display logging messages
         """
-        logger = self._setup_logging(verbose)
+        if verbose:
+            logging.getLogger("segger").setLevel("INFO")
 
         self.tx_out = out_dir / 'transcripts.parquet'
         self.ad_out = out_dir / 'nucleus_boundaries.h5ad'
@@ -221,34 +223,6 @@ class ISTPreprocessor(ABC):
         
         return joined.rename(columns={"index_right": boundary_label})
     
-    def _setup_logging(self, verbose: bool = False) -> logging.Logger:
-        class TimeFilter(logging.Filter):
-            
-            def filter(self, record):
-                from datetime import datetime
-                try:
-                    last = self.last
-                except AttributeError:
-                    last = record.relativeCreated
-                delta = datetime.fromtimestamp(record.relativeCreated/1e3) - \
-                        datetime.fromtimestamp(last/1e3)
-                record.relative = '{0:.2f}'.format(
-                    delta.seconds + delta.microseconds/1e6)
-                self.last = record.relativeCreated
-                return True
-
-        logger = logging.getLogger()
-        logger.setLevel(logging.INFO if verbose else logging.WARNING)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler(sys.stdout)
-            logger.addHandler(handler)
-        for hndl in logger.handlers:
-            hndl.addFilter(TimeFilter())
-            hndl.setFormatter(logging.Formatter(
-                fmt="%(asctime)s (%(relative)ss) %(message)s"
-            ))
-        return logger
 
 
 @register_preprocessor("nanostring_cosmx")
