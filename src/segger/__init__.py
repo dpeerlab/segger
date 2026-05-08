@@ -17,16 +17,13 @@ def _get_pool_size():
         mr = mr.get_upstream()
     return mr.pool_size()
 
-def print_free_mem():
+def free_mem_str() -> str:
     stats = get_statistics()
     pool_size = _get_pool_size()
     _, total = cp.cuda.Device().mem_info
-
     in_use = stats.current_bytes
-    pool_free = pool_size - in_use         # room left in the pool
-    headroom = total - pool_size           # room left on device for pool growth
-
-    print(
+    pool_free = pool_size - in_use
+    return (
         f"In use: {in_use / 1e9:.1f} GB | "
         f"Pool free: {pool_free / 1e9:.1f} GB | "
         f"Pool: {pool_size / 1e9:.1f} GB | "
@@ -34,3 +31,6 @@ def print_free_mem():
         f"Peak: {stats.peak_bytes / 1e9:.1f} GB | "
         f"Count: {stats.current_count}"
     )
+
+def print_free_mem():
+    print(free_mem_str())
