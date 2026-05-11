@@ -119,7 +119,7 @@ def edge_index_to_knn(
     return neighbor_table
 
 
-def kdtree_neighbors(
+def kdtree_neighbors_deprecate(
     points: np.ndarray,
     max_k: int,
     max_dist: float,
@@ -144,6 +144,50 @@ def kdtree_neighbors(
     gc.collect()
     
     return edge_index, index_pointer
+
+
+def kdtree_neighbors(
+    points: np.ndarray,
+    max_k: int,
+    max_dist: float,
+    chunk_size: int = 2_000_000,
+    query: np.ndarray | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Wrapper for KDTree kNN and conversion to edge_index COO format.
+    TODO: Add description.
+    """
+
+    # init
+    max_memory = 0
+    q = points if query is None else query
+    N = q.shape[0]
+
+    # build tree
+    tree = KDTree(points, leafsize=100)
+
+    # TODO: Remove index pointer - is unused
+    edge_indices = []
+    for i in range(0, N, chunk_size):
+        # get neighbors
+        _, indices = tree.query(
+            q[i:i+chunk_size],
+            k=max_k,
+            distance_upper_bound=max_dist,
+            workers=-1,
+        )
+        indices = torch.from_numpy(indices.copy()) # copy release numpy arra
+
+        # get edges
+        edge_index, _ = knn_to_edge_index(indices, padding_value=N) # [0] is row-idx of source, [1] is col-idx of destination
+        edge_index[0] += i # shift row-idx by chunk offset
+        edge_indices.append(edge_index)
+
+    del indices, edge_index # remove big tensors before concatenation
+    del tree # 9GB for 600M transcripts
+    gc.collect()
+
+    edge_indices = torch.cat(edge_indices, dim=1)
+    return edge_indices, None
 
 
 def setup_transcripts_graph(
