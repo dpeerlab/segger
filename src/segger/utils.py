@@ -31,3 +31,7 @@ def setup_logging(level: str = "WARNING", log_file: str = None):
         handlers=handlers,
         force=True,  # override any previously set handlers
     )
+
+    segger_log_level = os.environ.get("SEGGER_LOG_LEVEL")
+    if segger_log_level:
+        logging.getLogger("segger").setLevel(segger_log_level.upper())

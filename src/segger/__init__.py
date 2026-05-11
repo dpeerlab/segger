@@ -20,14 +20,13 @@ def _get_pool_size():
 def free_mem_str() -> str:
     stats = get_statistics()
     pool_size = _get_pool_size()
-    _, total = cp.cuda.Device().mem_info
+    free, total = cp.cuda.Device().mem_info
     in_use = stats.current_bytes
     pool_free = pool_size - in_use
+    gpu_used = total - free
     return (
-        f"In use: {in_use / 1e9:.1f} GB | "
+        f"GPU used: {gpu_used / 1e9:.1f} GB | "
         f"Pool free: {pool_free / 1e9:.1f} GB | "
-        f"Pool: {pool_size / 1e9:.1f} GB | "
-        f"Total: {total / 1e9:.1f} GB | "
         f"Peak: {stats.peak_bytes / 1e9:.1f} GB | "
         f"Count: {stats.current_count}"
     )
