@@ -25,13 +25,14 @@ def get_quadtree_kwargs(
         A dictionary of keyword arguments including x_min, x_max, y_min,
         y_max, scale, and max_depth.
     """
-    # Calculate bounds
-    x_min = float(points.points.x.min())
-    x_max = float(points.points.x.max())
-    y_min = float(points.points.y.min())
-    y_max = float(points.points.y.max())
+    # Calculate bounds | Optimisation: Use interleaved view, without copying data
+    xy = cp.asarray(points.points.xy).reshape(-1, 2)  # zero-copy view                                                                                                                                                                                                                                                                                                                                                                                 
+    x_min = float(xy[:, 0].min())
+    x_max = float(xy[:, 0].max())                                                                                                                                                                                                                                                                                                                                                                                                                      
+    y_min = float(xy[:, 1].min())
+    y_max = float(xy[:, 1].max())       
 
-    # Get hyperparams for quadtree
+   # Get hyperparams for quadtree
     extent = max(x_max - x_min, y_max - y_min)
     max_depth = 1
     while extent // (1 << max_depth) > 0:
@@ -140,7 +141,7 @@ def get_quadtree_index(
     points: cuspatial.GeoSeries,
     max_size: int,
     with_bounds: bool = True,
-) -> tuple[cudf.Series, cudf.DataFrame]:
+) -> tuple[cudf.Series, cudf.DataFrame, dict]:
     """Build a cuSpatial quadtree from 2D point data.
 
     Parameters
@@ -190,7 +191,7 @@ def get_quadtree_index(
             y_max=y_max,
         )
 
-    return indices, quadtree
+    return indices, quadtree, kwargs
 
 
 def quadtree_to_geoseries(

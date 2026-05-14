@@ -315,11 +315,6 @@ class ISTEncoder(torch.nn.Module):
 
         x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
 
-        # Add positional embedding
-
-        # GeLu for some reason
-        x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
-
         # Graph convolutions with GATv2
         for conv_layer in self.conv_layers:
             x_dict = conv_layer(x_dict, edge_index_dict)

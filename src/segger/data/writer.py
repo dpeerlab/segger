@@ -13,9 +13,12 @@ from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
 from .utils.anndata import anndata_from_transcripts
 
+logger = logging.getLogger(__name__)
+
+
 class ISTSegmentationWriter(BasePredictionWriter):
     """TODO: Description
-    
+
     Parameters
     ----------
     output_directory : Path
@@ -31,14 +34,12 @@ class ISTSegmentationWriter(BasePredictionWriter):
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
         self.save_anndata = save_anndata
-        self.segger_logger = logging.getLogger(__name__)
 
         # setup debugging
         self.debug = debug
         self.path_debug = None
         self.n_tx_predicted = 0
         if debug:
-            logging.getLogger("segger").setLevel("DEBUG")
             self.path_debug = output_directory / "debug"
             self.path_debug.mkdir(exist_ok=True, parents=True)
 
@@ -64,21 +65,21 @@ class ISTSegmentationWriter(BasePredictionWriter):
         # write predictions as pickle
         if self.debug:
             import pickle
-            self.segger_logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
+            logger.debug(f"Saving predictions to {self.path_debug / 'predictions.pkl'}")
             with open(self.path_debug / "predictions.pkl", "wb") as f:
                 pickle.dump(predictions, f)
 
         # segment transcripts
-        self.segger_logger.debug("Assigning transcripts to cells...")
+        logger.debug("Assigning transcripts to cells...")
         obs = trainer.datamodule.ad.obs
-        segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=self.segger_logger)
+        segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=logger)
 
         # write transcripts
-        self.segger_logger.debug(f"Writing segmentation output to {self.output_directory}...")
+        logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
 
         # write anndata
-        self.segger_logger.debug("Writing AnnData output...")
+        logger.debug("Writing AnnData output...")
         if self.save_anndata:
             self.write_anndata(trainer, segmentation)
 
@@ -269,20 +270,20 @@ class ISTSegmentationWriter(BasePredictionWriter):
             return
         log_every = 50
         if batch_idx % log_every == 0:
-            self.segger_logger.info(
+            logger.info(
                 f"Finished prediction batch '{batch_idx}'. # TX so far {self.n_tx_predicted / 1e6:.1f}M"
             )
     
     def on_fit_start(self, trainer, pl_module):
         if not self.debug:
             return
-        self.segger_logger.debug(f"Saving adata to {self.path_debug / 'adata_debug.h5ad'}")
+        logger.debug(f"Saving adata to {self.path_debug / 'adata_debug.h5ad'}")
         trainer.datamodule.ad.write_h5ad(self.path_debug / "adata_debug.h5ad")
 
     def on_fit_end(self, trainer, pl_module):
         if not self.debug:
             return
         if self.debug:
-            self.segger_logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
+            logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
             trainer.save_checkpoint(self.path_debug / "trainer_state_final.ckpt")
 

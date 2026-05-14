@@ -206,3 +206,4 @@ __marimo__/
 .dev
 .dev/*
 *.pyc
+*memray*
