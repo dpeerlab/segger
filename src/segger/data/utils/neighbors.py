@@ -119,33 +119,6 @@ def edge_index_to_knn(
     return neighbor_table
 
 
-def kdtree_neighbors_deprecate(
-    points: np.ndarray,
-    max_k: int,
-    max_dist: float,
-    query: np.ndarray | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Wrapper for KDTree kNN and conversion to edge_index COO format.
-    TODO: Add description.
-    """
-    tree = KDTree(points, leafsize=100)
-    _, indices = tree.query(
-        points if query is None else query,
-        k=max_k,
-        distance_upper_bound=max_dist,
-        workers=-1,
-    )
-    del tree
-    
-    indices = torch.from_numpy(indices)
-    gc.collect()  # make sure numpy copy is gone before conversion
-    edge_index, index_pointer = knn_to_edge_index(indices)
-    del indices   # remove big indices tensor
-    gc.collect()
-    
-    return edge_index, index_pointer
-
-
 def kdtree_neighbors(
     points: np.ndarray,
     max_k: int,
