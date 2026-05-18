@@ -1260,7 +1260,7 @@ def validate(
         help="Minimum transcripts per cell (applies to all per-cell metrics).",
         validator=validators.Number(gt=0),
         group=group_validation,
-    )] = 20,
+    )] = 25,
     max_cells: Annotated[int, Parameter(
         help="Max cells sampled per metric (speed cap).",
         validator=validators.Number(gt=0),
@@ -1382,12 +1382,10 @@ def validate(
         "eau_cells_used": 0,
     }
     vd_empty = {
-        "vertical_doublet_pct_fast": float("nan"),
-        "vertical_doublet_global_pct_fast": float("nan"),
+        "vertical_doublet_median_coherence_fast": float("nan"),
         "vertical_doublet_cutoff_fast": float("nan"),
         "vertical_doublet_pixels_used_fast": 0,
         "vertical_doublet_candidate_cells_fast": 0,
-        "vertical_doublet_metric_cells_used_fast": 0,
         "vertical_doublet_cells_scored_fast": 0,
         "vertical_doublet_total_cells_fast": 0,
     }
@@ -1455,7 +1453,7 @@ def validate(
         "spurious_coexpression": "spurious_coexpression_fast",
         "morphological_match": "morphological_match_fast",
         "expression_angular_uniformity": "expression_angular_uniformity_fast",
-        "vertical_doublet": "vertical_doublet_pct_fast",
+        "vertical_doublet": "vertical_doublet_median_coherence_fast",
         "mecr": "mecr_fast",
     }
 

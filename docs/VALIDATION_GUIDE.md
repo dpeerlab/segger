@@ -202,7 +202,7 @@ See [Validation Metrics Reference — Metric Relationships](VALIDATION_METRICS.m
 - Use `--reference-cache-dir` to avoid re-downloading on repeated runs.
 - The `--scrna-celltype-column` default is `"cell_type"`. If your h5ad uses a different column name (e.g., `"celltype"`, `"annotation"`), set it explicitly.
 - A good reference has 10+ cell types with clear marker gene separation. If your reference has only 2-3 broad types, MECR and marker recall will be less informative.
-- **Absolute metric values depend heavily on the reference.** A tissue-matched CRC reference may give Contamination (CTM) of 1-2%, while a broad tissue atlas gives 7-13%, and a coarse-grained reference gives 14-19% — on the same data. However, **relative rankings between methods are stable** across references. Focus on which method is cleanest, not on whether contamination is "2%" or "15%".
+- **Absolute metric values depend heavily on the reference.** A tissue-matched CRC reference may give Contamination (CTM) of 1-2%, while a broad tissue atlas gives 7-13%, and a coarse-grained reference gives 14-19% — on the same data. Relative rankings are usually more stable than absolute values, but they are not guaranteed to be identical; refreshed PMR checks with the Segger similarity cutoff applied show middle-rank swaps between CRC Level1 and Large Intestine references. Focus on which method is cleanest, but report the reference and inspect rank-flow when making reference-dependent claims.
 - When possible, validate with two independent references to confirm that your conclusions hold. If you used an scRNA reference during alignment loss training, use a **different** reference for validation to avoid circular evaluation.
 
 ### Comparing Segmentations
@@ -282,12 +282,12 @@ Empirical testing (10 seeds × 12 methods × 2 scRNA references) shows that metr
 |--------|--------------------|-----------------------|--------------|
 | **BEI** | CV < 0.3% | N/A (reference-free) | Most robust — single run is sufficient |
 | **SCE** | CV = 0% | N/A (reference-free) | Deterministic — no subsampling, perfectly reproducible |
-| **PMR** | CV < 2% | 7–14 pp shift between tissue-matched vs broad atlas | Stable rankings; absolute values depend on reference |
+| **PMR** | CV < 2% | 5–15 pp shift between tissue-matched vs broad atlas | Top/bottom ranks stable in the refreshed cutoff-aware check; middle ranks can change |
 | **EAU** | CV < 2.5% | N/A (reference-free) | Stable; Baysor shows most variation |
 | **MM** | CV < 1.5% | N/A (reference-free) | Stable; ProSeg slightly more variable |
 | **CTM** | CV 1–12% | 4× inflation with broad vs tissue-matched reference | Least stable — average 3+ seeds for reliable comparison |
 
-**Method rankings are stable** across both seeds and references. The top-performing and worst-performing methods never swap positions. Mid-ranked methods may swap by 1–2 positions under CTM, but BEI, PMR, and SCE rankings are rock-solid.
+**Method rankings are generally more stable than absolute metric values**, but reference-dependent metrics should still be checked explicitly. In the refreshed PMR two-reference check using `xenium_crc/runs/rf_cell_r0p5` as the Segger default with `segger_similarity >= similarity_threshold` applied, Segger remained rank 1 and 10X Nucleus remained last, while Bering, ProSeg, and Baysor swapped middle ranks between CRC Level1 and Large Intestine. Mid-ranked methods may also swap by 1–2 positions under CTM.
 
 > **Practical advice:** If two methods differ by < 1 pp on CTM, the difference may not be meaningful. For all other metrics, differences > 0.5 pp (PMR) or > 0.005 (BEI, EAU) are reliable.
 

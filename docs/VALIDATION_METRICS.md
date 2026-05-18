@@ -22,7 +22,7 @@ For z-enabled datasets:
 
 | # | Metric | Abbrev. | Direction | CLI Flag |
 |---|--------|---------|-----------|----------|
-| 9 | Vertical Doublet | VD | Lower = better | `--vertical-doublet` / `--vd` |
+| 9 | Vertical Doublet | VD | Higher = better | `--vertical-doublet` / `--vd` |
 
 ### Global Parameters
 
@@ -38,7 +38,7 @@ All metrics that subsample cells use **stratified subsampling**: 10% of the budg
 
 ### Geometry
 
-Metrics that depend on cell shape use **PCA bounding ellipse** geometry computed from transcript point clouds. Border Expression Integrity (BEI) uses the Mahalanobis distance (from the per-cell covariance matrix) to partition transcripts into center and border zones — this is rotation-invariant and handles elongated cells correctly. Morphological Match (MM) projects transcript coordinates onto principal axes to derive semi-axes $a \geq b$ for area, elongation, and circularity features. Both approaches are fast, fully vectorized in Polars, and robust to transcript sparsity.
+Metrics that depend on cell shape use **PCA bounding ellipse** geometry computed from transcript point clouds. Morphological Match (MM) projects transcript coordinates onto principal axes to derive semi-axes $a \geq b$ for area, elongation, and circularity features. Border Expression Integrity (BEI) takes a simpler route: it splits each cell at the median Euclidean distance to the centroid, giving a balanced 50/50 center / border partition that is robust to cell shape and to small transcript counts. Both approaches are fast, fully vectorized in Polars, and robust to transcript sparsity.
 
 ---
 
@@ -226,28 +226,28 @@ A well-segmented cell's border region should have gene expression more similar t
 
 ### Steps
 
-1. Compute per-cell **covariance statistics** (mean, variance, correlation of x/y coordinates) via a single Polars `group_by`.
-2. Compute the **Mahalanobis distance** $d^2$ for each transcript relative to its cell centroid. This defines a PCA bounding ellipse that is rotation-invariant and naturally handles elongated cells:
+1. **Per-cell stats** (Polars `group_by`): centroid $(c_x, c_y)$ and transcript count. Cells with fewer than 25 transcripts (default `min_transcripts_per_cell=25`) are dropped. If more than `max_cells` (default 10 000) survive, spatial-tile subsampling reduces them to that cap.
+2. **Squared Euclidean distance to centroid** for each transcript:
 
-$$d^2 = \frac{1}{1 - \rho^2}\left(\tilde{x}^2 - 2\rho\,\tilde{x}\,\tilde{y} + \tilde{y}^2\right)$$
+$$d^2_i = (x_i - c_x)^2 + (y_i - c_y)^2$$
 
-   where $\tilde{x}, \tilde{y}$ are standardized coordinates and $\rho$ is the per-cell correlation.
-
-3. **Classify** each transcript as center or border using a per-cell quantile threshold: transcripts with $d^2$ in the inner $(1 - \text{erosion\_fraction})$ quantile are center; the rest are border. With the default `erosion_fraction=0.3`, the inner 70% of transcripts (by elliptical distance) form the center zone.
+3. **Classify** each transcript as center or border using a per-cell quantile threshold: transcripts with $d^2$ in the inner $(1 - \text{erosion\_fraction})$ quantile are center; the rest are border. With the default `erosion_fraction=0.5`, the split is at the **per-cell median distance** — exactly half the transcripts are center, half are border, regardless of cell shape.
 4. Build per-cell gene-expression dicts for center, border, and full profiles.
-5. Build **neighbor profiles** via a KD-tree on cell **centroids** (not transcripts — this is tiny, only ~3000 points). For each cell, average the full expression of its $k=10$ nearest neighboring cells.
+5. Build **neighbor profiles** via a KD-tree on cell **centroids** (not transcripts — this is tiny, only ~10 000 points). For each cell, average the full expression of its $k=10$ nearest neighboring cells.
 6. Compute cosine similarities:
    - $\text{sim}_{cb} = \cos(\mathbf{v}_{\text{center}},\; \mathbf{v}_{\text{border}})$
    - $\text{sim}_{bn} = \cos(\mathbf{v}_{\text{border}},\; \mathbf{v}_{\text{neighbor}})$
-7. Per-cell score:
+7. Per-cell score (asymmetric, one-sided):
 
-$$\text{ratio} = \frac{\text{sim}_{bn}}{\text{sim}_{cb}}, \qquad \text{score} = \frac{1}{1 + \max(0,\; \text{ratio} - 1)}$$
+$$\text{ratio} = \frac{\text{sim}_{bn}}{\text{sim}_{cb}} \quad \text{(if } \text{sim}_{cb} > 0.01\text{; else cell is skipped)}, \qquad \text{score} = \frac{1}{1 + \max(0,\; \text{ratio} - 1)}$$
 
-8. Final = transcript-count-weighted mean.
+   When the border looks at least as much like its own center as like the neighbors ($\text{ratio} \le 1$), the cell scores 1; otherwise the score decays smoothly toward 0 as leakage grows. Only neighbor-leakage is penalized.
 
-### Why PCA ellipse instead of bounding box
+8. Final = transcript-count-weighted mean across cells. The companion ratio is reported alongside as the underlying diagnostic.
 
-The original implementation used an axis-aligned bounding box eroded by a fixed fraction. This misclassifies transcripts in elongated or rotated cells — the corners of the box are outside the real cell shape, inflating the border zone with center-like transcripts and compressing scores. The PCA ellipse (Mahalanobis distance) adapts to each cell's shape and orientation, giving more accurate center/border partitioning. Empirically, both methods produce the same relative rankings between segmentation methods, but the ellipse version provides better discrimination at the top of the range (scores span 0.87–0.98 vs 0.75–0.96 for bbox) with no additional computational cost.
+### Why a median Euclidean split
+
+The split uses raw distance to the centroid and a 50/50 cut for two reasons. First, balancing the two halves keeps the cosine norms comparable (a tiny border is dominated by sampling noise; a tiny center is uninformative), so the resulting score is stable across cell shapes and counts. Second, a Euclidean partition has no covariance-matrix degeneracies in cells with few transcripts and no shape assumption to violate near tissue edges. An earlier elliptical (Mahalanobis) variant was equivalent on regular cells but failed gracefully on elongated, very small, or near-degenerate ones; the median-Euclidean version produces essentially identical method rankings without those edge cases.
 
 ### Output
 
@@ -354,42 +354,33 @@ $$\cos(\mathbf{v}_i, \mathbf{v}_j) = \frac{\mathbf{v}_i \cdot \mathbf{v}_j}{\|\m
 
 ## 9. Vertical Doublet (VD)
 
-**CLI flag:** `--vertical-doublet` / `--vd` · **Direction:** lower is better · **Requires:** source data with z-coordinates · **Typical runtime:** 5–15 s
+**CLI flag:** `--vertical-doublet` / `--vd` · **Direction:** higher is better (1.0 = perfect z-coherence) · **Requires:** source data with z-coordinates · **Typical runtime:** 5–15 s
 
 ### Idea
 
-Detects cells that span two vertically stacked cell layers by focusing on spatial "hotspot" regions where z-plane gene expression is already inconsistent. Only cells overlapping these hotspots are scored, making the metric robust to single-layer tissue.
+Detects cells that span two vertically stacked cell layers by focusing on spatial "hotspot" regions where z-plane gene expression is already inconsistent. Only cells overlapping these hotspots are scored. The headline metric is the **median per-cell z-coherence** across scored cells — low values indicate prevalent vertical-doublet behaviour.
 
 ### Steps
 
-1. **Pixel binning:** Bin source transcripts into $(x, y)$ grid pixels (3 µm).
-2. **Per-pixel z-halves:** For each pixel, split transcripts at the per-pixel median z. Compute gene-expression cosine similarity between upper and lower halves:
+1. **Pixel binning:** Bin source transcripts into $(x, y)$ grid pixels (default 20 µm).
+2. **Per-pixel z-halves:** For each pixel with at least `min_pixel_signal=300` transcripts, split at the per-pixel median z. Compute gene-expression cosine similarity between upper and lower halves:
 
 $$\text{integrity} = \cos(\mathbf{v}_{\text{lower}}, \mathbf{v}_{\text{upper}})$$
 
-3. **Gaussian smoothing:** Apply weighted Gaussian filter ($\sigma = 2.0$ pixels ≈ 6 µm) to the $(1 - \text{integrity})$ score map, similar to ovrlpy's message-passing z-center smoothing. Only data pixels contribute; no-data regions do not bleed in.
-4. **Hotspot detection:** Use `peak_local_max` on the smoothed doublet score map (min distance = 10 pixels, threshold = 0.5) to find hotspot peaks.
-5. **Per-cell scoring:** For cells overlapping hotspot pixels:
-   - Split transcripts at the per-cell median z.
-   - Compute cosine similarity between upper and lower halves.
-   - Cells with < 5 transcripts on the minor side get coherence = 1.0.
-   - Flag as doublet if coherence < 0.6.
-6. **Hotspot-restricted percentage** (`vertical_doublet_pct_fast`): hotspot-pixel-weighted fraction of flagged cells among hotspot-overlapping cells only.
-7. **Global percentage** (`vertical_doublet_global_pct_fast`): flagged cells / total assigned cells. This is more interpretable for cross-method comparison.
-
-> **Note:** The hotspot-restricted percentage (`pct_fast`) has an inherently biased denominator — it only considers cells in low-integrity regions, so values are high (50–95%) even for good segmentations. For absolute interpretation, use the global percentage (`global_pct_fast`), which typically ranges 0.4–1.5%. The hotspot-restricted percentage is still useful for relative ranking.
+3. **Gaussian smoothing:** Apply weighted Gaussian filter ($\sigma = 2.0$ pixels) to the $(1 - \text{integrity})$ score map. Only data pixels contribute; no-data regions do not bleed in.
+4. **Data-driven hotspot threshold:** Pick a cut on the raw per-pixel integrity distribution using `hotspot_method="otsu"` (default) — Otsu's between-class variance threshold separates the bimodal coherent vs incoherent populations. The legacy `hotspot_method="quantile"` (using the bottom `hotspot_quantile=0.10`) remains available as a fallback. Run `peak_local_max` on the smoothed map with `threshold_abs = 1 − cutoff` (no Li thresholding).
+5. **Per-cell scoring:** For cells overlapping hotspot pixels with at least 10 transcripts in BOTH the lower and upper z-halves, compute $\cos(\mathbf{v}_{\text{lower},c}, \mathbf{v}_{\text{upper},c})$ over genes. Cells failing the per-side gate are not scored.
+6. **Headline metric** (`vertical_doublet_median_coherence_fast`): the median of per-cell coherence values over scored cells. NaN when no cells are scored.
 
 ### Output
 
 | Key | Description |
 |-----|-------------|
-| `vertical_doublet_pct_fast` | Hotspot-restricted weighted doublet % (biased high — see note) |
-| `vertical_doublet_global_pct_fast` | Doublet cells / total cells (%) — more interpretable |
-| `vertical_doublet_cutoff_fast` | Hotspot integrity threshold |
+| `vertical_doublet_median_coherence_fast` | Median coherence over scored cells (higher = better) |
+| `vertical_doublet_cutoff_fast` | Data-driven integrity threshold (Otsu by default) |
 | `vertical_doublet_pixels_used_fast` | Hotspot pixels detected |
 | `vertical_doublet_candidate_cells_fast` | Cells overlapping hotspots |
-| `vertical_doublet_metric_cells_used_fast` | Cells meeting transcript minimum |
-| `vertical_doublet_cells_scored_fast` | Cells with enough transcripts on both sides |
+| `vertical_doublet_cells_scored_fast` | Cells with ≥ `min_side_transcripts` (default 10) in both halves |
 | `vertical_doublet_total_cells_fast` | Total assigned cells in dataset |
 
 ---
@@ -469,7 +460,7 @@ Running the full validation suite on a typical Xenium dataset (~20M transcripts,
 |---|---|---|
 | Coverage (COV) | < 1 s | Counting |
 | Expression Angular Uniformity (EAU) | 5–15 s | PCA ellipse normalisation + pairwise cosine similarity across 4 angular sectors |
-| Border Expression Integrity (BEI) | 5–15 s | Per-cell Mahalanobis distance (Polars) + centroid KD-tree |
+| Border Expression Integrity (BEI) | 5–15 s | Per-cell median Euclidean split (Polars) + centroid KD-tree |
 | Positive Marker Recall (PMR) | 5–15 s | Reference loading + sparse matrix |
 | Contamination (CTM) | 10–30 s | KD-tree neighbors + mixture model |
 | MECR | 2–60 s | ME pair discovery (cached after first run) |
@@ -483,11 +474,11 @@ To iterate quickly: start with reference-free metrics (Coverage, EAU, BEI) at ~2
 
 ### Caveats
 
-- **Reference dependence.** MECR, PMR, and Contamination (CTM) all depend on the scRNA reference. Absolute values shift dramatically with reference choice — a tissue-matched reference with many cell types and high gene overlap will produce lower Contamination and higher PMR than a broad atlas or a coarse-grained reference. However, **relative rankings between methods are stable** across references: the cleanest method remains cleanest, and the most contaminated remains most contaminated. Always report which reference was used. When possible, validate with two independent references to confirm that rankings hold, and focus on relative ordering rather than absolute thresholds.
+- **Reference dependence.** MECR, PMR, and Contamination (CTM) all depend on the scRNA reference. Absolute values shift dramatically with reference choice — a tissue-matched reference with many cell types and high gene overlap will produce lower Contamination and higher PMR than a broad atlas or a coarse-grained reference. Relative rankings are usually more stable than absolute values, but they are not guaranteed to be invariant: recent PMR checks show stable top/bottom methods with mid-ranked methods swapping under a broader large-intestine reference. Always report which reference was used. When possible, validate with two independent references and include a rank-flow or rank-change table rather than assuming rankings hold.
 - **Subsampling.** All per-cell metrics subsample to `--max-cells` for speed. The stratified subsampling strategy ensures extreme cells are represented, but results can vary slightly between runs if the seed changes.
 - **Cell size confounds.** Several metrics are indirectly affected by cell size. Large cells tend to have better EAU (more transcripts per sector = more stable expression vectors) and better PMR (more transcripts = higher chance of detecting markers) but worse MECR (larger spatial extent = more gene diversity). When comparing across methods with different typical cell sizes, interpret scores in context of the cell size distribution.
 - **Cytoplasmic localization.** Spurious Coexpression uses a cytoplasmic normalization factor to account for genes that are naturally expressed more in the cytoplasm than the nucleus. Without this correction, methods that capture cytoplasmic transcripts would be unfairly penalized. The correction down-weights gene pairs where both genes have high cytoplasmic-to-nuclear ratios.
-- **Vertical Doublet denominator.** The hotspot-restricted percentage (`vertical_doublet_pct_fast`) is inherently high (50–95%) because it only scores cells in low-integrity regions. Use `vertical_doublet_global_pct_fast` (doublet cells / total cells) for absolute interpretation — typical range is 0.4–1.5%.
+- **Vertical Doublet hotspot bias.** Only cells overlapping data-driven hotspot pixels (low-coherence regions) are scored, so the median coherence reflects the *worst* parts of the segmentation, not the dataset as a whole. Use `vertical_doublet_pixels_used_fast` and `vertical_doublet_cells_scored_fast` to gauge denominator size; if either is very small, treat the headline value as noisy.
 - **Spurious Coexpression scale.** With cytoplasmic normalization enabled, absolute values are very small (typically 1e-5 to 3e-4). The metric measures *excess* Jaccard above the nuclear baseline, weighted by cytoplasmic penalty — so the absolute numbers represent the weighted-average excess co-occurrence beyond what nuclei already show. The relative ranking across methods is more informative than the absolute scale.
 
 ---
@@ -509,26 +500,38 @@ The coefficient of variation (CV) across 10 random seeds measures how much each 
 | **PMR** | 0.34–1.98 | Stable; slightly more variable with Large Intestine reference |
 | **CTM** | 1.07–11.66 | Least stable metric; CRC Level1 reference shows CV up to 12% |
 
-**Practical implication:** BEI, SCE, and MM produce essentially identical results across subsamples — a single run is sufficient. PMR and EAU show minor variation (< 2%) that does not affect method rankings. CTM is the most sensitive to subsampling, particularly with the tissue-matched CRC reference where absolute contamination values are small (3–7%), making the denominator effect larger. For CTM, consider averaging 3–5 runs or using `--max-cells 10000` (higher than default) for more stable estimates.
+**Practical implication:** BEI, SCE, and MM produce essentially identical results across subsamples — a single run is sufficient. PMR and EAU show minor subsampling variation (< 2%), but PMR can still change method ordering when the scRNA reference changes. CTM is the most sensitive to subsampling, particularly with the tissue-matched CRC reference where absolute contamination values are small (3–7%), making the denominator effect larger. For CTM, consider averaging 3–5 runs or using `--max-cells 10000` (higher than default) for more stable estimates.
 
 ### Reference Sensitivity
 
-Absolute metric values shift substantially between references, but **method rankings are preserved**:
+Absolute metric values shift substantially between references. Rankings are more robust than absolute scores, but PMR rank changes can occur for closely spaced methods:
 
 | Metric | CRC Level1 range | Large Intestine range | Shift direction |
 |--------|-------------------|----------------------|-----------------|
-| **PMR** | 71–86% | 61–78% | CRC gives 7–14 pp higher (tissue-matched reference has better gene overlap) |
+| **PMR** | 71.4–83.3% | 60.7–73.9% | CRC gives 5.5–14.2 pp higher; middle ranks can swap |
 | **CTM** | 3.5–6.5% | 19–27% | Large Intestine inflates 4× (broader atlas → more "foreign" genes flagged) |
 
-The **ranking order** across all 12 methods is identical regardless of which reference is used:
-- PMR: Segger v2 sf3.2 and v1 3µm consistently rank highest; 10X Nucleus and Bering rank lowest.
+Updated PMR reference check (`max_cells=10000`, seed 42, 10 µm marker-vicinity radius) used `xenium_crc/runs/rf_cell_r0p5/segger_segmentation.parquet` as the Segger default, after applying the run's effective assignment cutoff (`segger_similarity >= similarity_threshold`):
+
+| Method | CRC PMR | CRC rank | Large Intestine PMR | Large Intestine rank | Rank delta |
+|--------|--------:|---------:|--------------------:|---------------------:|-----------:|
+| Segger (`rf_cell_r0p5`, cutoff-filtered) | 83.26 | 1 | 73.88 | 1 | 0 |
+| 10X Cell | 82.08 | 2 | 73.62 | 2 | 0 |
+| ProSeg | 82.06 | 3 | 67.86 | 4 | +1 |
+| Baysor | 75.10 | 4 | 67.16 | 5 | +1 |
+| Bering | 73.36 | 5 | 67.89 | 3 | -2 |
+| 10X Nucleus | 71.45 | 6 | 60.70 | 6 | 0 |
+
+This means the best and worst PMR methods remain stable in this check, but Bering, ProSeg, and Baysor change order under the broader reference. The regenerated rank-flow and table live under `segger-analysis/notebooks/fov_analysis/figures/pmr_reference_comparison/` as `pmr_reference_rank_flow_figure_rf_cell_r0p5_cutoff_default.pdf` and `pmr_reference_rank_changes_figure_rf_cell_r0p5_cutoff_default.tsv`.
+
+- PMR: Segger (`rf_cell_r0p5`, cutoff-filtered) is rank 1 for both references; mid-ranked methods swap between CRC Level1 and Large Intestine.
 - CTM: Segger v2 3D and v2 align consistently cleanest; 10X Cell most contaminated.
 
 ### Ranking Stability
 
 Method rankings were computed per seed and compared. Key findings:
 - **BEI and SCE** produce perfectly stable rankings — no rank swaps across any seed.
-- **PMR** is highly stable; the top-3 and bottom-3 methods never change rank.
+- **PMR** is stable to subsampling, but not fully invariant to reference choice. In the refreshed two-reference check, top and bottom ranks were stable while middle ranks changed.
 - **CTM** shows the most rank instability, with mid-ranked methods (ranks 4–8) occasionally swapping. Top and bottom methods are stable.
 - **MM** is stable for extreme-ranked methods but shows some mid-range swaps, especially between methods with similar morphology.
 
@@ -536,8 +539,8 @@ Method rankings were computed per seed and compared. Key findings:
 
 1. **For robust comparison:** Focus on BEI + PMR + SCE — these three span reference-free and reference-dependent evaluation with minimal subsampling noise.
 2. **For CTM:** Report mean ± std across 3+ seeds, or use a larger `--max-cells` value. Do not interpret small CTM differences (< 1 pp) as meaningful.
-3. **Always report the scRNA reference used.** PMR and CTM absolute values are not comparable across references. When comparing published results, only compare method rankings.
-4. **Two-reference validation** is recommended for any claim about reference-dependent metrics. If rankings hold across both references, the conclusion is robust.
+3. **Always report the scRNA reference used.** PMR and CTM absolute values are not comparable across references, and PMR rank swaps can occur for closely spaced methods.
+4. **Two-reference validation** is recommended for any claim about reference-dependent metrics. If rankings hold across both references, the conclusion is robust; if they do not, report the rank-flow and interpret the affected methods as reference-sensitive.
 
 ---
 
@@ -550,8 +553,7 @@ The table below gives empirically observed ranges across multiple segmentation a
 | Coverage (COV) % | Higher = better | 40–95% | < 40% or > 95% | Very high values may indicate over-extended boundaries |
 | BEI | Higher = better | 0.86–0.98 | < 0.85 | Tight boundaries score lower; ProSeg-style expansion scores highest |
 | EAU | Higher = better | 0.41–0.63 | < 0.40 | Larger scale factors improve EAU (more transcripts per sector) |
-| VD % (global) | Lower = better | 0.4–1.5% | > 2% | Nucleus-only boundaries have fewest doublets |
-| VD % (hotspot) | Lower = better | 50–95% | — | Biased denominator; use for ranking only, not absolute interpretation |
+| VD median coherence | Higher = better | 0.55–0.85 | < 0.45 | Median per-cell z-coherence at hotspots; nucleus-only boundaries score highest |
 | SCE | Lower = better | 1e-5 to 3e-4 | — | Very small scale due to cytoplasmic normalization; compare relatively |
 | MM | Higher = better | 0.72–0.98 | < 0.70 | Methods that expand beyond platform boundaries score lower |
 | PMR | Higher = better | 53–72% | < 40% | Depends heavily on scRNA reference quality and gene overlap |
@@ -582,5 +584,5 @@ Reference-dependent metrics (PMR, Contamination, MECR) are sensitive to the scRN
 
 - **Tissue-matched references** (e.g., CRC-specific) give lower Contamination and higher PMR because cell types and gene programs align well with the spatial data.
 - **Broad atlas references** (e.g., organ-level from CellxGENE) inflate Contamination (often 5–10x higher) and slightly reduce PMR, because coarser cell type definitions and imperfect gene overlap introduce noise into the mixture model.
-- **Relative rankings between segmentation approaches are stable** across reference choices. The cleanest method remains cleanest regardless of which reference is used.
+- **Relative rankings between segmentation approaches are more stable than absolute values**, but PMR mid-rank swaps can occur across reference choices. Treat closely spaced rank differences as reference-sensitive unless they hold in a two-reference check.
 - When possible, validate with two independent references to confirm that your conclusions hold. If you used an scRNA reference during alignment loss training, use a **different** reference for validation to avoid circular evaluation.

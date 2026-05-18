@@ -51,7 +51,7 @@ Three reference-free metrics assess boundary quality from purely spatial and exp
 
 **Border Expression Integrity (BEI)** splits each cell into a center zone and a border zone, then asks: does the border's gene expression look more like the cell's own center, or more like its neighbors? If your borders are leaking, the border zone picks up neighbor signal. Expect scores of 0.85–0.98; anything below 0.80 is a red flag.
 
-BEI adapts to cell shape automatically — it uses an elliptical distance measure that handles elongated and rotated cells without configuration. One caveat: for very large cells whose borders are far from any neighbor, the score can be artificially high because there's simply no neighbor signal to leak in. Cross-check with other metrics if your cells are unusually large.
+The split is plain and balanced: for each cell, transcripts inside the median Euclidean distance to the centroid are the center, the rest is the border (a 50/50 cut, regardless of shape). The border is compared to (i) the cell's own center and (ii) the averaged profile of the 10 nearest cells via cosine similarity; cells whose border looks more like the neighbors than like their own center are penalized, others receive a perfect 1. Cells with fewer than 25 transcripts are skipped. One caveat: for very large cells whose borders are far from any neighbor, the score can be artificially high because there's simply no neighbor signal to leak in. Cross-check with other metrics if your cells are unusually large.
 
 **Expression Angular Uniformity (EAU)** divides each cell into four angular quadrants and compares their gene expression profiles. If a boundary is pulling in transcripts from one particular neighbor, the sector facing that neighbor will have a visibly different expression profile. This makes EAU especially good at catching *directional* contamination — leakage from one specific side of the cell.
 
@@ -81,7 +81,7 @@ Because SCE uses all cells without subsampling, it's perfectly deterministic —
 
 **Vertical Doublet (VD)** is a specialized metric for tissues with z-coordinate data. It detects cells that span two vertically stacked cell layers — something 2D metrics are completely blind to. It first identifies spatial hotspots where z-plane expression is inconsistent, then checks whether cells in those regions show different gene programs in their upper and lower halves.
 
-Two numbers are reported. The *global percentage* (flagged doublets / total cells, typically 0.4–1.5%) is the interpretable one. The *hotspot-restricted percentage* (50–95%) sounds alarming but is expected — it only counts cells that were already in suspicious regions.
+The headline number is the **median per-cell z-coherence** at hotspots, $\cos(\mathbf{v}_\text{lower}, \mathbf{v}_\text{upper})$, taken over cells with ≥10 transcripts in each z-half. Higher is better: 1.0 means upper and lower halves share gene programs; values near zero mean the cell straddles two distinct biology layers. Hotspot pixels themselves are picked from a data-driven Otsu cut on the raw integrity distribution, so the threshold adapts to each dataset rather than relying on a fixed cutoff.
 
 ## How metrics relate
 
@@ -121,7 +121,7 @@ Positive Marker Recall and Contamination shift dramatically depending on which s
 - A tissue-matched reference gives **7–14 percentage points higher** Positive Marker Recall than a broad atlas, because the marker genes overlap better with your spatial panel.
 - Contamination **inflates roughly 4×** with a broad atlas — coarser cell-type definitions make more transcripts look "foreign."
 
-These shifts reflect the reference, not the segmentation. The critical finding is that **rankings never change**. The best method stays best and the worst stays worst, regardless of reference. So when comparing methods, focus on ordering rather than absolute numbers. And always report which reference you used.
+These shifts reflect the reference, not the segmentation. Rankings are more robust than absolute scores, but they are not guaranteed to be identical. In the refreshed PMR check using `xenium_crc/runs/rf_cell_r0p5` as the Segger default with the effective similarity cutoff applied (`segger_similarity >= similarity_threshold`), Segger stayed rank 1, 10X Cell stayed rank 2, and 10X Nucleus stayed rank 6 across CRC Level1 and Large Intestine references, while Bering, ProSeg, and Baysor changed middle-order ranks. So when comparing methods, report the reference and include a rank-flow or rank-change table for reference-dependent metrics.
 
 ### When is a difference real?
 
@@ -204,7 +204,7 @@ Empirically observed across multiple approaches on Xenium data. Treat these as r
 | Contamination | 1–17% | > 20% |
 | MECR | 0.006–0.020 | > 0.05 |
 | Spurious Coexpression | 1e-5 to 3e-4 | Compare relatively |
-| Vertical Doublet (global) | 0.4–1.5% | > 2% |
+| Vertical Doublet (median coherence) | 0.55–0.85 | < 0.45 |
 
 > Contamination ranges depend heavily on the scRNA reference. Tissue-matched references give 1–7%; broad atlases give 10–17% on identical data. This is a reference effect, not a quality difference.
 
@@ -215,7 +215,7 @@ Empirically observed across multiple approaches on Xenium data. Treat these as r
 - **Use `--tissue-type`** to auto-fetch a reference from CellxGENE Census if you don't have a local h5ad.
 - **Set `--scrna-celltype-column`** if your reference uses something other than `"cell_type"` (common alternatives: `"celltype"`, `"annotation"`, `"cell_ontology_class"`).
 - **Pick a good reference.** 10+ cell types with clear marker separation gives the most informative results. With only 2–3 broad types, MECR and PMR lose discriminative power.
-- **Validate with two references** when making claims about reference-dependent metrics. If rankings hold across both, the conclusion is solid.
+- **Validate with two references** when making claims about reference-dependent metrics. If rankings hold across both, the conclusion is solid; if they move, report the rank-flow and treat the affected methods as reference-sensitive.
 - **Sparse tissue** (< 50 transcripts/cell): PMR will be low regardless — not enough transcripts to detect all markers. EAU also drops out (needs ≥ 5 per sector). Lean on MECR and Coverage.
 - **Dense tissue** (> 500 transcripts/cell): BEI and EAU are at their most reliable. MECR can get noisy if many genes are broadly expressed.
 - **No reference at all?** You still get four metrics: Coverage, BEI, EAU, and Vertical Doublet (if you have z-data). That covers the basics.
