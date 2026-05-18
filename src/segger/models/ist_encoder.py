@@ -308,8 +308,6 @@ class ISTEncoder(torch.nn.Module):
         Tensor
             Output node features after passing through the Segger model.
         """
-        logger.debug(f"ISTEncoder forward: tx={x_dict['tx'].shape}, bd={x_dict['bd'].shape}")
-
         # Linearly project embedding to input dim
         x_dict = {k: self.lin_first[k](x) for k, x in x_dict.items()}
 
