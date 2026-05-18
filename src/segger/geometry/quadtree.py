@@ -1,5 +1,3 @@
-import logging
-
 from shapely import from_ragged_array, GeometryType
 from typing import Literal
 import geopandas as gpd
@@ -177,6 +175,8 @@ def get_quadtree_index(
     scale = kwargs['scale']
     max_depth = kwargs['max_depth']
 
+    logger.debug(f"Building quadtree on {len(points)} points with max_size={max_size}, max_depth={max_depth}")
+
     # Calculate quadtree on region (retry on invalid tree, see issue #40)
     for i in range(max_retries + 1):
         indices, quadtree = cuspatial.quadtree_on_points(
@@ -200,6 +200,8 @@ def get_quadtree_index(
             f"cuSpatial returned an invalid quadtree after {max_retries + 1} "
             f"attempts (see segger issue #40)."
         )
+
+    logger.debug(f"Quadtree built: {int((~quadtree['is_internal_node']).sum())} leaves")
 
     # Add bounds of tiles
     if with_bounds:

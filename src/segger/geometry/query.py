@@ -4,6 +4,7 @@ import numpy as np
 import cuspatial
 import cudf
 import cupy as cp
+import logging
 
 from .conversion import (
     polygons_to_geoseries,
@@ -13,6 +14,8 @@ from .quadtree import (
     get_quadtree_index,
     get_quadtree_kwargs,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _points_in_polygons_contains(
@@ -220,6 +223,8 @@ def points_in_polygons(
             f"Unsupported predicate '{predicate}'. Supported predicates are "
             f"'contains' and 'intersects'."
         )
+    logger.debug(f"points_in_polygons: {len(points)} points, {len(polygons)} polygons, predicate='{predicate}'")
+
     # Convert geometries to GeoSeries on GPU
     points = points_to_geoseries(points, backend='cuspatial')
     polygons = polygons_to_geoseries(polygons, backend='cuspatial')

@@ -13,6 +13,9 @@ from torch.nn import (
 )
 import torch
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 # --- Test positional encoding ---
 
@@ -281,6 +284,7 @@ class ISTEncoder(torch.nn.Module):
             out_channels,
             types=("tx", "bd")
         )
+        logger.debug(f"ISTEncoder: n_genes={n_genes}, in={in_channels}, hidden={hidden_channels}, out={out_channels}, layers={n_mid_layers + 2}")
 
     def forward(
         self,
@@ -304,6 +308,8 @@ class ISTEncoder(torch.nn.Module):
         Tensor
             Output node features after passing through the Segger model.
         """
+        logger.debug(f"ISTEncoder forward: tx={x_dict['tx'].shape}, bd={x_dict['bd'].shape}")
+
         # Linearly project embedding to input dim
         x_dict = {k: self.lin_first[k](x) for k, x in x_dict.items()}
 
