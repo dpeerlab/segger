@@ -260,7 +260,6 @@ class TilePredictDataset(Dataset):
                 )
             sample = self.data.subgraph(subset)
             sample.set_value_dict('predict_mask', p_mask)
-            sample.set_value_dict('global_index', subset)
             return sample
 
         else:  # is homogenous Data
@@ -279,7 +278,6 @@ class TilePredictDataset(Dataset):
                 (pos[subset, 1] >= inner[1]) &
                 (pos[subset, 1] <= inner[3])
             )
-            sample['global_index'] = subset
             return sample
 
 
