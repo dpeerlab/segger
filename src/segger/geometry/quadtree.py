@@ -145,7 +145,7 @@ def get_quadtree_index(
     points: cuspatial.GeoSeries,
     max_size: int,
     with_bounds: bool = True,
-    max_retries: int = 3,
+    max_retries: int = 5,
 ) -> tuple[cudf.Series, cudf.DataFrame, dict]:
     """Build a cuSpatial quadtree from 2D point data.
 
@@ -193,7 +193,8 @@ def get_quadtree_index(
         # check if valid (see segger issue #40)
         if is_quadtree_valid(quadtree, len(points)):
             break
-        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retrying with increased max_size.")
+        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size * 2}.")
+        max_size += 10000
     else:
         raise RuntimeError(
             f"cuSpatial returned an invalid quadtree after {max_retries + 1} "
