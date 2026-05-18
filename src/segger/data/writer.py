@@ -94,6 +94,9 @@ class ISTSegmentationWriter(BasePredictionWriter):
         tx = trainer.datamodule.tx
         transcripts = (
             segmentation
+            .filter(
+                pl.col("segger_similarity") >= pl.col("similarity_threshold"),
+            )
             .join(
                 tx.select([
                     tx_fields.row_index,
