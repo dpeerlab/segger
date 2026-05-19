@@ -8,7 +8,7 @@ import torch
 
 from .partition import PartitionDataset
 from .tiling import Tiling
-
+from .._patches import chunked_nonzero as _chunked_nonzero
 
 class TileFitDataset(PartitionDataset):
     """
@@ -229,12 +229,12 @@ class TilePredictDataset(Dataset):
             for node_type in self.data.node_types:
                 pos: torch.Tensor = self.data[node_type]['pos']
                 # Row indices of masked elements inside tile w/ margin
-                subset[node_type] = (
+                subset[node_type] = _chunked_nonzero(
                     (pos[:, 0] >= outer[0]) &
                     (pos[:, 0] <  outer[2]) &
                     (pos[:, 1] >= outer[1]) &
                     (pos[:, 1] <  outer[3])
-                ).nonzero().flatten()
+                )
                 p_mask[node_type] = (
                     (pos[subset[node_type], 0] >= inner[0]) &
                     (pos[subset[node_type], 0] <= inner[2]) &
@@ -243,7 +243,6 @@ class TilePredictDataset(Dataset):
                 )
             sample = self.data.subgraph(subset)
             sample.set_value_dict('predict_mask', p_mask)
-            sample.set_value_dict('global_index', subset)
             return sample
 
         else:  # is homogenous Data
@@ -253,7 +252,8 @@ class TilePredictDataset(Dataset):
                 (pos[:, 0] <  outer[2]) &
                 (pos[:, 1] >= outer[1]) &
                 (pos[:, 1] <  outer[3])
-            ).nonzero().flatten()
+            )
+            subset = _chunked_nonzero(subset)
             sample = self.data.subgraph(subset)
             sample['predict_mask'] = (
                 (pos[subset, 0] >= inner[0]) &
@@ -261,7 +261,6 @@ class TilePredictDataset(Dataset):
                 (pos[subset, 1] >= inner[1]) &
                 (pos[subset, 1] <= inner[3])
             )
-            sample['global_index'] = subset
             return sample
 
 
