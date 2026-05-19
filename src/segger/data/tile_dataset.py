@@ -8,8 +8,8 @@ import torch
 
 from .partition import PartitionDataset
 from .tiling import Tiling
+from .._patches import chunked_nonzero as _chunked_nonzero
 
-_INT_MAX = 2**31 - 1
 class TileFitDataset(PartitionDataset):
     """
     Partitions a PyG graph based on a geometric tiling of its nodes.
@@ -215,23 +215,6 @@ class TilePredictDataset(Dataset):
         geometry = self.tiling.tiles[idx]
         return self._subset(geometry)
 
-    def _chunked_nonzero(mask: torch.Tensor, chunk: int = 2 ** 30) -> torch.Tensor:
-        """Helper function to compute nonzero indices in chunks to avoid INT_MAX limit. (issue: https://github.com/dpeerlab/segger/issues/44)"""
-        
-        # pytorch supports only INT_MAX elements for subsetting.
-        if mask.numel() <= _INT_MAX or mask.device.type != "cuda":
-            return mask.nonzero(as_tuple=False).flatten()
-        
-        # split nonzero into chunks
-        parts = []
-        for i, m in enumerate(mask.split(chunk)):
-            idx = m.nonzero(as_tuple=False).flatten()
-            if idx.numel():
-                parts.append(idx + i * chunk)
-        
-        # re-assemble
-        return torch.cat(parts)
-
     def _subset(self, bounds: shapely.Polygon) -> Data | HeteroData:
         """Slices all node attributes within bounds.
 
@@ -246,7 +229,7 @@ class TilePredictDataset(Dataset):
             for node_type in self.data.node_types:
                 pos: torch.Tensor = self.data[node_type]['pos']
                 # Row indices of masked elements inside tile w/ margin
-                subset[node_type] = self._chunked_nonzero(
+                subset[node_type] = _chunked_nonzero(
                     (pos[:, 0] >= outer[0]) &
                     (pos[:, 0] <  outer[2]) &
                     (pos[:, 1] >= outer[1]) &
@@ -270,7 +253,7 @@ class TilePredictDataset(Dataset):
                 (pos[:, 1] >= outer[1]) &
                 (pos[:, 1] <  outer[3])
             )
-            subset = self._chunked_nonzero(subset)
+            subset = _chunked_nonzero(subset)
             sample = self.data.subgraph(subset)
             sample['predict_mask'] = (
                 (pos[subset, 0] >= inner[0]) &
