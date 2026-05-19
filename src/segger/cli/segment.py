@@ -293,19 +293,163 @@ def segment(
         "save_anndata",
         group=group_io,
     )] = registry.get_default("save_anndata"),
-    
+
+    max_genes_per_split: Annotated[int | None, Parameter(
+        help=(
+            "If set, partition the gene panel into stratified disjoint "
+            "subsets of at most this many genes each (using the existing "
+            "Phenograph gene clustering), run segmentation sequentially on "
+            "each subset, and concatenate outputs into a single final "
+            "segger_segmentation.parquet. Used to cap per-run VRAM (e.g. "
+            "Athera ~50 GB) for large gene panels. Default: None (single "
+            "run, identical to today's behavior)."
+        ),
+        validator=validators.Number(gt=0),
+        group=group_io,
+    )] = None,
+
+    gene_split_seed: Annotated[int, Parameter(
+        help=(
+            "RNG seed for the stratified gene-panel split. Note: Phenograph "
+            "clustering itself is not seeded, so cluster ids may shift "
+            "slightly between runs even with this fixed."
+        ),
+        group=group_io,
+    )] = 0,
+
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = "none",
 ):
     """Run cell segmentation on spatial transcriptomics data."""
-
-    # Setup logger and debug directory
     logger = logging.getLogger(__name__)
 
-    # Remove SLURM environment autodetect
+    # Remove SLURM environment autodetect (applies to both single-run and split paths)
     from lightning.pytorch.plugins.environments import SLURMEnvironment
     SLURMEnvironment.detect = lambda: False
+
+    segment_kwargs = dict(
+        input_directory=input_directory,
+        cells_representation=cells_representation,
+        node_representation_dim=node_representation_dim,
+        cells_min_counts=cells_min_counts,
+        cells_clusters_n_neighbors=cells_clusters_n_neighbors,
+        cells_clusters_resolution=cells_clusters_resolution,
+        genes_clusters_n_neighbors=genes_clusters_n_neighbors,
+        genes_clusters_resolution=genes_clusters_resolution,
+        transcripts_max_k=transcripts_max_k,
+        transcripts_max_dist=transcripts_max_dist,
+        prediction_mode=prediction_mode,
+        prediction_max_k=prediction_max_k,
+        prediction_expansion_ratio=prediction_expansion_ratio,
+        tiling_margin_training=tiling_margin_training,
+        tiling_margin_prediction=tiling_margin_prediction,
+        max_nodes_per_tile=max_nodes_per_tile,
+        max_edges_per_batch=max_edges_per_batch,
+        n_epochs=n_epochs,
+        n_mid_layers=n_mid_layers,
+        n_heads=n_heads,
+        hidden_channels=hidden_channels,
+        out_channels=out_channels,
+        learning_rate=learning_rate,
+        use_positional_embeddings=use_positional_embeddings,
+        normalize_embeddings=normalize_embeddings,
+        segmentation_loss=segmentation_loss,
+        transcripts_margin=transcripts_margin,
+        segmentation_margin=segmentation_margin,
+        transcripts_loss_weight_start=transcripts_loss_weight_start,
+        transcripts_loss_weight_end=transcripts_loss_weight_end,
+        cells_loss_weight_start=cells_loss_weight_start,
+        cells_loss_weight_end=cells_loss_weight_end,
+        segmentation_loss_weight_start=segmentation_loss_weight_start,
+        segmentation_loss_weight_end=segmentation_loss_weight_end,
+        save_anndata=save_anndata,
+        debug=debug,
+    )
+
+    if max_genes_per_split is None:
+        _segment_once(output_directory=output_directory, gene_subset=None, **segment_kwargs)
+        return
+
+    # Gene-panel splitting path.
+    import functools
+    from ._split_runner import run_with_gene_split
+
+    segment_once_bound = functools.partial(_segment_once, **segment_kwargs)
+
+    precluster_kwargs = dict(
+        input_directory=input_directory,
+        cells_embedding_size=node_representation_dim,
+        cells_min_counts=cells_min_counts,
+        genes_min_counts=registry.get_default("genes_min_counts"),
+        cells_clusters_n_neighbors=cells_clusters_n_neighbors,
+        cells_clusters_resolution=cells_clusters_resolution,
+        genes_clusters_n_neighbors=genes_clusters_n_neighbors,
+        genes_clusters_resolution=genes_clusters_resolution,
+        # ISTDataModule defaults segmentation_graph_mode to "nucleus"; we match.
+        segmentation_graph_mode="nucleus",
+    )
+
+    run_with_gene_split(
+        output_directory=output_directory,
+        max_genes_per_split=max_genes_per_split,
+        gene_split_seed=gene_split_seed,
+        segment_once=segment_once_bound,
+        precluster_kwargs=precluster_kwargs,
+    )
+
+
+def _segment_once(
+    *,
+    output_directory: Path,
+    gene_subset: list[str] | None,
+    # ---- ISTDataModule kwargs ----
+    input_directory: Path,
+    cells_representation: str,
+    node_representation_dim: int,
+    cells_min_counts: int,
+    cells_clusters_n_neighbors: int,
+    cells_clusters_resolution: float,
+    genes_clusters_n_neighbors: int,
+    genes_clusters_resolution: float,
+    transcripts_max_k: int,
+    transcripts_max_dist: float,
+    prediction_mode: str,
+    prediction_max_k: int | None,
+    prediction_expansion_ratio: float | None,
+    tiling_margin_training: float,
+    tiling_margin_prediction: float,
+    max_nodes_per_tile: int,
+    max_edges_per_batch: int,
+    # ---- LitISTEncoder kwargs ----
+    n_epochs: int,
+    n_mid_layers: int,
+    n_heads: int,
+    hidden_channels: int,
+    out_channels: int,
+    learning_rate: float,
+    use_positional_embeddings: bool,
+    normalize_embeddings: bool,
+    segmentation_loss: str,
+    transcripts_margin: float,
+    segmentation_margin: float,
+    transcripts_loss_weight_start: float,
+    transcripts_loss_weight_end: float,
+    cells_loss_weight_start: float,
+    cells_loss_weight_end: float,
+    segmentation_loss_weight_start: float,
+    segmentation_loss_weight_end: float,
+    # ---- writer kwargs ----
+    save_anndata: bool,
+    debug: bool,
+) -> None:
+    """Single end-to-end segmentation pass (fit + predict + write).
+
+    Extracted so the gene-split orchestrator can invoke the same code path
+    once per subset. When `gene_subset` is None, behaviour is identical to
+    the pre-split implementation.
+    """
+    logger = logging.getLogger(__name__)
 
     # Setup Lightning Data Module
     logger.debug(f"Setting up ISTDataModule | Input Directory: '{input_directory}'")
@@ -328,8 +472,9 @@ def segment(
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
+        gene_subset=gene_subset,
     )
-    
+
     # Setup Lightning Model
     logger.debug("Setting up LitISTEncoder model")
     from ..models import LitISTEncoder
@@ -361,7 +506,7 @@ def segment(
     from lightning.pytorch.loggers import CSVLogger
     from lightning.pytorch import Trainer
     from ..data import ISTSegmentationWriter
-    
+
     csvlogger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(
         output_directory,

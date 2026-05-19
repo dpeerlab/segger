@@ -125,6 +125,10 @@ class ISTDataModule(LightningDataModule):
         Fraction of tiles used for training; the rest for validation.
     edges_per_batch : int, default=1_000_000
         Maximum number of edges per batch in the DataLoader.
+    gene_subset : list[str] or None, default=None
+        Optional list of gene names. If provided, transcripts are filtered to
+        this subset before AnnData/graph construction; used by the
+        gene-subset splitting orchestrator (`--max-genes-per-split`).
     """
     input_directory: Path
     num_workers: int = 8
@@ -150,7 +154,8 @@ class ISTDataModule(LightningDataModule):
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
     edges_per_batch: int = 1_000_000
-    
+    gene_subset: list[str] | None = None
+
     def __post_init__(self):
         """TODO: Description
         """
@@ -171,6 +176,23 @@ class ISTDataModule(LightningDataModule):
         pp = get_preprocessor(self.input_directory)
         tx = self.tx = pp.transcripts
         bd = self.bd = pp.boundaries
+
+        # Optional gene-panel subsetting (used by --max-genes-per-split).
+        # Filters the full transcript table to a panel-diverse slice of genes
+        # before any clustering/graph-building happens downstream.
+        if self.gene_subset is not None:
+            tx = self.tx = tx.filter(
+                pl.col(tx_fields.feature).is_in(self.gene_subset)
+            )
+            if tx.height == 0:
+                raise ValueError(
+                    "No transcripts remain after `gene_subset` filter; "
+                    "check that subset gene names match the input panel."
+                )
+            self.logger.debug(
+                f"Filtered transcripts to {len(self.gene_subset)} genes; "
+                f"{tx.height} transcripts remain."
+            )
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":
