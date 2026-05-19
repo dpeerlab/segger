@@ -131,6 +131,10 @@ class ISTDataModule(LightningDataModule):
         Optional reference AnnData object used to compute gene-gene correlation features.
     gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
         Strategy for handling genes present in the data but missing from the reference.
+    gene_subset : list[str] or None, default=None
+        Optional list of gene names. If provided, transcripts are filtered to
+        this subset before AnnData/graph construction; used by the
+        gene-subset splitting orchestrator (`--max-genes-per-split`).
     """
     input_directory: Path
     num_workers: int = 8
@@ -159,7 +163,9 @@ class ISTDataModule(LightningDataModule):
     gene_corr_reference_path: Path | None = None
     gene_missing_strategy: Literal["error", "remove", "fill"] = "error"
     debug_dir: Path | None = None
-    
+    gene_subset: list[str] | None = None
+
+
     def __post_init__(self):
         """TODO: Description
         """
@@ -180,6 +186,23 @@ class ISTDataModule(LightningDataModule):
         pp = get_preprocessor(self.input_directory)
         tx = self.tx = pp.transcripts
         bd = self.bd = pp.boundaries
+
+        # Optional gene-panel subsetting (used by --max-genes-per-split).
+        # Filters the full transcript table to a panel-diverse slice of genes
+        # before any clustering/graph-building happens downstream.
+        if self.gene_subset is not None:
+            tx = self.tx = tx.filter(
+                pl.col(tx_fields.feature).is_in(self.gene_subset)
+            )
+            if tx.height == 0:
+                raise ValueError(
+                    "No transcripts remain after `gene_subset` filter; "
+                    "check that subset gene names match the input panel."
+                )
+            self.logger.debug(
+                f"Filtered transcripts to {len(self.gene_subset)} genes; "
+                f"{tx.height} transcripts remain."
+            )
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":
