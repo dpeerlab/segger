@@ -1,7 +1,6 @@
 import os
 import logging
 from ..utils import setup_logging
-setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"))
 
 from cyclopts import App, Parameter, Group, validators
 from typing import Annotated, Literal
@@ -315,7 +314,20 @@ def segment(
     """Run cell segmentation on spatial transcriptomics data."""
 
     # Setup logger and debug directory
+    setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"), debug=debug)
     logger = logging.getLogger(__name__)
+
+    debug_dir = None
+    if debug:
+        import json
+        debug_dir = Path(output_directory) / "debug"
+        debug_dir.mkdir(exist_ok=True, parents=True)
+        params = {k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+                  for k, v in locals().items()
+                  if k not in {"logger", "debug_dir", "json"}}
+        with open(debug_dir / "params.json", "w") as f:
+            json.dump(params, f, indent=2, default=str)
+        logger.info(f"Saved run params to {debug_dir / 'params.json'}")
 
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
@@ -344,6 +356,7 @@ def segment(
         edges_per_batch=max_edges_per_batch,
         gene_corr_reference_path=gene_corr_reference_path,
         gene_missing_strategy=gene_missing_strategy,
+        debug_dir=debug_dir,
     )
     
     # Setup Lightning Model

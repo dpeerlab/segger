@@ -193,7 +193,7 @@ def get_quadtree_index(
         # check if valid (see segger issue #40)
         if is_quadtree_valid(quadtree, len(points)):
             break
-        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size * 2}.")
+        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size + 10000}.")
         max_size += 10000
     else:
         raise RuntimeError(

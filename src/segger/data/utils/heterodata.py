@@ -140,6 +140,7 @@ def setup_heterodata(
         max_k=transcripts_graph_max_k,
         max_dist=transcripts_graph_max_dist,
     )
+    logger.info(f"  tx-neighbors-tx edges: {data['tx', 'neighbors', 'tx'].edge_index.shape[1]:,}")
 
     # Reference segmentation graph
     logger.debug("Setting up segmentation graph")
@@ -147,6 +148,7 @@ def setup_heterodata(
         transcripts,
         segmentation_mask=segmentation_mask,
     )
+    logger.info(f"  tx-belongs-bd edges: {data['tx', 'belongs', 'bd'].edge_index.shape[1]:,}")
 
     # Transcript-cell graph for prediction
     logger.debug("Setting up prediction graph")
@@ -157,5 +159,6 @@ def setup_heterodata(
         buffer_ratio=prediction_graph_buffer_ratio,
         mode=prediction_graph_mode,
     )
+    logger.info(f"  tx-neighbors-bd edges: {data['tx', 'neighbors', 'bd'].edge_index.shape[1]:,}")
 
     return data

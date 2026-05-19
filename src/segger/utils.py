@@ -13,7 +13,7 @@ class MemFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: str = "WARNING", log_file: str = None):
+def setup_logging(level: str = "WARNING", log_file: str = None, debug: bool = False):
     fmt = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d%(mem)s - %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -32,6 +32,9 @@ def setup_logging(level: str = "WARNING", log_file: str = None):
         force=True,  # override any previously set handlers
     )
 
-    segger_log_level = os.environ.get("SEGGER_LOG_LEVEL")
-    if segger_log_level:
-        logging.getLogger("segger").setLevel(segger_log_level.upper())
+    if debug:
+        logging.getLogger("segger").setLevel(logging.DEBUG)
+    else:
+        segger_log_level = os.environ.get("SEGGER_LOG_LEVEL")
+        if segger_log_level:
+            logging.getLogger("segger").setLevel(segger_log_level.upper())
