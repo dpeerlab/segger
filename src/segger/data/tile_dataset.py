@@ -40,6 +40,8 @@ def query_ptr(csr, query) -> torch.Tensor:
     return values[base + within]
 
 
+logger = logging.getLogger(__name__)
+
 class TileFitDataset(PartitionDataset):
     """
     Partitions a PyG graph based on a geometric tiling of its nodes.
