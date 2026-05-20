@@ -151,7 +151,10 @@ def setup_heterodata(
     logger.info(f"  tx-belongs-bd edges: {data['tx', 'belongs', 'bd'].edge_index.shape[1]:,}")
 
     # Transcript-cell graph for prediction
-    logger.debug("Setting up prediction graph")
+    logger.debug(
+        f"Prediction graph: {len(transcripts)} tx vs {len(boundaries)} bd "
+        f"(mode='{prediction_graph_mode}') → quadtree on tx"
+    )
     data['tx', 'neighbors', 'bd'].edge_index = setup_prediction_graph(
         transcripts,
         boundaries,

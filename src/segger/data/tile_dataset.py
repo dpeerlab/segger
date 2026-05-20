@@ -2,6 +2,7 @@ from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
+import logging
 import shapely
 import torch
 
@@ -9,6 +10,8 @@ import torch
 from .partition import PartitionDataset
 from .tiling import Tiling
 from .._patches import chunked_nonzero as _chunked_nonzero
+
+logger = logging.getLogger(__name__)
 
 class TileFitDataset(PartitionDataset):
     """
@@ -115,32 +118,42 @@ class TileFitDataset(PartitionDataset):
         """
         Generates partition labels for all nodes using the tiling object.
         """
+        n_tiles = len(self.tiling.tiles)
         if isinstance(data, HeteroData):
             partition = dict()
             for node_type in data.node_types:
-                partition[node_type] = self.tiling.label(
-                    data[node_type][self.geometry_key]
+                geom = data[node_type][self.geometry_key]
+                logger.debug(
+                    f"TileFit label '{node_type}': {len(geom)} geoms vs {n_tiles} tiles → quadtree"
                 )
+                partition[node_type] = self.tiling.label(geom)
             return partition
         else:  # isinstance(data, Data)
-            return self.tiling.label(data[self.geometry_key])
-        
+            geom = data[self.geometry_key]
+            logger.debug(f"TileFit label: {len(geom)} geoms vs {n_tiles} tiles → quadtree")
+            return self.tiling.label(geom)
+
     def _mask_data(self, data: Data | HeteroData) -> Data | HeteroData:
         """
         Adds a boolean 'mask' attribute to each node indicating whether it is
         within a specified margin of a tile's boundary.
         """
+        n_tiles = len(self.tiling.tiles)
         if isinstance(data, HeteroData):
             for node_type in data.node_types:
-                data[node_type]['mask'] = self.tiling.mask(
-                    data[node_type][self.geometry_key],
-                    self.margin,
+                geom = data[node_type][self.geometry_key]
+                logger.debug(
+                    f"TileFit mask '{node_type}': {len(geom)} geoms vs {n_tiles} tiles "
+                    f"(margin={self.margin}) → quadtree"
                 )
+                data[node_type]['mask'] = self.tiling.mask(geom, self.margin)
         else:  # isinstance(data, Data)
-            data['mask'] = self.tiling.mask(
-                data[self.geometry_key],
-                self.margin
+            geom = data[self.geometry_key]
+            logger.debug(
+                f"TileFit mask: {len(geom)} geoms vs {n_tiles} tiles "
+                f"(margin={self.margin}) → quadtree"
             )
+            data['mask'] = self.tiling.mask(geom, self.margin)
         return data
 
     def _drop_geometry(self, data: Data | HeteroData) -> Data | HeteroData:

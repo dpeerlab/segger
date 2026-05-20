@@ -240,12 +240,18 @@ class ISTDataModule(LightningDataModule):
         )
 
         # Tile graph dataset
-        self.logger.debug("Tiling graph dataset...")
         node_positions = torch.vstack([
             self.data['tx']['pos'],
             self.data['bd']['pos'],
         ])
+        self.logger.debug(
+            f"Tiling graph: {len(node_positions)} positions, "
+            f"mode='{self.tiling_mode}'"
+        )
         if self.tiling_mode == "adaptive":
+            self.logger.debug(
+                f"  → QuadTreeTiling (max_tile_size={self.tiling_nodes_per_tile})"
+            )
             self.tiling = QuadTreeTiling(
                 positions=node_positions,
                 max_tile_size=self.tiling_nodes_per_tile,

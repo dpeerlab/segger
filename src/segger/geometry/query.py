@@ -147,6 +147,10 @@ def _points_in_polygons_intersects(
     pts_ixn = points.iloc[idx_missing]
     ply_ixn = polygons_to_geoseries(polygons, backend='geopandas')
     if len(pts_ixn) >= max_unassigned_points:
+        logger.debug(
+            f"intersects buffer-filter: {len(pts_ixn)} unassigned pts vs "
+            f"{len(ply_ixn)} buffered polys → 2nd quadtree"
+        )
         ply_buf = polygons_to_geoseries(
             ply_ixn.buffer(boundary_buffer),
             backend='cuspatial',
