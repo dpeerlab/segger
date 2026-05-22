@@ -15,6 +15,20 @@ from .neighbors import (
 
 logger = logging.getLogger(__name__)
 
+
+def _sort_by_src(edge_index: torch.Tensor) -> torch.Tensor:
+    """Sort edges by source. This helps with faster subgraph extraction in `_patches.py`."""
+    if edge_index.device.type == "cuda":
+        # torch on CUDA can run into INT_MAX issues for large graphs (2**31 edges). Cupy can handle larger arrays.
+        import cupy as cp
+        perm = torch.as_tensor(
+            cp.argsort(cp.asarray(edge_index[0]), kind='stable'),
+            device=edge_index.device,
+        ).long()
+    else:
+        perm = torch.argsort(edge_index[0], stable=True)
+    return edge_index[:, perm].contiguous()
+
 def setup_heterodata(
     transcripts: pl.DataFrame,
     boundaries: gpd.GeoDataFrame,
@@ -135,18 +149,15 @@ def setup_heterodata(
 
     # Transcript neighbors graph
     logger.debug("Setting up transcript neighbors graph")
-    data['tx', 'neighbors', 'tx'].edge_index = setup_transcripts_graph(
-        transcripts,
-        max_k=transcripts_graph_max_k,
-        max_dist=transcripts_graph_max_dist,
+    data['tx', 'neighbors', 'tx'].edge_index = _sort_by_src(
+        setup_transcripts_graph(transcripts, max_k=transcripts_graph_max_k, max_dist=transcripts_graph_max_dist)
     )
     logger.info(f"  tx-neighbors-tx edges: {data['tx', 'neighbors', 'tx'].edge_index.shape[1]:,}")
 
     # Reference segmentation graph
     logger.debug("Setting up segmentation graph")
-    data['tx', 'belongs', 'bd'].edge_index = setup_segmentation_graph(
-        transcripts,
-        segmentation_mask=segmentation_mask,
+    data['tx', 'belongs', 'bd'].edge_index = _sort_by_src(
+        setup_segmentation_graph(transcripts, segmentation_mask=segmentation_mask)
     )
     logger.info(f"  tx-belongs-bd edges: {data['tx', 'belongs', 'bd'].edge_index.shape[1]:,}")
 
@@ -155,12 +166,14 @@ def setup_heterodata(
         f"Prediction graph: {len(transcripts)} tx vs {len(boundaries)} bd "
         f"(mode='{prediction_graph_mode}') → quadtree on tx"
     )
-    data['tx', 'neighbors', 'bd'].edge_index = setup_prediction_graph(
-        transcripts,
-        boundaries,
-        max_k=prediction_graph_max_k,
-        buffer_ratio=prediction_graph_buffer_ratio,
-        mode=prediction_graph_mode,
+    data['tx', 'neighbors', 'bd'].edge_index = _sort_by_src(
+        setup_prediction_graph(
+            transcripts,
+            boundaries,
+            max_k=prediction_graph_max_k,
+            buffer_ratio=prediction_graph_buffer_ratio,
+            mode=prediction_graph_mode,
+        )
     )
     logger.info(f"  tx-neighbors-bd edges: {data['tx', 'neighbors', 'bd'].edge_index.shape[1]:,}")
 
