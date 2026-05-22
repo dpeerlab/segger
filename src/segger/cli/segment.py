@@ -389,6 +389,7 @@ def segment(
 
     from lightning.pytorch.loggers import CSVLogger
     from lightning.pytorch import Trainer
+    from lightning.pytorch.callbacks import ModelCheckpoint
     from ..data import ISTSegmentationWriter
     
     csvlogger = CSVLogger(output_directory)
@@ -397,11 +398,23 @@ def segment(
         save_anndata=save_anndata,
         debug=debug,
     )
+    callbacks = [writer]
+
+    if debug:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=Path(output_directory) / "checkpoints",
+            filename="epoch={epoch:02d}",
+            save_top_k=-1,
+            every_n_epochs=1,
+        )
+        callbacks.append(checkpoint_callback)
+
+
     trainer = Trainer(
         logger=csvlogger,
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
-        callbacks=[writer],
+        callbacks=callbacks,
     )
 
     # Training
