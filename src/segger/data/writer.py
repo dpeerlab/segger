@@ -262,7 +262,9 @@ class ISTSegmentationWriter(BasePredictionWriter):
             
             # cleanup
             del arr
-            gc.collect()
+
+        #  move from loop to after: ctx_hp 55.4s → 2.3s, pancreas 83.0s → 1.4s)
+        gc.collect()
 
         # backfill failed features in using the 80% quantile of thresholds
         global_threshold = np.quantile([t["similarity_threshold"] for t in thresholds], .5)
