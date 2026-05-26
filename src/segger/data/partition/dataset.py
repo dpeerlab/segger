@@ -384,10 +384,17 @@ class PartitionDataset(torch.utils.data.Dataset):
         permutation = torch.argsort(labels)
 
         # Pointers to splits between partitions
-        sizes = torch.bincount(
-            labels[permutation],
-            minlength=self._num_partitions,
-        )
+        try:
+            sizes = torch.bincount(
+                labels[permutation],
+                minlength=self._num_partitions,
+            )
+        # catch: RuntimeError: bincount only supports 1-d non-negative integral inputs
+        except RuntimeError as e:
+            labels_sub = labels[permutation][:10]
+            raise RuntimeError(
+                f"N Labels: {len(labels)}, Sample labels: {labels_sub}, Min label: {labels_sub.min()}, Max label: {labels_sub.max()}. Original error message: {str(e)}"
+            ) from e
         indptr = torch.cat((
             torch.tensor([0], device=labels.device),
             torch.cumsum(sizes, dim=0)

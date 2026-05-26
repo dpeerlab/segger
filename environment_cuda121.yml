@@ -1,0 +1,29 @@
+channels:
+  - pytorch
+  - nvidia
+  - rapidsai
+  - conda-forge
+
+dependencies:
+  - python>=3.11,<3.12
+
+  # RAPIDS 24.10 — last release compatible with CUDA 12.1 runtime
+  - cuspatial=24.10
+  - cudf=24.10
+  - cuml=24.10
+  - cugraph=24.10
+  - cupy
+
+  - pip
+  - pip:
+      - --extra-index-url https://pypi.nvidia.com
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - --find-links https://data.pyg.org/whl/torch-2.5.0+cu121.html
+      - torch==2.5.*
+      - torchvision==0.20.*
+      - lightning
+      - torch-geometric
+      - torch-scatter
+      - torch-sparse
+      - cupy-cuda12x>=12.2,<13.0
+      - --editable .

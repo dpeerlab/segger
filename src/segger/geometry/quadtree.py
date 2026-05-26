@@ -7,10 +7,13 @@ import numpy as np
 import cupy as cp
 import cuspatial
 import cudf
+import logging
 
+logger = logging.getLogger(__name__)
 
 def get_quadtree_kwargs(
     points: cuspatial.GeoSeries,
+    margin_bounds: float = 50,
 ) -> dict[str, float]:
     """Calculate keyword arguments for `cuspatial.quadtree_on_points`.
 
@@ -25,13 +28,14 @@ def get_quadtree_kwargs(
         A dictionary of keyword arguments including x_min, x_max, y_min,
         y_max, scale, and max_depth.
     """
-    # Calculate bounds
-    x_min = float(points.points.x.min())
-    x_max = float(points.points.x.max())
-    y_min = float(points.points.y.min())
-    y_max = float(points.points.y.max())
+    # Calculate bounds | Optimisation: Use interleaved view, without copying data
+    xy = cp.asarray(points.points.xy).reshape(-1, 2)  # zero-copy view                                                                                                                                                                                                                                                                                                                                                                                 
+    x_min = float(xy[:, 0].min()) - margin_bounds
+    x_max = float(xy[:, 0].max()) + margin_bounds
+    y_min = float(xy[:, 1].min()) - margin_bounds
+    y_max = float(xy[:, 1].max()) + margin_bounds
 
-    # Get hyperparams for quadtree
+   # Get hyperparams for quadtree
     extent = max(x_max - x_min, y_max - y_min)
     max_depth = 1
     while extent // (1 << max_depth) > 0:
@@ -135,12 +139,12 @@ def get_quadrant_bounds(
     
     return quadtree
 
-
 def get_quadtree_index(
     points: cuspatial.GeoSeries,
     max_size: int,
     with_bounds: bool = True,
-) -> tuple[cudf.Series, cudf.DataFrame]:
+    max_retries: int = 5,
+) -> tuple[cudf.Series, cudf.DataFrame, dict]:
     """Build a cuSpatial quadtree from 2D point data.
 
     Parameters
@@ -150,8 +154,10 @@ def get_quadtree_index(
     max_size : int
         Maximum number of points allowed in a single tile.
     with_bounds : bool, optional
-        Whether to return the x, y bounds of each leaf with the quadtree 
+        Whether to return the x, y bounds of each leaf with the quadtree
         DataFrame. Default is True.
+    max_retries : int, optional
+        Retries on invalid tree, each growing ``max_size`` by 5%. Default 6.
 
     Returns
     -------
@@ -169,28 +175,45 @@ def get_quadtree_index(
     scale = kwargs['scale']
     max_depth = kwargs['max_depth']
 
-    # Calculate quadtree on region
-    indices, quadtree = cuspatial.quadtree_on_points(
-        points,
-        x_min=x_min,
-        x_max=x_max,
-        y_min=y_min,
-        y_max=y_max,
-        scale=scale,
-        max_depth=max_depth,
-        max_size=max_size,
-    )
+    logger.debug(f"Building quadtree on {len(points)} points with max_size={max_size}, max_depth={max_depth}")
+
+    # Calculate quadtree on region (retry on invalid tree, see issue #40)
+    for i in range(max_retries + 1):
+        indices, quadtree = cuspatial.quadtree_on_points(
+            points,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+            scale=scale,
+            max_depth=max_depth,
+            max_size=max_size,
+        )
+
+        # check if valid (see segger issue #40)
+        if is_quadtree_valid(quadtree, len(points)):
+            break
+        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size + 10000}.")
+        max_size += 10000
+    else:
+        raise RuntimeError(
+            f"cuSpatial returned an invalid quadtree after {max_retries + 1} "
+            f"attempts (see segger issue #40)."
+        )
+
+    logger.debug(f"Quadtree built: {int((~quadtree['is_internal_node']).sum())} leaves")
+
     # Add bounds of tiles
     if with_bounds:
         quadtree = get_quadrant_bounds(
-            quadtree, 
+            quadtree,
             x_min=x_min,
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
         )
 
-    return indices, quadtree
+    return indices, quadtree, kwargs
 
 
 def quadtree_to_geoseries(
@@ -234,3 +257,14 @@ def quadtree_to_geoseries(
             (ring_offset.get(), part_offset.get()),
         )
         return gpd.GeoSeries(geometry)
+
+def is_quadtree_valid(quadtree: cudf.DataFrame, n_points: int) -> bool:
+    """
+    Checks that the leaves index every input point exactly once. cuSpatial
+    sometimes generates overlapping leaves that double-count points, which
+    causes missing tiles and `-1` labels downstream, as well as other unexpected behavior
+    (see segger issue #40).
+    """
+    leaves = quadtree[~quadtree['is_internal_node']]
+    points_tree = leaves["length"].sum()
+    return points_tree == n_points

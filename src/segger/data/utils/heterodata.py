@@ -3,7 +3,7 @@ from typing import Literal
 import geopandas as gpd
 import polars as pl
 import scanpy as sc
-import numpy as np
+import logging
 import torch
 
 from ...io import TrainingBoundaryFields, TrainingTranscriptFields
@@ -13,6 +13,7 @@ from .neighbors import (
     setup_prediction_graph,
 )
 
+logger = logging.getLogger(__name__)
 
 def setup_heterodata(
     transcripts: pl.DataFrame,
@@ -45,7 +46,7 @@ def setup_heterodata(
         tx_fields.gene_cluster,
     ]
     # Update transcripts with fields for training
-    
+    logger.debug(f"Setting up HeteroData with {len(transcripts)} transcripts and {len(boundaries)} boundaries")
     transcripts = (
         transcripts
         # Reset columns
@@ -113,6 +114,7 @@ def setup_heterodata(
     data = HeteroData()
 
     # Transcript nodes
+    logger.debug("Setting up transcript nodes")
     data['tx']['x'] = transcripts[tx_fields.gene_encoding].to_torch()
     data['tx']['cluster'] = transcripts[tx_fields.gene_cluster].to_torch()
     data['tx']['index'] = transcripts[tx_fields.row_index].to_torch()
@@ -120,6 +122,7 @@ def setup_heterodata(
     data['tx']['pos'] = data['tx']['geometry']
 
     # Boundary nodes
+    logger.debug("Setting up boundary nodes")
     data['bd']['x'] = torch.tensor(
         adata.obsm[cells_embedding_key]).to(torch.float)
     data['bd']['cluster'] = torch.tensor(
@@ -131,19 +134,24 @@ def setup_heterodata(
     data['bd']['pos'] = data['bd']['geometry']
 
     # Transcript neighbors graph
+    logger.debug("Setting up transcript neighbors graph")
     data['tx', 'neighbors', 'tx'].edge_index = setup_transcripts_graph(
         transcripts,
         max_k=transcripts_graph_max_k,
         max_dist=transcripts_graph_max_dist,
     )
+    logger.info(f"  tx-neighbors-tx edges: {data['tx', 'neighbors', 'tx'].edge_index.shape[1]:,}")
 
     # Reference segmentation graph
+    logger.debug("Setting up segmentation graph")
     data['tx', 'belongs', 'bd'].edge_index = setup_segmentation_graph(
         transcripts,
         segmentation_mask=segmentation_mask,
     )
+    logger.info(f"  tx-belongs-bd edges: {data['tx', 'belongs', 'bd'].edge_index.shape[1]:,}")
 
     # Transcript-cell graph for prediction
+    logger.debug("Setting up prediction graph")
     data['tx', 'neighbors', 'bd'].edge_index = setup_prediction_graph(
         transcripts,
         boundaries,
@@ -151,5 +159,6 @@ def setup_heterodata(
         buffer_ratio=prediction_graph_buffer_ratio,
         mode=prediction_graph_mode,
     )
+    logger.info(f"  tx-neighbors-bd edges: {data['tx', 'neighbors', 'bd'].edge_index.shape[1]:,}")
 
     return data

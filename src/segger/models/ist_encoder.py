@@ -13,6 +13,9 @@ from torch.nn import (
 )
 import torch
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 # --- Test positional encoding ---
 
@@ -281,6 +284,7 @@ class ISTEncoder(torch.nn.Module):
             out_channels,
             types=("tx", "bd")
         )
+        logger.debug(f"ISTEncoder: n_genes={n_genes}, in={in_channels}, hidden={hidden_channels}, out={out_channels}, layers={n_mid_layers + 2}")
 
     def forward(
         self,
@@ -313,11 +317,6 @@ class ISTEncoder(torch.nn.Module):
             for k, x in x_dict.items()
             }
 
-        x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
-
-        # Add positional embedding
-
-        # GeLu for some reason
         x_dict = {k: F.gelu(x) for k, x in x_dict.items()}
 
         # Graph convolutions with GATv2

@@ -101,11 +101,15 @@ class Tiling(ABC):
                 mitre_limit=margin / 2,
             )
             missing = buffered.is_empty.sum()
+            # handling tiles too small for buffer
             if missing != 0:
-                raise ValueError(
+                import warnings
+                warnings.warn(
                     f"Margin ({margin}) is too large, causing {missing} "
-                    f"tile(s) to disappear. Consider using a smaller margin."
+                    f"tile(s) to disappear. These tiles will be removed from the query."
                 )
+                # Filter out the empty tiles
+                buffered = buffered[~buffered.is_empty]
             tiles = buffered
 
         # Spatial query
@@ -199,7 +203,7 @@ class QuadTreeTiling(Tiling):
     ):
         # Calculate QuadTree on points and set as tiles
         points = points_to_geoseries(positions, backend='cuspatial')
-        _, quadtree = get_quadtree_index(
+        _, quadtree, _ = get_quadtree_index(
             points,
             max_tile_size,
             with_bounds=True,

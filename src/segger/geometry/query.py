@@ -3,6 +3,8 @@ import geopandas as gpd
 import numpy as np
 import cuspatial
 import cudf
+import cupy as cp
+import logging
 
 from .conversion import (
     polygons_to_geoseries,
@@ -12,6 +14,8 @@ from .quadtree import (
     get_quadtree_index,
     get_quadtree_kwargs,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _points_in_polygons_contains(
@@ -49,12 +53,11 @@ def _points_in_polygons_contains(
     # Setup inputs for spatial join
     if max_size is None:
         max_size = 10000 if len(points) > 5e7 else 1000  # heuristic
-    point_indices, quadtree = get_quadtree_index(
+    point_indices, quadtree, kwargs = get_quadtree_index(
         points,
         max_size,
         with_bounds=False
     )
-    kwargs = get_quadtree_kwargs(points)
 
     # Perform spatial join in batches
     batch_idx = np.linspace(0, len(polygons), (batches or 1) + 1, dtype=int)
@@ -220,6 +223,8 @@ def points_in_polygons(
             f"Unsupported predicate '{predicate}'. Supported predicates are "
             f"'contains' and 'intersects'."
         )
+    logger.debug(f"points_in_polygons: {len(points)} points, {len(polygons)} polygons, predicate='{predicate}'")
+
     # Convert geometries to GeoSeries on GPU
     points = points_to_geoseries(points, backend='cuspatial')
     polygons = polygons_to_geoseries(polygons, backend='cuspatial')

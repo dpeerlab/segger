@@ -7,9 +7,9 @@ from pathlib import Path
 import geopandas as gpd
 import polars as pl
 import pandas as pd
+import json
 import warnings
 import logging
-import sys
 
 from .cosmx import get_cosmx_polygons
 from .utils import (
@@ -21,7 +21,8 @@ from .fields import (
     MerscopeBoundaryFields,
     StandardTranscriptFields,
     StandardBoundaryFields,
-    XeniumTranscriptFields, 
+    XeniumTranscriptFields,
+    XeniumTranscriptFieldsV1,
     XeniumBoundaryFields,
     CosMxTranscriptFields,
     CosMxBoundaryFields,
@@ -30,6 +31,8 @@ from .fields import (
 
 # Ignore pandas warnings in CosMX transcripts file
 warnings.filterwarnings("ignore", category=DtypeWarning)
+
+logger = logging.getLogger(__name__)
 
 # Register of available ISTPreprocessor subclasses keyed by platform name.
 PREPROCESSORS = {}
@@ -135,7 +138,8 @@ class ISTPreprocessor(ABC):
         verbose : bool
             Whether to display logging messages
         """
-        logger = self._setup_logging(verbose)
+        if verbose:
+            logging.getLogger("segger").setLevel("INFO")
 
         self.tx_out = out_dir / 'transcripts.parquet'
         self.ad_out = out_dir / 'nucleus_boundaries.h5ad'
@@ -219,34 +223,6 @@ class ISTPreprocessor(ABC):
         
         return joined.rename(columns={"index_right": boundary_label})
     
-    def _setup_logging(self, verbose: bool = False) -> logging.Logger:
-        class TimeFilter(logging.Filter):
-            
-            def filter(self, record):
-                from datetime import datetime
-                try:
-                    last = self.last
-                except AttributeError:
-                    last = record.relativeCreated
-                delta = datetime.fromtimestamp(record.relativeCreated/1e3) - \
-                        datetime.fromtimestamp(last/1e3)
-                record.relative = '{0:.2f}'.format(
-                    delta.seconds + delta.microseconds/1e6)
-                self.last = record.relativeCreated
-                return True
-
-        logger = logging.getLogger()
-        logger.setLevel(logging.INFO if verbose else logging.WARNING)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler(sys.stdout)
-            logger.addHandler(handler)
-        for hndl in logger.handlers:
-            hndl.addFilter(TimeFilter())
-            hndl.setFormatter(logging.Formatter(
-                fmt="%(asctime)s (%(relative)ss) %(message)s"
-            ))
-        return logger
 
 
 @register_preprocessor("nanostring_cosmx")
@@ -372,16 +348,48 @@ class XeniumPreprocessor(ISTPreprocessor):
     """
     Preprocessor for 10x Genomics Xenium datasets.
     """
-    @staticmethod
-    def _validate_directory(data_dir: Path):
 
+    tx_fields = XeniumTranscriptFields()
+    bd_fields = XeniumBoundaryFields()
+    sw_version = lambda version: version[0] > 1
+
+    @staticmethod
+    def _get_analysis_sw_version(data_dir: Path) -> str:
+        """
+        Get 10x xenium analysis software version. Example experiment.xenium file:
+        {
+            ...,
+            "analysis_sw_version": "xenium-3.3.1.1"
+        }
+        Return:
+            version : list of ints representing major, minor, and patch version numbers (e.g. [3, 3, 1, 1])
+        """
+
+        # get version
+        path_meta = data_dir / "experiment.xenium"
+        with open(path_meta) as f:
+            meta = json.load(f)
+        # version can be xenium-x.y.z or Xenium-x.y.z, ...
+        version = meta["analysis_sw_version"].split("-")[-1].split(".")
+        version = [int(v) for v in version]
+        return version
+
+    @classmethod
+    def _validate_directory(cls, data_dir: Path):
+
+        # Apply xenium software version 2 or higher (when cell id "Unassigned" was introduced. Previously -1)
+        version = XeniumPreprocessor._get_analysis_sw_version(data_dir)
+        if not cls.sw_version(version):
+            raise IOError(
+                f"Xenium analysis software version must be 2.0.0 or higher, "
+                f"but found version {'.'.join(version)}."
+            )
+        
         # Check required files/directories
-        bd_fields = XeniumBoundaryFields()
-        tx_fields = XeniumTranscriptFields()
         for pat in [
-            tx_fields.filename,
-            bd_fields.cell_filename,
-            bd_fields.nucleus_filename,
+            cls.tx_fields.filename,
+            cls.bd_fields.cell_filename,
+            cls.bd_fields.nucleus_filename,
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
@@ -394,7 +402,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     def transcripts(self) -> pl.DataFrame:
 
         # Field names
-        raw = XeniumTranscriptFields()
+        raw = self.tx_fields
         std = StandardTranscriptFields()
 
         return (
@@ -405,6 +413,11 @@ class XeniumPreprocessor(ISTPreprocessor):
             )
             # Add numeric index at beginning
             .with_row_index(name=std.row_index)
+            # Cast binary columns to string (Some Xenium parquet stores these as binary)
+            .with_columns(
+                pl.col(raw.feature).cast(pl.Utf8),
+                pl.col(raw.cell_id).cast(pl.Utf8),
+            )
             # Filter data
             .filter(pl.col(raw.quality) >= 20)
             .filter(pl.col(raw.feature).str.contains(
@@ -437,15 +450,16 @@ class XeniumPreprocessor(ISTPreprocessor):
             .collect()
         )
 
-    @staticmethod
+    @classmethod
     def _get_boundaries(
+        cls,
         filepath: Path,
         boundary_type: str
     ) -> gpd.GeoDataFrame:
         # TODO: Add documentation
 
         # Field names
-        raw = XeniumBoundaryFields()
+        raw = cls.bd_fields
         std = StandardBoundaryFields()
 
         # Read in flat vertices and convert to geometries
@@ -463,7 +477,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
         # TODO: Add documentation
-        raw = XeniumBoundaryFields()
+        raw = self.bd_fields
         std = StandardBoundaryFields()
 
         # Join boundary datasets
@@ -496,13 +510,23 @@ class XeniumPreprocessor(ISTPreprocessor):
             cells.reset_index(drop=False, names=std.id), 
             nuclei.reset_index(drop=False, names=std.id),
         ])
-        # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
+        # cell_id is string in later 10x versions, but int in earlier versions.
+        bd.index = bd[std.id].astype(str) + '_' + bd[std.boundary_type].map({
             std.nucleus_value: '0',
             std.cell_value: '1',
         })
 
         return bd
+
+@register_preprocessor("10x_xenium_v1")
+class XeniumPreprocessorV1(XeniumPreprocessor):
+    """
+    Preprocessor for 10x Genomics Xenium datasets analyzed with software version 1.x.
+    """
+
+    tx_fields = XeniumTranscriptFieldsV1()
+    bd_fields = XeniumBoundaryFields()
+    sw_version = lambda version: version[0] == 1
 
 
 @register_preprocessor("vizgen_merscope")

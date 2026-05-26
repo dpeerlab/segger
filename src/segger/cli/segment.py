@@ -1,7 +1,6 @@
 import os
 import logging
 from ..utils import setup_logging
-setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"))
 
 from cyclopts import App, Parameter, Group, validators
 from typing import Annotated, Literal
@@ -78,7 +77,6 @@ def segment(
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
     
-
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -124,6 +122,20 @@ def segment(
         group=group_nodes,
     )] = registry.get_default("genes_clusters_resolution"),
 
+    gene_corr_reference_path: Annotated[Path | None, Parameter(
+        help=(
+            "Path to a reference AnnData .h5ad file used to compute a shared "
+            "gene-gene correlation matrix."
+        ),
+        group=group_nodes,
+    )] = None,
+
+
+    gene_missing_strategy: Annotated[Literal["error", "remove", "fill"], registry.get_parameter(
+        "gene_missing_strategy",
+        group=group_nodes,
+    )] = registry.get_default("gene_missing_strategy"),
+
 
     # Transcript-Transcript Graph
     transcripts_max_k: Annotated[int, registry.get_parameter(
@@ -154,7 +166,7 @@ def segment(
         group=group_prediction,
     )] = registry.get_default("prediction_graph_max_k"),
 
-    prediction_expansion_ratio: Annotated[float | None, registry.get_parameter(
+    prediction_graph_buffer_ratio: Annotated[float | None, registry.get_parameter(
         "prediction_graph_buffer_ratio",
         validator=validators.Number(gt=0),
         group=group_prediction,
@@ -289,6 +301,7 @@ def segment(
         group=group_loss,
     )] = registry.get_default("sg_weight_end"),
 
+    # Reference
     save_anndata: Annotated[bool, registry.get_parameter(
         "save_anndata",
         group=group_io,
@@ -301,7 +314,20 @@ def segment(
     """Run cell segmentation on spatial transcriptomics data."""
 
     # Setup logger and debug directory
+    setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"), debug=debug)
     logger = logging.getLogger(__name__)
+
+    debug_dir = None
+    if debug:
+        import json
+        debug_dir = Path(output_directory) / "debug"
+        debug_dir.mkdir(exist_ok=True, parents=True)
+        params = {k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+                  for k, v in locals().items()
+                  if k not in {"logger", "debug_dir", "json"}}
+        with open(debug_dir / "params.json", "w") as f:
+            json.dump(params, f, indent=2, default=str)
+        logger.info(f"Saved run params to {debug_dir / 'params.json'}")
 
     # Remove SLURM environment autodetect
     from lightning.pytorch.plugins.environments import SLURMEnvironment
@@ -323,11 +349,14 @@ def segment(
         transcripts_graph_max_dist=transcripts_max_dist,
         prediction_graph_mode=prediction_mode,
         prediction_graph_max_k=prediction_max_k,
-        prediction_graph_buffer_ratio=prediction_expansion_ratio,
+        prediction_graph_buffer_ratio=prediction_graph_buffer_ratio,
         tiling_margin_training=tiling_margin_training,
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
         edges_per_batch=max_edges_per_batch,
+        gene_corr_reference_path=gene_corr_reference_path,
+        gene_missing_strategy=gene_missing_strategy,
+        debug_dir=debug_dir,
     )
     
     # Setup Lightning Model

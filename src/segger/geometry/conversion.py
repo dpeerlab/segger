@@ -143,7 +143,7 @@ def points_to_geoseries(
         if isinstance(data, cuspatial.GeoSeries):
             points.index = pd.Index(data.index.to_numpy())
     else:  # cuspatial
-        coords = cp.asarray(coords).ravel().astype('double')
+        coords = cp.asarray(coords, dtype=cp.float64).ravel()
         points = cuspatial.GeoSeries.from_points_xy(coords)
         if isinstance(data, gpd.GeoSeries):
             points.index = cudf.Index(data.index)
@@ -290,7 +290,7 @@ def polygons_to_geoseries(
         if isinstance(data, cuspatial.GeoSeries):
             polygons.index = pd.Index(data.index.to_numpy())
     else:  # cuspatial
-        vertices = cp.asarray(vertices).ravel().astype('double')
+        vertices = cp.asarray(vertices, dtype=cp.float64).ravel()
         ring_offsets = cp.asarray(ring_offsets)
         part_offsets = cp.arange(len(ring_offsets), dtype='int32')
         polygons = cuspatial.GeoSeries.from_polygons_xy(
