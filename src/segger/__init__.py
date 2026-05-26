@@ -33,11 +33,6 @@ def configure_memory(force: bool = False) -> None:
     torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
     enable_statistics()
 
-# Apply pytorch patches for issue pytorch/pytorch#51871 (CUDA nonzero INT_MAX limit).
-# Must run BEFORE any segger module imports HeteroData / bipartite_subgraph.
-from ._patches import apply as _apply_patches
-_apply_patches()
-
 def free_mem_str() -> str:
     stats = get_statistics()
     if stats is None:
