@@ -2,6 +2,8 @@ from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
+from torch_geometric.utils.map import map_index
+from torch_geometric.index import index2ptr
 import logging
 import shapely
 import torch
@@ -9,9 +11,35 @@ import torch
 
 from .partition import PartitionDataset
 from .tiling import Tiling
-from .._patches import chunked_nonzero as _chunked_nonzero
+from .._patches import _chunked_nonzero
 
 logger = logging.getLogger(__name__)
+
+
+def query_ptr(csr, query) -> torch.Tensor:
+    """Gather values for bucket(s) `query` from a `(ptr, values)` CSR.
+
+    `query` may be a scalar (one bucket) or a 1-D tensor (concatenated in
+    the given order).
+    """
+    ptr, values = csr
+
+    # single value
+    if not (torch.is_tensor(query) and query.dim() > 0):
+        q = int(query)
+        return values[ptr[q]:ptr[q + 1]]
+
+    # tensor of values
+    starts = ptr[query]
+    ends = ptr[query + 1]
+    counts = ends - starts
+    total = int(counts.sum())
+    if total == 0:
+        return values.new_empty(0)
+    base = torch.repeat_interleave(starts, counts)
+    within = (torch.arange(total, device=values.device) - torch.repeat_interleave(counts.cumsum(0) - counts, counts))
+    return values[base + within]
+
 
 class TileFitDataset(PartitionDataset):
     """
@@ -210,6 +238,38 @@ class TilePredictDataset(Dataset):
         elif 'pos' not in self.data.node_attrs():
             raise ValueError("Graph must contain 'pos' attribute.")
 
+        # Precompute CSRs for fast per-tile subsetting (one-time cost).
+        if self._is_hetero:
+            logger.debug("Building tile/edge pointers for fast subsetting...")
+            self._tile_ptr_inner = self._build_tile_ptr(margin=0.0)
+            self._tile_ptr_outer = self._build_tile_ptr(margin=self.margin)
+            self._edges_ptr = self._build_edge_ptr()
+
+    def _build_tile_ptr(self, margin: float) -> dict:
+        """`{node_type: (ptr, node_ids)}` CSR keyed by tile id."""
+        n_tiles = len(getattr(self.tiling, 'tiles', self.tiling))
+        out = {}
+        for nt in self.data.node_types:
+            pairs = self._get_tiles_to_nodes_edges(nt, margin=margin)
+            out[nt] = (index2ptr(pairs[0], size=n_tiles), pairs[1])
+        return out
+
+    def _build_edge_ptr(self) -> dict:
+        """`{edge_type: (ptr, edge_positions)}` CSR keyed by src node id.
+
+        Assumes `edge_index` is sorted by src; values are the identity range
+        so `query_ptr` returns original-column positions in `edge_index`.
+        """
+        out = {}
+        for et in self.data.edge_types:
+            ei = self.data[et].edge_index
+            assert (ei[0][1:] >= ei[0][:-1]).all(), f"edge_index[0] for {et} not sorted by src"
+            out[et] = (
+                index2ptr(ei[0], size=len(self.data[et[0]])),
+                torch.arange(ei.shape[1], device=ei.device),
+            )
+        return out
+
     def __len__(self) -> int:
         """Number of tiles in the dataset."""
         return len(self.tiling.tiles)
@@ -227,6 +287,116 @@ class TilePredictDataset(Dataset):
             )
         geometry = self.tiling.tiles[idx]
         return self._subset(geometry)
+
+    def _get_tiles_to_nodes_edges(self, node_type: str, margin: float) -> torch.Tensor:
+        """
+        Create edges `(tile_id, node_id)` for nodes in each tile's margined bbox.
+
+        Return tuples, sorted by `tile_id`.
+        """
+        pos: torch.Tensor = self.data[node_type]['pos'].to(torch.float32)
+        tiles_geom = getattr(self.tiling, 'tiles', self.tiling)
+        bounds = tiles_geom.bounds.to_numpy().astype("float32")
+        bounds = torch.from_numpy(bounds).to(pos.device)
+        bounds[:, :2] -= margin
+        bounds[:, 2:] += margin
+
+        # Chunk tiles & nodes, cap at ~128 MB intermediate
+        K, N = bounds.shape[0], pos.shape[0]
+        budget = 2 ** 27  # ~128M bools = 128MB
+        chunk_K = max(8, min(256, K))
+        chunk_N = max(1, min(N, budget // (8 * max(chunk_K, 1))))
+
+        tile_ids, node_ids = [], []
+
+        # for each batch of tiles
+        for s_t in range(0, K, chunk_K):
+            ch = bounds[s_t:min(s_t + chunk_K, K)]
+
+            # for each batch of nodes
+            for s_n in range(0, N, chunk_N):
+                px = pos[s_n:min(s_n + chunk_N, N), 0]
+                py = pos[s_n:min(s_n + chunk_N, N), 1]
+
+                # create boundary mask. results in a (chunked) binary matrix of (chunk_k, chunk_n) where "True" indicates assignment
+                m = (
+                    (ch[:, None, 0] <= px[None, :]) & (ch[:, None, 2] >  px[None, :]) &
+                    (ch[:, None, 1] <= py[None, :]) & (ch[:, None, 3] >  py[None, :])
+                )
+
+                # extract pairs
+                ki, ni = torch.nonzero(m, as_tuple=True)
+                tile_ids.append(ki + s_t)
+                node_ids.append(ni + s_n)
+        
+        tile_ids = torch.cat(tile_ids)
+        node_ids = torch.cat(node_ids)
+
+        # sort by tile_id (and preserve node order)
+        perm = torch.argsort(tile_ids, stable=True)
+        return torch.stack([tile_ids[perm], node_ids[perm]], 0)
+
+    def _subset_new(self, idx) -> Data | HeteroData:
+        """Subset the Heterograph to nodes and edges within tile `idx`.
+
+        Uses CSRs precomputed in `__init__` (`_tile_ptr_outer`,
+        `_tile_ptr_inner`, `_edges_ptr`).
+        """
+        subset = HeteroData()
+
+        # create nodes
+        for node_type in self.data.node_types:
+
+            # get subset
+            nodes_subset_idx = query_ptr(self._tile_ptr_outer[node_type], idx)
+
+            # populate metadata
+            for key, value in self.data[node_type].items():
+                if key == 'num_nodes':
+                    subset[node_type].num_nodes = len(nodes_subset_idx)
+                elif self.data[node_type].is_node_attr(key):
+                    subset[node_type][key] = value[nodes_subset_idx]
+                else:
+                    subset[node_type][key] = value
+
+            # get mask (mask for nodes within margined tiles)
+            nodes_margin_idx = query_ptr(self._tile_ptr_inner[node_type], idx)
+            subset[node_type]['predict_mask'] = torch.isin(nodes_subset_idx, nodes_margin_idx)
+
+
+        # create edges
+        for edge_type in self.data.edge_types:
+
+            # get src and dst nodes
+            src, _, dst = edge_type
+            src_subset = query_ptr(self._tile_ptr_outer[src], idx)
+            dst_subset = query_ptr(self._tile_ptr_outer[dst], idx)
+
+            # get edges between src and dst subsets
+            edge_src_subset_idx = query_ptr(self._edges_ptr[edge_type], src_subset)
+            candidate_edges = self.data[edge_type].edge_index[:, edge_src_subset_idx]
+            edge_dst_subset_idx = torch.isin(candidate_edges[1], dst_subset)
+            kept_orig = edge_src_subset_idx[edge_dst_subset_idx]
+            edge_index_new = candidate_edges[:, edge_dst_subset_idx]
+
+            # map indices to new subset
+            src_index, _ = map_index(edge_index_new[0], src_subset, max_index=len(self.data[src]))
+            dst_index, _ = map_index(edge_index_new[1], dst_subset, max_index=len(self.data[dst]))
+            edge_index_mapped = torch.stack([src_index, dst_index], dim=0)
+
+            # populate heterodata
+            for key, value in self.data[edge_type].items():
+                if key == 'edge_index':
+                    subset[edge_type].edge_index = edge_index_mapped
+                elif self.data[edge_type].is_edge_attr(key):
+                    subset[edge_type][key] = value[kept_orig]
+                else:
+                    subset[edge_type][key] = value
+        
+        return subset
+
+
+
 
     def _subset(self, bounds: shapely.Polygon) -> Data | HeteroData:
         """Slices all node attributes within bounds.
