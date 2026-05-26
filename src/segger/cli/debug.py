@@ -9,6 +9,7 @@ from cyclopts import App, Parameter
 
 from ..debug.segmentation import run_segmentation_only
 from ..debug.prediction import run_prediction_only
+from ..utils import setup_logging
 
 debug = App(name="debug", help="Utilities for debugging and testing individual components.")
 
@@ -41,6 +42,7 @@ def predict_only_cli(
     )],
 ):
     """Run prediction only."""
+    setup_logging(level="DEBUG", debug=True)
     run_prediction_only(
         path_checkpoint=path_checkpoint,
         path_outputs=path_outputs,
