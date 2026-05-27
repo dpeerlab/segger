@@ -306,7 +306,17 @@ def segment(
         "save_anndata",
         group=group_io,
     )] = registry.get_default("save_anndata"),
-    
+
+    save_spatialdata: Annotated[bool, registry.get_parameter(
+        "save_spatialdata",
+        group=group_io,
+    )] = registry.get_default("save_spatialdata"),
+
+    boundary_method: Annotated[
+        Literal["convex_hull", "skip"],
+        registry.get_parameter("boundary_method", group=group_io),
+    ] = registry.get_default("boundary_method"),
+
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = "none",
@@ -395,6 +405,8 @@ def segment(
     writer = ISTSegmentationWriter(
         output_directory,
         save_anndata=save_anndata,
+        save_spatialdata=save_spatialdata,
+        boundary_method=boundary_method,
         debug=debug,
     )
     trainer = Trainer(

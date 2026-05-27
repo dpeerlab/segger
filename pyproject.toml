@@ -29,6 +29,11 @@ dependencies = [
     "tifffile"
 ]
 
+[project.optional-dependencies]
+spatialdata = [
+    "spatialdata>=0.7.2",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -28,12 +28,16 @@ class ISTSegmentationWriter(BasePredictionWriter):
             self,
             output_directory: Path,
             save_anndata: bool = True,
+            save_spatialdata: bool = False,
+            boundary_method: str = "convex_hull",
             debug: bool = False
         ):
         # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
         self.save_anndata = save_anndata
+        self.save_spatialdata = save_spatialdata
+        self.boundary_method = boundary_method
 
         # setup debugging
         self.debug = debug
@@ -82,6 +86,19 @@ class ISTSegmentationWriter(BasePredictionWriter):
         logger.debug("Writing AnnData output...")
         if self.save_anndata:
             self.write_anndata(trainer, segmentation)
+
+        # write spatialdata zarr
+        if self.save_spatialdata:
+            logger.debug("Writing SpatialData output...")
+            from ..export.spatialdata_writer import SpatialDataWriter
+            SpatialDataWriter(
+                boundary_method=self.boundary_method,
+            ).write(
+                predictions=segmentation,
+                output_dir=self.output_directory,
+                transcripts=trainer.datamodule.tx,
+                output_name="segger_segmentation.zarr",
+            )
 
     def write_anndata(
             self,
