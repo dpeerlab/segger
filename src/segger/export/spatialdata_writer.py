@@ -60,16 +60,12 @@ class SpatialDataWriter:
 
     Parameters
     ----------
-    include_boundaries
-        Whether to include cell shapes in output. Default True.
     boundary_method
-        How to generate boundaries if not provided:
-        - "input": Use input boundaries if available
-        - "convex_hull": Generate convex hull per cell
-        - "delaunay": Delaunay triangulation-based boundary extraction
+        How to obtain cell boundaries:
+        - "input": Use input boundaries (passed to ``write(boundaries=...)``;
+          filtered to ``boundary_type == 'cell'`` when that column is present)
+        - "convex_hull": Generate convex hull per cell from assigned transcripts
         - "skip": Don't include shapes
-    boundary_n_jobs
-        Parallel workers for Delaunay boundary generation (threads).
     points_key
         Key for transcripts in sdata.points. Default "transcripts".
     shapes_key
@@ -84,21 +80,16 @@ class SpatialDataWriter:
 
     def __init__(
         self,
-        include_boundaries: bool = True,
-        boundary_method: Literal["convex_hull", "skip"] = "convex_hull",
-        boundary_n_jobs: int = 1,
+        boundary_method: Literal["input", "convex_hull", "skip"] = "convex_hull",
         points_key: str = "transcripts",
         shapes_key: str = "cells",
         include_table: bool = True,
         table_key: str = "cells_table",
-        fragment_table_key: str = "fragments_table",
         table_region_key: str = "cell_id",
     ):
         require_spatialdata()
 
-        self.include_boundaries = include_boundaries
         self.boundary_method = boundary_method
-        self.boundary_n_jobs = boundary_n_jobs
         self.points_key = points_key
         self.shapes_key = shapes_key
         self.include_table = include_table
@@ -328,15 +319,17 @@ class SpatialDataWriter:
             return ShapesModel.parse(shapes, **kwargs)
 
         shapes_elements = {}
-  
-        shape_specs = [(self.shapes_key, tx_pd)]
 
-        for shape_key, shape_tx_pd in shape_specs:
-            shapes = self._get_generated_boundaries(shape_tx_pd, x_column, y_column, cell_id_column)
-            shapes = _ensure_cell_id(shapes)
-            parsed = _parse_shapes(shapes)
-            if parsed is not None:
-                shapes_elements[shape_key] = parsed                
+        if self.boundary_method == "input":
+            shapes = self._get_input_boundaries(tx_pd, cell_id_column, boundaries)
+        elif self.boundary_method == "convex_hull":
+            shapes = self._get_generated_boundaries(tx_pd, x_column, y_column, cell_id_column)
+        else:
+            shapes = None
+        shapes = _ensure_cell_id(shapes)
+        parsed = _parse_shapes(shapes)
+        if parsed is not None:
+            shapes_elements[self.shapes_key] = parsed
 
         # Optional AnnData table
         tables_elements = {}
@@ -422,18 +415,23 @@ class SpatialDataWriter:
 
 
     
-    def _get_input_boundaries(self, cell_tx_pd, cell_id_column, boundaries, bd_type):
-
-        selected_ids = cell_tx_pd[cell_id_column].dropna().unique()
-        if len(selected_ids) == 0 or boundaries is None:
-            if boundaries is None:
-                warnings.warn("No input boundaries were found. Skipping boundary generation.")
+    def _get_input_boundaries(self, tx_pd, cell_id_column, boundaries):
+        """Subset caller-provided boundaries to assigned cells."""
+        if boundaries is None:
+            warnings.warn("boundary_method='input' but no input boundaries provided. Skipping shapes.")
             return None
 
-        boundaries_filtered = boundaries.loc[boundaries['boundary_type'] == bd_type]
-        boundaries_gdf = boundaries_filtered[boundaries_filtered["cell_id"].isin(selected_ids)].copy()
+        selected_ids = tx_pd.loc[tx_pd[cell_id_column] != -1, cell_id_column].dropna().unique()
+        if len(selected_ids) == 0:
+            return None
 
-        return boundaries_gdf if not boundaries_gdf.empty else None
+        bd = boundaries
+        if "boundary_type" in bd.columns:
+            bd = bd.loc[bd["boundary_type"] == "cell"]
+        if "cell_id" in bd.columns:
+            bd = bd[bd["cell_id"].isin(selected_ids)]
+        bd = bd.copy()
+        return bd if not bd.empty else None
             
     
 
