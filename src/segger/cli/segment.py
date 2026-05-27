@@ -313,7 +313,7 @@ def segment(
     )] = registry.get_default("save_spatialdata"),
 
     boundary_method: Annotated[
-        Literal["convex_hull", "skip"],
+        Literal["input", "convex_hull", "skip"],
         registry.get_parameter("boundary_method", group=group_io),
     ] = registry.get_default("boundary_method"),
 

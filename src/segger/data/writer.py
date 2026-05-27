@@ -97,6 +97,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 predictions=segmentation,
                 output_dir=self.output_directory,
                 transcripts=trainer.datamodule.tx,
+                boundaries=getattr(trainer.datamodule, "bd", None),
                 output_name="segger_segmentation.zarr",
             )
 
