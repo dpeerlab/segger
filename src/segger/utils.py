@@ -24,8 +24,9 @@ def setup_logging(level: str = "WARNING", log_file: str = None, debug: bool = Fa
     for handler in handlers:
         handler.addFilter(MemFilter())
 
+    root_level = "WARNING" if debug else level
     logging.basicConfig(
-        level=getattr(logging, level.upper()),
+        level=getattr(logging, root_level.upper()),
         format=fmt,
         datefmt=datefmt,
         handlers=handlers,
