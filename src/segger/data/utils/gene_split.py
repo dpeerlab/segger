@@ -1,83 +1,97 @@
-"""Stratified gene-panel splitting and lightweight pre-clustering.
+"""Transcript-balanced, cluster-stratified gene-panel splitting.
 
-Used by the `--max-genes-per-split` flag on `segger segment` to partition the
-gene panel into K disjoint, panel-diverse subsets so that each subset's
-segmentation run fits within a fixed VRAM budget (e.g. Athera ~50 GB).
+Used by ``segger segment --max-transcripts-per-split`` (and the
+``split-plan`` / ``segment-subset`` / ``merge-splits`` subcommands) to
+partition the gene panel into K disjoint subsets so each subset's segmentation
+run fits within a fixed VRAM budget (e.g. an Athera ~50 GB GPU job).
+
+Why balance by *transcript count* rather than gene count: when a gene subset is
+selected, :meth:`ISTDataModule.load` filters the full transcript table to that
+subset before building the heterogeneous graph, so peak memory scales with the
+*total transcript count* of the subset's genes — and per-gene abundance spans
+orders of magnitude. Capping genes-per-subset therefore does not bound memory;
+the heaviest subset can still OOM. We instead bin genes to balance total
+transcript load, while stratifying across Phenograph gene clusters so every
+subset stays panel-diverse (spans cell-type signal).
 """
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
 import pandas as pd
 import polars as pl
 
-from ...io import (
-    StandardTranscriptFields,
-    StandardBoundaryFields,
-    get_preprocessor,
-)
-from .anndata import setup_anndata
+from ...io import StandardTranscriptFields, get_preprocessor
+from .masking import reference_mask
 
 
 logger = logging.getLogger(__name__)
 
 
-def stratified_gene_split(
+def transcript_balanced_split(
     gene_to_cluster: pd.Series,
+    gene_counts: dict[str, int],
     k: int,
-    seed: int = 0,
+    *,
+    max_genes_per_subset: int | None = None,
 ) -> list[list[str]]:
-    """Partition genes into k disjoint subsets, stratified by cluster.
+    """Partition genes into ``k`` disjoint subsets balancing transcript load.
 
-    Within each cluster, genes are shuffled (seeded) and sliced into k roughly
-    equal contiguous parts. Subset i is the union over clusters of part i, so
-    every subset draws genes from every cluster and the union of all subsets
-    equals the input gene set.
+    Within each Phenograph cluster, genes are assigned by greedy
+    longest-processing-time: sort by transcript count descending and drop each
+    gene into the subset with the currently-smallest total load. Iterating
+    cluster-by-cluster keeps every subset panel-diverse; the LPT rule keeps the
+    per-subset transcript totals close. Fully deterministic (ties broken by
+    gene name), so the same panel + counts always yields the same split.
 
     Parameters
     ----------
     gene_to_cluster : pd.Series
-        Index: gene name. Value: cluster id (int or category). NaN/-1 clusters
-        are kept and treated as their own group.
+        Index: gene name. Value: Phenograph cluster id.
+    gene_counts : dict[str, int]
+        Total transcripts per gene (the memory-relevant count).
     k : int
-        Number of subsets. Must be >= 1.
-    seed : int
-        RNG seed for the per-cluster shuffle.
+        Number of subsets (>= 1).
+    max_genes_per_subset : int or None
+        Optional hard cap on genes per subset (secondary to the load balance).
 
     Returns
     -------
     list[list[str]]
-        Length-k list of gene-name lists. Concatenation is a disjoint partition
-        of `gene_to_cluster.index`.
+        Length-``k`` list of gene-name lists; their concatenation is a disjoint
+        partition of ``gene_to_cluster.index``.
     """
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
-    if k == 1:
-        return [gene_to_cluster.index.astype(str).tolist()]
 
-    rng = np.random.default_rng(seed)
+    clusters = gene_to_cluster.copy()
+    clusters.index = clusters.index.astype(str)
+    clusters = clusters.astype(str)
+    all_genes = sorted(clusters.index.tolist())
+    if k == 1:
+        return [all_genes]
+
+    subset_load = [0] * k     # total transcript count per subset
+    subset_size = [0] * k     # gene count per subset
     subsets: list[list[str]] = [[] for _ in range(k)]
 
-    # Sort cluster keys for deterministic iteration order
-    cluster_keys = sorted(gene_to_cluster.dropna().unique().tolist(),
-                          key=lambda x: (str(x)))
-    for cluster_id in cluster_keys:
-        genes = gene_to_cluster.index[gene_to_cluster == cluster_id].astype(str).tolist()
-        rng.shuffle(genes)
-        # np.array_split yields k roughly-equal contiguous slices
-        for i, slice_ in enumerate(np.array_split(genes, k)):
-            subsets[i].extend(slice_.tolist())
-
-    # Genes with NaN cluster (defensive — shouldn't happen with phenograph_rapids)
-    na_mask = gene_to_cluster.isna()
-    if na_mask.any():
-        na_genes = gene_to_cluster.index[na_mask].astype(str).tolist()
-        rng.shuffle(na_genes)
-        for i, slice_ in enumerate(np.array_split(na_genes, k)):
-            subsets[i].extend(slice_.tolist())
+    for cluster_id in sorted(clusters.unique(), key=str):
+        genes = [str(g) for g in clusters.index[clusters == cluster_id]]
+        # Heaviest genes first; tie-break on name for determinism.
+        genes.sort(key=lambda g: (-gene_counts.get(g, 0), g))
+        for g in genes:
+            candidates = list(range(k))
+            if max_genes_per_subset is not None:
+                under = [i for i in candidates if subset_size[i] < max_genes_per_subset]
+                if under:
+                    candidates = under
+            j = min(candidates, key=lambda i: (subset_load[i], i))
+            subsets[j].append(g)
+            subset_load[j] += gene_counts.get(g, 0)
+            subset_size[j] += 1
 
     return subsets
 
@@ -93,90 +107,39 @@ def precluster_full_panel(
     genes_clusters_n_neighbors: int,
     genes_clusters_resolution: float,
     segmentation_graph_mode: Literal["nucleus", "cell"],
-) -> tuple[pd.Series, list[str]]:
-    """Run the segger pipeline up to (and including) gene clustering only.
+) -> tuple[pd.Series, dict[str, int]]:
+    """Cluster the full gene panel and count transcripts per gene.
 
-    Mirrors the transcript/boundary masking from `ISTDataModule.load()` and
-    invokes `setup_anndata` directly. Skips `setup_heterodata`, tiling, and
-    graph construction — those rebuild per subset.
+    Runs the segger pipeline only as far as gene clustering (``setup_anndata``)
+    using the *same* reference mask as :meth:`ISTDataModule.load`
+    (:func:`reference_mask`), then reports, for the genes that survive
+    ``genes_min_counts``, their Phenograph cluster and their *total* transcript
+    count (all compartments — the count that drives per-subset memory). Skips
+    graph construction and tiling, which rebuild per subset.
 
     Returns
     -------
     gene_to_cluster : pd.Series
-        Index: gene name (post `genes_min_counts` filter). Value: Phenograph
-        cluster id.
-    gene_list : list[str]
-        Sorted gene names available for splitting (same as the series index).
+        Index: gene name (post ``genes_min_counts``). Value: Phenograph cluster.
+    gene_counts : dict[str, int]
+        Total transcripts per panel gene over the full transcript table.
     """
+    # Heavy import (pulls AnnData / RAPIDS) kept local so the pure split
+    # helpers in this module import without a GPU stack.
+    from .anndata import setup_anndata
+
     tx_fields = StandardTranscriptFields()
-    bd_fields = StandardBoundaryFields()
 
     logger.info(f"Pre-clustering: loading transcripts/boundaries from {input_directory}")
     pp = get_preprocessor(input_directory)
-    is_merscope_input = pp.__class__.__name__.lower().startswith("merscope")
     tx = pp.transcripts
     bd = pp.boundaries
 
-    id_regex = r"^([+-]?\d+)\.0+$"
-    normalized_tx_ids = (
-        pl.col(tx_fields.cell_id)
-        .cast(pl.String, strict=False)
-        .str.strip_chars()
-        .str.replace(id_regex, "${1}")
-    )
-
-    if segmentation_graph_mode == "nucleus":
-        compartments = [tx_fields.nucleus_value]
-        boundary_type = bd_fields.nucleus_value
-    elif segmentation_graph_mode == "cell":
-        compartments = [tx_fields.nucleus_value, tx_fields.cytoplasmic_value]
-        boundary_type = bd_fields.cell_value
-    else:
-        raise ValueError(f"Unrecognized segmentation graph mode: {segmentation_graph_mode!r}")
-
-    tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
-    bd_mask = bd[bd_fields.boundary_type] == boundary_type
-    valid_boundary_ids = (
-        bd.loc[bd_mask, bd_fields.id]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .str.replace(id_regex, r"\1", regex=True)
-        .unique()
-        .tolist()
-    )
-    tx_mask = tx_mask & normalized_tx_ids.is_in(valid_boundary_ids)
-    tx_ref_count = tx.filter(tx_mask).height
-    if (
-        tx_ref_count == 0
-        and segmentation_graph_mode == "nucleus"
-        and is_merscope_input
-    ):
-        logger.warning(
-            "No nucleus-matched reference transcripts found for MERSCOPE; "
-            "falling back to cell-matched references for pre-clustering."
-        )
-        bd_mask = bd[bd_fields.boundary_type] == bd_fields.cell_value
-        valid_boundary_ids = (
-            bd.loc[bd_mask, bd_fields.id]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .str.replace(id_regex, r"\1", regex=True)
-            .unique()
-            .tolist()
-        )
-        tx_mask = (
-            pl.col(tx_fields.compartment).is_in(
-                [tx_fields.nucleus_value, tx_fields.cytoplasmic_value]
-            )
-            & normalized_tx_ids.is_in(valid_boundary_ids)
-        )
-        tx_ref_count = tx.filter(tx_mask).height
-    if tx_ref_count == 0:
+    tx_mask, bd_mask = reference_mask(bd, segmentation_graph_mode, tx_fields=tx_fields)
+    if tx.filter(tx_mask).height == 0:
         raise ValueError(
-            "Pre-clustering: no reference transcripts remain after matching "
-            "transcripts to boundaries."
+            "Pre-clustering: no reference transcripts remain after masking; "
+            "check segmentation_graph_mode and the input compartments."
         )
 
     logger.info("Pre-clustering: running setup_anndata to compute gene clusters")
@@ -196,12 +159,129 @@ def precluster_full_panel(
 
     gene_to_cluster = ad.var["phenograph_cluster"].copy()
     gene_to_cluster.index = gene_to_cluster.index.astype(str)
-    gene_list = gene_to_cluster.index.tolist()
+    panel_genes = set(gene_to_cluster.index)
+    del ad
+
+    # Total transcripts per gene over the FULL table (the memory-relevant count
+    # — ISTDataModule filters all compartments to the subset, not just the
+    # reference compartment).
+    full_counts = (
+        tx.lazy()
+        .group_by(tx_fields.feature)
+        .agg(pl.len().alias("n"))
+        .collect()
+    )
+    gene_counts = {
+        str(g): int(n)
+        for g, n in zip(full_counts[tx_fields.feature].to_list(), full_counts["n"].to_list())
+        if str(g) in panel_genes
+    }
+    # Defensive: panel genes absent from the full count map get 0.
+    for g in panel_genes:
+        gene_counts.setdefault(g, 0)
+
     logger.info(
-        f"Pre-clustering done: {len(gene_list)} genes (post genes_min_counts={genes_min_counts}) "
-        f"in {gene_to_cluster.nunique()} clusters"
+        f"Pre-clustering done: {len(panel_genes)} genes "
+        f"(post genes_min_counts={genes_min_counts}) in "
+        f"{gene_to_cluster.nunique()} clusters; "
+        f"{sum(gene_counts.values())/1e6:.1f}M total transcripts."
+    )
+    return gene_to_cluster, gene_counts
+
+
+def choose_k(
+    n_genes: int,
+    total_transcripts: int,
+    *,
+    max_transcripts_per_split: int | None,
+    max_genes_per_split: int | None,
+) -> int:
+    """Number of subsets implied by the transcript and/or gene budgets."""
+    k_tx = (
+        math.ceil(total_transcripts / max_transcripts_per_split)
+        if max_transcripts_per_split
+        else 1
+    )
+    k_gene = (
+        math.ceil(n_genes / max_genes_per_split) if max_genes_per_split else 1
+    )
+    return max(k_tx, k_gene, 1)
+
+
+def build_split_plan(
+    gene_to_cluster: pd.Series,
+    gene_counts: dict[str, int],
+    *,
+    max_transcripts_per_split: int | None = None,
+    max_genes_per_split: int | None = None,
+) -> tuple[pd.DataFrame, list[list[str]]]:
+    """Compute the K subsets and a tidy per-gene plan DataFrame.
+
+    Returns ``(plan_df, subsets)`` where ``plan_df`` has one row per gene with
+    columns ``feature_name, phenograph_cluster, transcript_count, subset_id``.
+    """
+    n_genes = len(gene_to_cluster)
+    total_tx = sum(gene_counts.values())
+    k = choose_k(
+        n_genes,
+        total_tx,
+        max_transcripts_per_split=max_transcripts_per_split,
+        max_genes_per_split=max_genes_per_split,
+    )
+    subsets = transcript_balanced_split(
+        gene_to_cluster,
+        gene_counts,
+        k,
+        max_genes_per_subset=max_genes_per_split,
     )
 
-    # Release the large AnnData immediately — caller only needs the cluster series.
-    del ad
-    return gene_to_cluster, gene_list
+    gene_to_subset = {g: i for i, subset in enumerate(subsets) for g in subset}
+    clusters = gene_to_cluster.copy()
+    clusters.index = clusters.index.astype(str)
+    rows = [
+        {
+            "feature_name": g,
+            "phenograph_cluster": str(clusters.get(g, "NA")),
+            "transcript_count": int(gene_counts.get(g, 0)),
+            "subset_id": gene_to_subset[g],
+        }
+        for g in sorted(gene_to_subset)
+    ]
+    plan_df = pd.DataFrame(rows)
+
+    # Log realized balance so the budget can be tuned.
+    per_subset = plan_df.groupby("subset_id")["transcript_count"].agg(["sum", "count"])
+    loads = per_subset["sum"].tolist()
+    logger.info(
+        f"Split plan: {n_genes} genes → K={k} subsets | "
+        f"transcripts/subset min={min(loads)/1e6:.1f}M "
+        f"max={max(loads)/1e6:.1f}M mean={sum(loads)/len(loads)/1e6:.1f}M | "
+        f"genes/subset {per_subset['count'].min()}–{per_subset['count'].max()}"
+    )
+    return plan_df, subsets
+
+
+def write_split_plan(plan_df: pd.DataFrame, output_directory: Path) -> Path:
+    """Persist the plan to ``<out>/gene_split_plan.parquet`` and return its path."""
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    out = output_directory / "gene_split_plan.parquet"
+    pl.from_pandas(plan_df).write_parquet(out)
+    logger.info(f"Wrote gene-split plan ({len(plan_df)} genes) to {out}")
+    return out
+
+
+def read_split_plan(plan_path: Path) -> pd.DataFrame:
+    """Load a previously written ``gene_split_plan.parquet``."""
+    return pl.read_parquet(plan_path).to_pandas()
+
+
+def subset_genes(plan_df: pd.DataFrame, subset_id: int) -> list[str]:
+    """Gene names assigned to ``subset_id`` in a split plan."""
+    genes = plan_df.loc[plan_df["subset_id"] == subset_id, "feature_name"].tolist()
+    if not genes:
+        raise ValueError(
+            f"subset_id={subset_id} has no genes in the plan "
+            f"(valid: 0..{plan_df['subset_id'].max()})."
+        )
+    return [str(g) for g in genes]

@@ -25,6 +25,7 @@ from ..io import (
     get_preprocessor
 )
 from .utils import setup_anndata, setup_heterodata
+from .utils.masking import reference_mask
 from .tiling import QuadTreeTiling, SquareTiling
 from .partition import PartitionSampler
 
@@ -204,23 +205,14 @@ class ISTDataModule(LightningDataModule):
                 f"{tx.height} transcripts remain."
             )
 
-        # Mask transcripts to reference segmentation
-        if self.segmentation_graph_mode == "nucleus":
-            compartments = [tx_fields.nucleus_value]
-            boundary_type = bd_fields.nucleus_value
-        elif self.segmentation_graph_mode == "cell":
-            compartments = [
-                tx_fields.nucleus_value,
-                tx_fields.cytoplasmic_value,
-            ]
-            boundary_type = bd_fields.cell_value
-        else:
-            raise ValueError(
-                f"Unrecognized segmentation graph mode: "
-                f"'{self.segmentation_graph_mode}'."
-            )
-        tx_mask = pl.col(tx_fields.compartment).is_in(compartments)
-        bd_mask = bd[bd_fields.boundary_type] == boundary_type
+        # Mask transcripts to reference segmentation (shared single source of
+        # truth with the gene-split pre-clustering — see data.utils.masking).
+        tx_mask, bd_mask = reference_mask(
+            bd,
+            self.segmentation_graph_mode,
+            tx_fields=tx_fields,
+            bd_fields=bd_fields,
+        )
 
 
         gene_corr_reference = sc.read_h5ad(self.gene_corr_reference_path) if self.gene_corr_reference_path is not None else None
