@@ -118,12 +118,50 @@ class TileFitDataset(PartitionDataset):
         if isinstance(data, HeteroData):
             partition = dict()
             for node_type in data.node_types:
-                partition[node_type] = self.tiling.label(
-                    data[node_type][self.geometry_key]
+                geometry = data[node_type][self.geometry_key]
+                labels = self.tiling.label(geometry)
+                partition[node_type] = self._fill_unmatched_labels(
+                    labels,
+                    geometry,
                 )
             return partition
         else:  # isinstance(data, Data)
-            return self.tiling.label(data[self.geometry_key])
+            geometry = data[self.geometry_key]
+            labels = self.tiling.label(geometry)
+            return self._fill_unmatched_labels(labels, geometry)
+
+    def _fill_unmatched_labels(
+        self,
+        labels: torch.Tensor,
+        geometry: torch.Tensor,
+    ) -> torch.Tensor:
+        """Assign geometries missed by spatial join to the nearest tile."""
+        missing = labels < 0
+        if not bool(missing.any()):
+            return labels
+
+        bounds = torch.as_tensor(
+            self.tiling.tiles.bounds.to_numpy(),
+            dtype=torch.float32,
+            device=geometry.device,
+        )
+        tile_centers = torch.stack((
+            0.5 * (bounds[:, 0] + bounds[:, 2]),
+            0.5 * (bounds[:, 1] + bounds[:, 3]),
+        ), dim=1)
+        geometry_centers = (
+            geometry if geometry.dim() == 2 else geometry.mean(dim=-2)
+        ).to(torch.float32)
+
+        labels = labels.clone()
+        missing_idx = torch.nonzero(missing, as_tuple=False).flatten()
+        for idx in torch.split(missing_idx, 4096):
+            nearest = torch.cdist(
+                geometry_centers[idx],
+                tile_centers,
+            ).argmin(dim=1)
+            labels[idx] = nearest.to(labels.dtype)
+        return labels
         
     def _mask_data(self, data: Data | HeteroData) -> Data | HeteroData:
         """

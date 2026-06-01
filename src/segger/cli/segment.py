@@ -309,7 +309,7 @@ def segment(
     
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
-    )] = "none",
+    )] = False,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 
