@@ -193,7 +193,6 @@ def _platform_tiebreak(data_dir: Path, candidates: list[str]) -> str | None:
     return None
 
 
-
 class ISTPreprocessor(ABC):
     """
     Abstract base class for platform-specific preprocessing of spatial
@@ -378,93 +377,270 @@ class CosMXPreprocessor(ISTPreprocessor):
     Preprocessor for NanoString CosMX datasets.
     """
     @staticmethod
+    def _assignment_candidates() -> list[str]:
+        raw = CosMxTranscriptFields()
+        return [
+            raw.cell_id,
+            "cell_id",
+            "cell_ID",
+            "EntityID",
+            "entity_id",
+            "nucleus_boundaries_id",
+            "cell_boundaries_id",
+        ]
+
+    @staticmethod
+    def _has_mask_inputs(data_dir: Path) -> bool:
+        bd_fields = CosMxBoundaryFields()
+        return (
+            len(list(data_dir.glob(bd_fields.compartment_labels_dirname))) == 1
+            and len(list(data_dir.glob(bd_fields.cell_labels_dirname))) == 1
+            and len(list(data_dir.glob(bd_fields.fov_positions_filename))) == 1
+        )
+
+    @staticmethod
+    def _has_native_schema(columns: list[str] | set[str]) -> bool:
+        raw = CosMxTranscriptFields()
+        return {raw.x, raw.y, raw.feature}.issubset(set(columns))
+
+    @staticmethod
     def _validate_directory(data_dir: Path):
 
-        # Check required files/directories
-        bd_fields = CosMxBoundaryFields()
         tx_fields = CosMxTranscriptFields()
-        for pat in [
-            tx_fields.filename,
-            bd_fields.compartment_labels_dirname,
-            bd_fields.cell_labels_dirname,
-            bd_fields.fov_positions_filename,
-        ]:
-            num_matches = len(list(data_dir.glob(pat)))
-            if not num_matches == 1:
+        tx_path = CosMXPreprocessor._resolve_transcripts_path(data_dir)
+        tx_columns = _lazyframe_column_names(
+            CosMXPreprocessor._scan_transcripts_file(tx_path)
+        )
+
+        # Keep auto-inference strict: only match CosMX when native markers exist.
+        has_native_file = len(list(data_dir.glob(tx_fields.filename))) == 1
+        has_native_schema = CosMXPreprocessor._has_native_schema(tx_columns)
+        has_native_masks = CosMXPreprocessor._has_mask_inputs(data_dir)
+        if not (has_native_file or has_native_schema or has_native_masks):
+            raise IOError(
+                "Directory does not look like a CosMX output layout "
+                "(missing native transcript schema and mask markers)."
+            )
+
+        x_col = _first_existing(
+            tx_columns,
+            [tx_fields.x, "x", "x_location", "global_x"],
+        )
+        y_col = _first_existing(
+            tx_columns,
+            [tx_fields.y, "y", "y_location", "global_y"],
+        )
+        feature_col = _first_existing(
+            tx_columns,
+            [tx_fields.feature, "feature_name", "gene"],
+        )
+        assignment_col = _first_existing(
+            tx_columns,
+            CosMXPreprocessor._assignment_candidates(),
+        )
+
+        if x_col is None or y_col is None or feature_col is None or assignment_col is None:
+            missing_tx_columns: list[str] = []
+            if x_col is None:
+                missing_tx_columns.append("x")
+            if y_col is None:
+                missing_tx_columns.append("y")
+            if feature_col is None:
+                missing_tx_columns.append("feature")
+            if assignment_col is None:
+                missing_tx_columns.append("cell_or_nucleus_assignment")
+            raise IOError(
+                f"CosMx transcripts file '{tx_path.name}' is missing minimum usable columns "
+                f"{missing_tx_columns}."
+            )
+
+    @staticmethod
+    def _resolve_transcripts_path(data_dir: Path) -> Path:
+        tx_fields = CosMxTranscriptFields()
+
+        matches_by_pattern: dict[str, list[Path]] = {}
+        for pattern in (tx_fields.filename, tx_fields.fallback_filename):
+            matches = sorted(data_dir.glob(pattern))
+            if len(matches) > 1:
                 raise IOError(
-                    f"CosMx sample directory must contain exactly 1 file or "
-                    f"directory matching {pat}, but found {num_matches}."
+                    f"CosMx sample directory must contain at most one file "
+                    f"matching '{pattern}', but found {len(matches)}."
                 )
+            matches_by_pattern[pattern] = matches
+
+        primary = matches_by_pattern[tx_fields.filename]
+        fallback = matches_by_pattern[tx_fields.fallback_filename]
+        if len(primary) == 1:
+            return primary[0]
+        if len(fallback) == 1:
+            return fallback[0]
+        raise IOError(
+            "CosMx sample directory must contain either "
+            f"'{tx_fields.filename}' or '{tx_fields.fallback_filename}'."
+        )
+
+    @staticmethod
+    def _scan_transcripts_file(path: Path) -> pl.LazyFrame:
+        if path.suffix.lower() == ".csv":
+            return pl.scan_csv(path)
+        if path.suffix.lower() == ".parquet":
+            return pl.scan_parquet(path, parallel="row_groups")
+        raise ValueError(f"Unsupported CosMx transcript file format: {path}")
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
 
-        # Field names
         raw = CosMxTranscriptFields()
         std = StandardTranscriptFields()
 
-        return (
-            # Read in lazily
-            pl.scan_csv(next(self.data_dir.glob(raw.filename)))
-            .with_row_index(name=std.row_index)
-            # Filter data
-            .filter(pl.col(raw.feature).str.contains(
-                '|'.join(raw.filter_substrings)).not_()
+        source_path = self._resolve_transcripts_path(self.data_dir)
+        lf = self._scan_transcripts_file(source_path).with_row_index(name=std.row_index)
+        columns = _lazyframe_column_names(lf)
+
+        x_col = _first_existing(columns, [raw.x, "x", "x_location", "global_x"])
+        y_col = _first_existing(columns, [raw.y, "y", "y_location", "global_y"])
+        feature_col = _first_existing(columns, [raw.feature, "feature_name", "gene"])
+        assignment_col = _first_existing(columns, self._assignment_candidates())
+        compartment_col = _first_existing(columns, [raw.compartment, "cell_compartment", "compartment"])
+
+        if x_col is None or y_col is None or feature_col is None or assignment_col is None:
+            raise ValueError(
+                "CosMx transcripts require minimum usable data columns: "
+                "x, y, feature, and cell/nucleus assignment."
             )
-            # Standardize compartment labels
-            .with_columns(
-                pl.col(raw.compartment)
-                .replace_strict(
-                    {
-                        raw.nucleus_value: std.nucleus_value,
-                        raw.membrane_value: std.cytoplasmic_value,
-                        raw.cytoplasmic_value: std.cytoplasmic_value,
-                        raw.extracellular_value: std.extracellular_value,
-                        None: std.extracellular_value,
-                    },
-                    return_dtype=pl.Int8,
+
+        if (
+            x_col != raw.x
+            or y_col != raw.y
+            or feature_col != raw.feature
+            or assignment_col != raw.cell_id
+        ):
+            warnings.warn(
+                "CosMx transcripts are being parsed in compatibility mode "
+                f"(x='{x_col}', y='{y_col}', feature='{feature_col}', assignment='{assignment_col}')."
+            )
+
+        # Filter technical controls when feature labels look CosMx-like.
+        lf = lf.filter(
+            pl.col(feature_col).str.contains("|".join(raw.filter_substrings)).not_()
+        )
+
+        assignment_expr = _clean_assignment_expr(assignment_col)
+        if compartment_col is not None:
+            compartment_raw = pl.col(compartment_col).cast(pl.String, strict=False).str.strip_chars()
+            compartment_lower = compartment_raw.str.to_lowercase()
+            compartment_expr = (
+                pl.when(
+                    compartment_raw == raw.nucleus_value
                 )
+                .then(std.nucleus_value)
+                .when(
+                    compartment_lower == "nucleus"
+                )
+                .then(std.nucleus_value)
+                .when(
+                    compartment_lower == "nuclear"
+                )
+                .then(std.nucleus_value)
+                .when(
+                    compartment_raw.is_in(
+                        [raw.membrane_value, raw.cytoplasmic_value]
+                    ).fill_null(False)
+                )
+                .then(std.cytoplasmic_value)
+                .when(
+                    compartment_lower.is_in(["cytoplasm", "cytoplasmic", "membrane"]).fill_null(False)
+                )
+                .then(std.cytoplasmic_value)
+                .otherwise(std.extracellular_value)
                 .alias(std.compartment)
             )
-            # Standardize cell IDs
+        else:
+            warnings.warn(
+                "CosMx transcripts have no compartment column. Using assignment-only "
+                "compartment fallback."
+            )
+            compartment_expr = (
+                pl.when(assignment_expr.is_not_null())
+                .then(std.cytoplasmic_value)
+                .otherwise(std.extracellular_value)
+                .alias(std.compartment)
+            )
+
+        cell_id_expr = assignment_expr
+        lf = (
+            lf
+            .with_columns(compartment_expr)
             .with_columns(
                 pl.when(pl.col(std.compartment) != std.extracellular_value)
-                .then(pl.col(raw.cell_id))
+                .then(cell_id_expr)
                 .otherwise(None)
                 .alias(std.cell_id)
             )
-            # Map to standard field names
-            .rename(rename_map)
-            
-            # Subset to necessary fields 
-            .select(select_cols)
+        )
 
-            # Add numeric index
-            .with_row_index()
+        rename_map = {x_col: std.x, y_col: std.y, feature_col: std.feature}
+        select_cols = [std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment]
+
+        return (
+            lf
+            .rename(rename_map)
+            .select(select_cols)
             .collect()
         )
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        
-        # Field names
         raw = CosMxBoundaryFields()
         std = StandardBoundaryFields()
+        std_tx = StandardTranscriptFields()
 
-        # Join boundary datasets
-        cells = get_cosmx_polygons(self.data_dir, 'cell').reset_index(
-            drop=False, names=std.id)
-        cells = fix_invalid_geometry(cells)
-        cells[std.boundary_type] = std.cell_value
+        has_mask_inputs = self._has_mask_inputs(self.data_dir)
 
-        nuclei = get_cosmx_polygons(self.data_dir, 'nucleus').reset_index(
-            drop=False, names=std.id)
-        nuclei = fix_invalid_geometry(nuclei)
-        nuclei[std.boundary_type] = std.nucleus_value
+        cells = _empty_boundaries()
+        nuclei = _empty_boundaries()
+        if has_mask_inputs:
+            try:
+                cells = get_cosmx_polygons(self.data_dir, "cell").reset_index(
+                    drop=False, names=std.id
+                )
+                cells = fix_invalid_geometry(cells)
+                cells[std.boundary_type] = std.cell_value
 
-        bd = pd.concat([cells, nuclei])
+                nuclei = get_cosmx_polygons(self.data_dir, "nucleus").reset_index(
+                    drop=False, names=std.id
+                )
+                nuclei = fix_invalid_geometry(nuclei)
+                nuclei[std.boundary_type] = std.nucleus_value
+            except Exception as exc:
+                warnings.warn(
+                    "CosMx boundary masks were found but could not be parsed. "
+                    f"Falling back to synthetic boundaries ({exc})."
+                )
+                cells = _empty_boundaries()
+                nuclei = _empty_boundaries()
 
-        # Add nucleus column
+        if len(cells) == 0 and len(nuclei) > 0:
+            cells = nuclei.copy()
+            cells[std.boundary_type] = std.cell_value
+        if len(nuclei) == 0 and len(cells) > 0:
+            nuclei = cells.copy()
+            nuclei[std.boundary_type] = std.nucleus_value
+        if len(cells) == 0 and len(nuclei) == 0:
+            raise ValueError(
+                "Could not construct CosMx boundaries. Minimum usable transcripts "
+                "must include x/y plus cell or nucleus assignment."
+            )
+
+        bd = pd.concat(
+            [
+                cells.reset_index(drop=False, names=std.id),
+                nuclei.reset_index(drop=False, names=std.id),
+            ],
+            ignore_index=True,
+        )
+        bd[std.id] = bd[std.id].astype(str)
+
         bd[std.contains_nucleus] = bd[std.id].map(
             pl.from_pandas(bd[[std.id, std.boundary_type]])
             .group_by(std.id)
@@ -473,11 +649,7 @@ class CosMXPreprocessor(ISTPreprocessor):
             .set_index(std.id)
             .get(std.boundary_type)
         )
-        # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
-            std.nucleus_value: '0',
-            std.cell_value: '1',
-        })
+        bd.index = _build_boundary_index(bd)
         return bd
     
     def _get_anndata(self, transcripts, label):
