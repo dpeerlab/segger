@@ -224,10 +224,20 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 logger.debug(f"Processing feature {i+1}/{n_groups} (feature {feature[0]} | transcripts {group.shape[0]/1e3:.1f}K)...")
 
             # sample if too many
-            arr = group["segger_similarity"]
+            arr = group["segger_similarity"].drop_nulls()
             if arr.shape[0] > n:
                 arr = arr.sample(n=n, seed=0)
             arr = arr.to_numpy()
+            arr = arr[np.isfinite(arr)]
+
+            # Degenerate inputs crash threshold_yen / threshold_li: no finite
+            # values, or a single constant value (nothing to threshold).
+            if arr.size == 0:
+                failed_to_converge.append(feature[0])
+                continue
+            if arr.size == 1 or np.allclose(arr, arr[0]):
+                thresholds.append({tx_fields.feature: feature[0], "similarity_threshold": float(arr[0]), "converged": True})
+                continue
 
             # threshold
             try:
