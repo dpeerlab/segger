@@ -63,7 +63,7 @@ class ISTPreprocessor(ABC):
     transcript and boundary GeoDataFrames for the given platform.
     """
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, include_z: bool = False):
         """
         Parameters
         ----------
@@ -73,6 +73,7 @@ class ISTPreprocessor(ABC):
         data_dir = Path(data_dir)
         type(self)._validate_directory(data_dir)
         self.data_dir = data_dir
+        self.include_z = include_z
 
     @staticmethod
     @abstractmethod
@@ -287,11 +288,10 @@ class CosMXPreprocessor(ISTPreprocessor):
                 .alias(std.cell_id)
             )
             # Map to standard field names
-            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
+            .rename(rename_map)
             
             # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
+            .select(select_cols)
 
             # Add numeric index
             .with_row_index()
@@ -404,6 +404,14 @@ class XeniumPreprocessor(ISTPreprocessor):
         # Field names
         raw = self.tx_fields
         std = StandardTranscriptFields()
+
+        rename_map = {raw.x: std.x, raw.y: std.y, raw.feature: std.feature}
+        select_cols = [
+            std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment,
+        ]
+        if self.include_z:
+            rename_map[raw.z] = std.z
+            select_cols.append(std.z)
 
         return (
             # Read in lazily
@@ -564,7 +572,8 @@ def _infer_platform(data_dir: Path) -> str:
 
 def get_preprocessor(
     data_dir: Path,
-    platform: str | None = None
+    platform: str | None = None,
+    include_z: bool = False,
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
@@ -575,4 +584,4 @@ def get_preprocessor(
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir)
+    return cls(data_dir, include_z=include_z)
