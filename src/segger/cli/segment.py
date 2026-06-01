@@ -150,6 +150,15 @@ def segment(
         group=group_transcripts_graph,
     )] = registry.get_default("transcripts_graph_max_dist"),
 
+    no_tx_tx_edges: Annotated[bool, Parameter(
+        help=(
+            "Ablation: remove transcript-transcript ('tx','neighbors','tx') "
+            "edges entirely, so transcripts receive no spatial-neighborhood "
+            "message passing. Defaults to keeping the edges."
+        ),
+        group=group_transcripts_graph,
+    )] = False,
+
 
     # Segmentation (Prediction) Graph
     prediction_mode: Annotated[
@@ -243,6 +252,18 @@ def segment(
         "normalize_embeddings",
         group=group_model,
     )] = registry.get_default("normalize_embeddings"),
+
+    aggregation: Annotated[
+        Literal["gatv2", "mean"],
+        Parameter(
+            help=(
+                "Message-passing aggregation. 'gatv2' (default) uses "
+                "attention; 'mean' ablates attention with mean aggregation "
+                "(SAGEConv, width matched to the attention heads)."
+            ),
+            group=group_model,
+        )
+    ] = "gatv2",
 
     # Loss
     segmentation_loss: Annotated[
@@ -347,6 +368,7 @@ def segment(
         genes_clusters_resolution=genes_clusters_resolution,
         transcripts_graph_max_k=transcripts_max_k,
         transcripts_graph_max_dist=transcripts_max_dist,
+        use_tx_tx_edges=not no_tx_tx_edges,
         prediction_graph_mode=prediction_mode,
         prediction_graph_max_k=prediction_max_k,
         prediction_graph_buffer_ratio=prediction_graph_buffer_ratio,
@@ -382,6 +404,7 @@ def segment(
         sg_weight_end=segmentation_loss_weight_end,
         normalize_embeddings=normalize_embeddings,
         use_positional_embeddings=use_positional_embeddings,
+        aggregation=aggregation,
     )
 
     # Setup Lightning Trainer
