@@ -31,6 +31,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# CPU Leiden parity for fragment mode (Stage B). Optional: when absent, fragment
+# mode falls back to the numpy `_threshold_cut` splitter.
+cluster = [
+    "leidenalg>=0.10",
+    "python-igraph>=0.11",
+]
+# SpatialData / SOPA export (`segger export --format spatialdata`). Optional:
+# the base install only needs the Xenium / AnnData / merged exporters.
 spatialdata = [
     "spatialdata>=0.7.2",
     "spatialdata-io>=0.6.0",

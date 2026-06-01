@@ -1,5 +1,6 @@
 """Utility modules for Segger."""
 
+from segger.utils._logging import setup_logging, MemFilter
 from segger.utils.optional_deps import (
     # Availability flags
     SPATIALDATA_AVAILABLE,
@@ -27,6 +28,9 @@ from segger.utils.optional_deps import (
 )
 
 __all__ = [
+    # Logging
+    "setup_logging",
+    "MemFilter",
     # Availability flags
     "SPATIALDATA_AVAILABLE",
     "SPATIALDATA_IO_AVAILABLE",
