@@ -397,6 +397,218 @@ class BoundaryIdentification:
         return cycles
 
 
+# Boundary-smoothing defaults (Chaikin corner-cutting + ring mean).
+DEFAULT_SMOOTH_RADIUS = 0.35
+DEFAULT_PRE_CHAIKIN_MAX_NODES = 14
+DEFAULT_CHAIKIN_REFINEMENTS = 2
+DEFAULT_RING_SMOOTH_WINDOW = 5
+DEFAULT_MIN_AREA_FRACTION = 0.30
+
+
+def _round_buffer_geom(geom, distance, segs=16):
+    if geom is None or getattr(geom, "is_empty", True) or distance == 0:
+        return geom
+    try:
+        return geom.buffer(distance, quad_segs=segs, join_style=1)
+    except TypeError:
+        return geom.buffer(distance, resolution=segs, join_style=1)
+
+
+def _resample_ring_arclen(coords, max_nodes=14):
+    pts = np.asarray(coords, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 4:
+        return pts
+
+    pts2d = pts[:, :2]
+    if np.allclose(pts2d[0], pts2d[-1]):
+        pts2d = pts2d[:-1]
+
+    n = pts2d.shape[0]
+    if n < 3:
+        return np.vstack([pts2d, pts2d[0]]) if n > 0 else pts2d
+
+    m = int(max(3, max_nodes))
+    if n <= m:
+        return np.vstack([pts2d, pts2d[0]])
+
+    ring = np.vstack([pts2d, pts2d[0]])
+    seg = np.diff(ring, axis=0)
+    seg_len = np.hypot(seg[:, 0], seg[:, 1])
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    total = float(cum[-1])
+
+    if total <= 1e-8:
+        idx = np.linspace(0, n - 1, num=m, endpoint=False).astype(int)
+        out = pts2d[idx]
+        return np.vstack([out, out[0]])
+
+    targets = np.linspace(0.0, total, num=m, endpoint=False)
+    out = np.empty((m, 2), dtype=float)
+    for k, t in enumerate(targets):
+        i = int(np.searchsorted(cum, t, side="right") - 1)
+        i = max(0, min(i, n - 1))
+        s0, s1 = float(cum[i]), float(cum[i + 1])
+        p0 = pts2d[i]
+        p1 = pts2d[(i + 1) % n]
+        if s1 <= s0:
+            out[k] = p0
+        else:
+            a = (t - s0) / (s1 - s0)
+            out[k] = p0 + a * (p1 - p0)
+    return np.vstack([out, out[0]])
+
+
+def _chaikin_corner_cut_coords(coords, refinements=2):
+    pts = np.asarray(coords, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 4:
+        return pts
+
+    pts2d = pts[:, :2]
+    is_closed = np.allclose(pts2d[0], pts2d[-1])
+    if is_closed:
+        pts2d = pts2d[:-1]
+    if pts2d.shape[0] < 3:
+        return np.vstack([pts2d, pts2d[0]]) if pts2d.shape[0] else pts2d
+
+    for _ in range(max(0, int(refinements))):
+        nxt = np.roll(pts2d, -1, axis=0)
+        q = 0.75 * pts2d + 0.25 * nxt
+        r = 0.25 * pts2d + 0.75 * nxt
+        out = np.empty((pts2d.shape[0] * 2, 2), dtype=float)
+        out[0::2] = q
+        out[1::2] = r
+        pts2d = out
+
+    return np.vstack([pts2d, pts2d[0]]) if is_closed else pts2d
+
+
+def _cyclic_ring_mean(coords, window=5):
+    pts = np.asarray(coords, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 5:
+        return pts
+
+    pts2d = pts[:, :2]
+    is_closed = np.allclose(pts2d[0], pts2d[-1])
+    if is_closed:
+        pts2d = pts2d[:-1]
+
+    n = pts2d.shape[0]
+    if n < 5:
+        return np.vstack([pts2d, pts2d[0]]) if is_closed and n > 0 else pts2d
+
+    w = int(max(3, window))
+    if w % 2 == 0:
+        w += 1
+    if n < w:
+        w = n if (n % 2 == 1) else (n - 1)
+    if w < 3:
+        return np.vstack([pts2d, pts2d[0]]) if is_closed else pts2d
+
+    pad = w // 2
+    kernel = np.ones(w, dtype=float) / w
+    x_ext = np.concatenate([pts2d[-pad:, 0], pts2d[:, 0], pts2d[:pad, 0]])
+    y_ext = np.concatenate([pts2d[-pad:, 1], pts2d[:, 1], pts2d[:pad, 1]])
+    x_sm = np.convolve(x_ext, kernel, mode="valid")
+    y_sm = np.convolve(y_ext, kernel, mode="valid")
+    out = np.column_stack([x_sm, y_sm])
+    return np.vstack([out, out[0]]) if is_closed else out
+
+
+def _smooth_polygon(poly, pre_chaikin_max_nodes=14, chaikin_refinements=2, ring_smooth_window=5):
+    if poly is None or poly.is_empty:
+        return poly
+
+    shell = np.asarray(poly.exterior.coords, dtype=float)
+    if shell.shape[0] < 4:
+        return poly
+
+    shell = _resample_ring_arclen(shell, max_nodes=pre_chaikin_max_nodes)
+    shell = _chaikin_corner_cut_coords(shell, refinements=chaikin_refinements)
+    if ring_smooth_window and ring_smooth_window > 1:
+        shell = _cyclic_ring_mean(shell, window=ring_smooth_window)
+    if shell.shape[0] < 4:
+        return poly
+
+    holes = []
+    hole_max_nodes = min(int(pre_chaikin_max_nodes), max(6, int(pre_chaikin_max_nodes) - 2))
+    hole_window = max(3, int(ring_smooth_window) - 2)
+    for ring in poly.interiors:
+        ring_coords = np.asarray(ring.coords, dtype=float)
+        if ring_coords.shape[0] < 4:
+            continue
+        ring_coords = _resample_ring_arclen(ring_coords, max_nodes=hole_max_nodes)
+        ring_coords = _chaikin_corner_cut_coords(ring_coords, refinements=max(1, chaikin_refinements - 1))
+        ring_coords = _cyclic_ring_mean(ring_coords, window=hole_window)
+        if ring_coords.shape[0] >= 4:
+            holes.append(ring_coords)
+
+    try:
+        out = Polygon(shell, holes)
+    except Exception:
+        return poly
+
+    if not out.is_valid:
+        out = out.buffer(0)
+    return out if not out.is_empty else poly
+
+
+def _smooth_boundary_geometry(
+    geom,
+    smooth_radius=DEFAULT_SMOOTH_RADIUS,
+    pre_chaikin_max_nodes=DEFAULT_PRE_CHAIKIN_MAX_NODES,
+    chaikin_refinements=DEFAULT_CHAIKIN_REFINEMENTS,
+    ring_smooth_window=DEFAULT_RING_SMOOTH_WINDOW,
+    min_area_fraction=DEFAULT_MIN_AREA_FRACTION,
+):
+    if geom is None or getattr(geom, "is_empty", True):
+        return geom
+
+    src_area = float(getattr(geom, "area", 0.0) or 0.0)
+    g = geom
+    try:
+        if smooth_radius > 0:
+            g = _round_buffer_geom(g, smooth_radius, segs=20)
+            g = _round_buffer_geom(g, -smooth_radius, segs=20)
+
+        if g.geom_type == "Polygon":
+            g = _smooth_polygon(
+                g,
+                pre_chaikin_max_nodes=pre_chaikin_max_nodes,
+                chaikin_refinements=chaikin_refinements,
+                ring_smooth_window=ring_smooth_window,
+            )
+        elif g.geom_type == "MultiPolygon":
+            parts = [
+                _smooth_polygon(
+                    p,
+                    pre_chaikin_max_nodes=pre_chaikin_max_nodes,
+                    chaikin_refinements=chaikin_refinements,
+                    ring_smooth_window=ring_smooth_window,
+                )
+                for p in g.geoms
+                if not p.is_empty
+            ]
+            if parts:
+                g = MultiPolygon(parts).buffer(0)
+
+        if smooth_radius > 0:
+            final_radius = 0.45 * smooth_radius
+            g = _round_buffer_geom(g, final_radius, segs=16)
+            g = _round_buffer_geom(g, -final_radius, segs=16)
+
+        if not g.is_valid:
+            g = g.buffer(0)
+        if g.is_empty:
+            return geom
+
+        out_area = float(getattr(g, "area", 0.0) or 0.0)
+        if src_area > 0 and out_area < float(min_area_fraction) * src_area:
+            return geom
+        return g
+    except Exception:
+        return geom
+
+
 def generate_boundary(
     df: Union[pd.DataFrame, pl.DataFrame],
     x: str = "x",
@@ -440,6 +652,11 @@ def generate_boundaries(
     y: str = "y",
     cell_id: str = "seg_cell_id",
     method: BoundaryMethod = "delaunay",
+    smooth: bool = False,
+    smooth_radius: float = DEFAULT_SMOOTH_RADIUS,
+    chaikin_refinements: int = DEFAULT_CHAIKIN_REFINEMENTS,
+    ring_smooth_window: int = DEFAULT_RING_SMOOTH_WINDOW,
+    min_area_fraction: float = DEFAULT_MIN_AREA_FRACTION,
     n_jobs: int = 1,
     chunksize: int = 8,
     progress: bool = True,
@@ -498,6 +715,14 @@ def generate_boundaries(
                 if method == "convex_hull"
                 else delaunay_polygon(points)
             )
+            if smooth and geom is not None:
+                geom = _smooth_boundary_geometry(
+                    geom,
+                    smooth_radius=smooth_radius,
+                    chaikin_refinements=chaikin_refinements,
+                    ring_smooth_window=ring_smooth_window,
+                    min_area_fraction=min_area_fraction,
+                )
         except Exception:
             geom = None
         return cid, n_unique_points, geom
@@ -560,6 +785,11 @@ def cell_boundaries(
     x: str = "x",
     y: str = "y",
     method: BoundaryMethod = "delaunay",
+    smooth: bool = False,
+    smooth_radius: float = DEFAULT_SMOOTH_RADIUS,
+    chaikin_refinements: int = DEFAULT_CHAIKIN_REFINEMENTS,
+    ring_smooth_window: int = DEFAULT_RING_SMOOTH_WINDOW,
+    min_area_fraction: float = DEFAULT_MIN_AREA_FRACTION,
     n_jobs: int = 1,
     chunksize: int = 8,
     progress: bool = True,
@@ -588,6 +818,11 @@ def cell_boundaries(
         y=y,
         cell_id=cell_id_col,
         method=method,
+        smooth=smooth,
+        smooth_radius=smooth_radius,
+        chaikin_refinements=chaikin_refinements,
+        ring_smooth_window=ring_smooth_window,
+        min_area_fraction=min_area_fraction,
         n_jobs=n_jobs,
         chunksize=chunksize,
         progress=progress,
