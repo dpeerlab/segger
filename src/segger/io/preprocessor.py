@@ -63,16 +63,24 @@ class ISTPreprocessor(ABC):
     transcript and boundary GeoDataFrames for the given platform.
     """
 
-    def __init__(self, data_dir: Path, include_z: bool = False):
+    DEFAULT_MIN_QV: float | None = None
+
+    def __init__(self, data_dir: Path, min_qv: float | None = None, include_z: bool = False):
         """
         Parameters
         ----------
         data_dir : Path
             Path to the raw data directory for the spatial platform.
+        min_qv : float, optional
+            Minimum transcript quality to keep. Defaults to the platform's
+            ``DEFAULT_MIN_QV`` (None = no quality filter).
+        include_z : bool, optional
+            Whether to carry the z coordinate through preprocessing.
         """
         data_dir = Path(data_dir)
         type(self)._validate_directory(data_dir)
         self.data_dir = data_dir
+        self.min_qv = type(self).DEFAULT_MIN_QV if min_qv is None else min_qv
         self.include_z = include_z
 
     @staticmethod
@@ -352,6 +360,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     tx_fields = XeniumTranscriptFields()
     bd_fields = XeniumBoundaryFields()
     sw_version = lambda version: version[0] > 1
+    DEFAULT_MIN_QV: float = 20.0
 
     @staticmethod
     def _get_analysis_sw_version(data_dir: Path) -> str:
@@ -427,7 +436,7 @@ class XeniumPreprocessor(ISTPreprocessor):
                 pl.col(raw.cell_id).cast(pl.Utf8),
             )
             # Filter data
-            .filter(pl.col(raw.quality) >= 20)
+            .filter(pl.col(raw.quality) >= self.min_qv)
             .filter(pl.col(raw.feature).str.contains(
                 '|'.join(raw.filter_substrings)).not_()
             )
@@ -573,6 +582,7 @@ def _infer_platform(data_dir: Path) -> str:
 def get_preprocessor(
     data_dir: Path,
     platform: str | None = None,
+    min_qv: float | None = None,
     include_z: bool = False,
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
@@ -584,4 +594,4 @@ def get_preprocessor(
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir, include_z=include_z)
+    return cls(data_dir, min_qv=min_qv, include_z=include_z)
