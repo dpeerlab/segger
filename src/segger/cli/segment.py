@@ -57,6 +57,11 @@ group_loss = Group(
     help="Related to loss function parameters.",
     sort_key=7,
 )
+group_fragment = Group(
+    name="Fragment Mode",
+    help="Group unassigned transcripts into fragment cells.",
+    sort_key=8,
+)
 
 app_segment = App(name="segment", help="Run cell segmentation on spatial transcriptomics data.")
 
@@ -306,7 +311,49 @@ def segment(
         "save_anndata",
         group=group_io,
     )] = registry.get_default("save_anndata"),
-    
+
+    # Fragment mode
+    fragment_mode: Annotated[bool, Parameter(
+        help="Group unassigned transcripts into fragment cells.",
+        group=group_fragment,
+    )] = False,
+
+    fragment_min_transcripts: Annotated[int, Parameter(
+        help="Minimum transcripts per fragment cell.",
+        validator=validators.Number(gt=0),
+        group=group_fragment,
+    )] = 50,
+
+    fragment_max_transcripts: Annotated[int, Parameter(
+        help="Maximum transcripts per fragment cell (recursive Leiden cap).",
+        validator=validators.Number(gt=0),
+        group=group_fragment,
+    )] = 5000,
+
+    fragment_n_neighbors: Annotated[int, Parameter(
+        help="Spatial k-NN degree for the fragment graph.",
+        validator=validators.Number(gt=0),
+        group=group_fragment,
+    )] = 15,
+
+    fragment_edge_threshold: Annotated[float, Parameter(
+        help="Drop k-NN edges with embedding cosine below this.",
+        validator=validators.Number(gte=-1, lte=1),
+        group=group_fragment,
+    )] = 0.0,
+
+    fragment_resolution: Annotated[float, Parameter(
+        help="Leiden resolution (higher -> smaller communities).",
+        validator=validators.Number(gt=0),
+        group=group_fragment,
+    )] = 1.0,
+
+    fragment_merge_threshold: Annotated[float, Parameter(
+        help="Min mean-embedding cosine to merge adjacent communities.",
+        validator=validators.Number(gte=-1, lte=1),
+        group=group_fragment,
+    )] = 0.6,
+
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = "none",
@@ -396,6 +443,13 @@ def segment(
         output_directory,
         save_anndata=save_anndata,
         debug=debug,
+        fragment_mode=fragment_mode,
+        fragment_min_transcripts=fragment_min_transcripts,
+        fragment_max_transcripts=fragment_max_transcripts,
+        fragment_n_neighbors=fragment_n_neighbors,
+        fragment_edge_threshold=fragment_edge_threshold,
+        fragment_resolution=fragment_resolution,
+        fragment_merge_threshold=fragment_merge_threshold,
     )
     trainer = Trainer(
         logger=csvlogger,

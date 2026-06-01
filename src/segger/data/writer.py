@@ -17,23 +17,59 @@ logger = logging.getLogger(__name__)
 
 
 class ISTSegmentationWriter(BasePredictionWriter):
-    """TODO: Description
+    """Write segmentation predictions.
 
     Parameters
     ----------
     output_directory : Path
         Path to write outputs.
+    fragment_mode : bool, optional
+        Enable fragment mode for grouping unassigned transcripts into
+        "fragment-<id>" cells via embedding-weighted Leiden on a spatial
+        k-NN graph of the GNN transcript embeddings (default: False).
+    fragment_min_transcripts : int, optional
+        Minimum transcripts per fragment cell; smaller communities are merged
+        into a neighbour or dropped (default: 50).
+    fragment_max_transcripts : int, optional
+        Maximum transcripts per fragment cell; oversized components are split
+        by recursive Leiden so no fragment exceeds this cap (default: 5000).
+    fragment_n_neighbors : int, optional
+        Spatial k-NN degree for the fragment graph (default: 15).
+    fragment_edge_threshold : float, optional
+        Drop k-NN edges whose embedding cosine is below this, so unlike
+        neighbours stay separate (default: 0.0).
+    fragment_resolution : float, optional
+        Leiden resolution; higher yields smaller communities (default: 1.0).
+    fragment_merge_threshold : float, optional
+        Minimum mean-embedding cosine to merge two adjacent communities in the
+        region-adjacency merge (default: 0.6).
     """
     def __init__(
             self,
             output_directory: Path,
             save_anndata: bool = True,
-            debug: bool = False
+            debug: bool = False,
+            fragment_mode: bool = False,
+            fragment_min_transcripts: int = 50,
+            fragment_max_transcripts: int = 5000,
+            fragment_n_neighbors: int = 15,
+            fragment_edge_threshold: float = 0.0,
+            fragment_resolution: float = 1.0,
+            fragment_merge_threshold: float = 0.6,
         ):
         # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
         self.save_anndata = save_anndata
+
+        # fragment mode
+        self.fragment_mode = fragment_mode
+        self.fragment_min_transcripts = fragment_min_transcripts
+        self.fragment_max_transcripts = fragment_max_transcripts
+        self.fragment_n_neighbors = fragment_n_neighbors
+        self.fragment_edge_threshold = fragment_edge_threshold
+        self.fragment_resolution = fragment_resolution
+        self.fragment_merge_threshold = fragment_merge_threshold
 
         # setup debugging
         self.debug = debug
@@ -73,6 +109,11 @@ class ISTSegmentationWriter(BasePredictionWriter):
         logger.debug("Assigning transcripts to cells...")
         obs = trainer.datamodule.ad.obs
         segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=logger)
+
+        # apply fragment mode (groups unassigned transcripts into fragment cells)
+        if self.fragment_mode:
+            self.segger_logger.debug("Applying fragment mode to unassigned transcripts...")
+            segmentation = self._apply_fragment_mode(segmentation, predictions, trainer)
 
         # write transcripts
         logger.debug(f"Writing segmentation output to {self.output_directory}...")
@@ -264,8 +305,117 @@ class ISTSegmentationWriter(BasePredictionWriter):
         logger.debug("Segmentation complete.")
         return segmentation
 
-    
-    # Debugging callbacks
+    def _apply_fragment_mode(
+        self,
+        segmentation_df: pl.DataFrame,
+        predictions: Sequence[list],
+        trainer: Trainer,
+    ) -> pl.DataFrame:
+        """Group unassigned transcripts into fragment-<id> cells.
+
+        Uses embedding-weighted Leiden on a spatial k-NN graph of the GNN
+        transcript embeddings captured during ``predict_step``; see
+        :func:`segger.prediction.fragment.assign_fragments`.
+        """
+        from ..prediction.fragment import assign_fragments, FragmentConfig
+
+        tx_fields = TrainingTranscriptFields()
+        unassigned = (
+            segmentation_df
+            .filter(pl.col("segger_cell_id").is_null())
+            .select(tx_fields.row_index)
+            .join(
+                trainer.datamodule.tx.select([
+                    tx_fields.row_index, tx_fields.x, tx_fields.y,
+                ]),
+                on=tx_fields.row_index,
+                how="left",
+            )
+        )
+        if unassigned.height < self.fragment_min_transcripts:
+            return segmentation_df
+        if not predictions or len(predictions[0]) < 5:
+            raise RuntimeError(
+                "Fragment mode requires transcript embeddings from predict_step.",
+            )
+
+        # Concatenate per-batch row indices and embeddings, then map each
+        # unassigned transcript to its best-scoring prediction row.
+        row_idx = torch.hstack([batch[0] for batch in predictions]).cpu().numpy()
+        similarity = (
+            torch.hstack([batch[2] for batch in predictions])
+            .cpu()
+            .numpy()
+        )
+        emb_all = torch.vstack([batch[4] for batch in predictions]).cpu().numpy()
+
+        prediction_lookup = (
+            pl.DataFrame({
+                tx_fields.row_index: row_idx,
+                "_prediction_index": np.arange(row_idx.size, dtype=np.int64),
+                "_segger_similarity": similarity,
+            })
+            .sort(
+                by=[tx_fields.row_index, "_segger_similarity"],
+                descending=[False, True],
+            )
+            .unique(tx_fields.row_index, keep="first")
+            .select([tx_fields.row_index, "_prediction_index"])
+        )
+        unassigned = (
+            unassigned
+            .with_row_index("_fragment_order")
+            .join(prediction_lookup, on=tx_fields.row_index, how="inner")
+            .sort("_fragment_order")
+        )
+        row_unassigned = unassigned[tx_fields.row_index].to_numpy()
+        if row_unassigned.size < self.fragment_min_transcripts:
+            return segmentation_df
+
+        emb_pos = unassigned["_prediction_index"].to_numpy()
+        emb_unassigned = emb_all[emb_pos]
+        xy_unassigned = unassigned.select([tx_fields.x, tx_fields.y]).to_numpy()
+
+        fragment_ids = assign_fragments(
+            xy_unassigned,
+            emb_unassigned,
+            FragmentConfig(
+                min_transcripts=self.fragment_min_transcripts,
+                max_transcripts=self.fragment_max_transcripts,
+                n_neighbors=self.fragment_n_neighbors,
+                edge_threshold=self.fragment_edge_threshold,
+                resolution=self.fragment_resolution,
+                merge_threshold=self.fragment_merge_threshold,
+            ),
+        )
+        valid = fragment_ids >= 0
+        if not valid.any():
+            return segmentation_df
+
+        update_df = pl.DataFrame({
+            tx_fields.row_index: row_unassigned[valid],
+            "segger_cell_id_fragment": [
+                f"fragment-{int(c)}" for c in fragment_ids[valid]
+            ],
+        })
+        return (
+            segmentation_df
+            .join(update_df, on=tx_fields.row_index, how="left")
+            .with_columns(
+                pl.coalesce([
+                    pl.col("segger_cell_id").cast(pl.Utf8),
+                    pl.col("segger_cell_id_fragment"),
+                ]).alias("segger_cell_id")
+            )
+            .drop("segger_cell_id_fragment")
+        )
+
+    # Prediction / debugging callbacks
+    def on_predict_start(self, trainer, pl_module):
+        # Have the model also return per-transcript embeddings when fragment
+        # mode is enabled (see ``LitISTEncoder.predict_step``).
+        pl_module.return_tx_embeddings = self.fragment_mode
+
     def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         mask = batch['tx']['predict_mask']
         self.n_tx_predicted += mask.sum().item()
@@ -289,4 +439,3 @@ class ISTSegmentationWriter(BasePredictionWriter):
         if self.debug:
             logger.debug(f"Saving trainer state to {self.path_debug / 'trainer_state_final.ckpt'}")
             trainer.save_checkpoint(self.path_debug / "trainer_state_final.ckpt")
-

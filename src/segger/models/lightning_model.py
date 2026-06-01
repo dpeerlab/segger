@@ -295,7 +295,10 @@ class LitISTEncoder(LightningModule):
         mask = batch['tx']['predict_mask']
 
         # To cpu, else gpu is held until end of predict loop
-        return src_idx[mask].cpu(), seg_idx[mask].cpu(), max_sim[mask].cpu(), gen_idx[mask].cpu()
+        out = (src_idx[mask].cpu(), seg_idx[mask].cpu(), max_sim[mask].cpu(), gen_idx[mask].cpu())
+        if getattr(self, "return_tx_embeddings", False):
+            out = (*out, embeddings['tx'][mask].detach().cpu())
+        return out
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configures the optimizer for training."""
