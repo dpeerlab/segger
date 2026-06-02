@@ -83,6 +83,15 @@ class LitISTEncoder(LightningModule):
         ])
         self._freeze_gene_embedding = not update_gene_embedding
 
+        # Prediction-time output flags (set by the writer in on_predict_start).
+        # When `return_extension_candidates` is True, predict_step additionally
+        # surfaces the raw best-candidate boundary id and its (unthresholded)
+        # cosine for every interior transcript so Stage A "Extend" can relax the
+        # per-gene threshold downstream. When `return_tx_embeddings` is also True
+        # (fragment_mode), the masked tx embeddings are appended last for Stage B.
+        self.return_extension_candidates: bool = False
+        self.return_tx_embeddings: bool = False
+
     def setup(self, stage):
         # LitISTEncoder needs supp. data from ISTDataModule to train
         if not isinstance(self.trainer.datamodule, ISTDataModule):
@@ -295,7 +304,32 @@ class LitISTEncoder(LightningModule):
         mask = batch['tx']['predict_mask']
 
         # To cpu, else gpu is held until end of predict loop
-        return src_idx[mask].cpu(), seg_idx[mask].cpu(), max_sim[mask].cpu(), gen_idx[mask].cpu()
+        base = (
+            src_idx[mask].cpu(),
+            seg_idx[mask].cpu(),
+            max_sim[mask].cpu(),
+            gen_idx[mask].cpu(),
+        )
+
+        if not self.return_extension_candidates:
+            return base
+
+        # Raw best-candidate boundary id (cell id) of the scatter_max argmax,
+        # computed irrespective of the min_similarity gate. This is the global
+        # bd 'index' the argmax neighbour points to; -1 only when a transcript
+        # has no tx-bd neighbour at all. seg_idx (accepted assignment) is left
+        # untouched so Stage A "Extend" can relax the per-gene threshold later.
+        cand_cell = torch.full_like(max_idx, -1)
+        _ok = max_idx < dst.shape[0]
+        cand_cell[_ok] = dst_idx[dst[max_idx[_ok]]]
+
+        out = (*base, cand_cell[mask].cpu())
+
+        if self.return_tx_embeddings:
+            # tx_emb stays last; only appended when embeddings are requested.
+            out = (*out, embeddings['tx'][mask].detach().cpu())
+
+        return out
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configures the optimizer for training."""
