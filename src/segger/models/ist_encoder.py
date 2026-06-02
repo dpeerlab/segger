@@ -1,4 +1,4 @@
-from torch_geometric.nn import GATv2Conv, Linear, HeteroDictLinear, HeteroConv
+from torch_geometric.nn import GATv2Conv, SAGEConv, Linear, HeteroDictLinear, HeteroConv
 from typing import Dict, Tuple, List, Union, Optional
 from torch import Tensor
 from torch.nn import (
@@ -108,46 +108,62 @@ class SkipGAT(Module):
         out_channels: int,
         n_heads: int,
         add_self_loops_tx: bool = False,
+        aggregation: str = 'gatv2',
     ) -> None:
         super().__init__()
 
-        # Build a HeteroConv that internally uses GATv2Conv for each edge type.
-        self.conv = HeteroConv(
-            convs={
-                ('tx', 'neighbors', 'tx'): GATv2Conv(
+        self.aggregation = aggregation
+        edge_types = [
+            ('tx', 'neighbors', 'tx'),
+            ('tx', 'belongs', 'bd'),
+            ('bd', 'contains', 'tx'),
+        ]
+
+        if aggregation == 'gatv2':
+            # Attention-based message passing (default Segger).
+            convs = {
+                et: GATv2Conv(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     heads=n_heads,
-                    add_self_loops=add_self_loops_tx,
+                    add_self_loops=add_self_loops_tx if et == edge_types[0] else False,
                     dropout=0.2,
-                ),
-                ('tx', 'belongs', 'bd'): GATv2Conv(
+                )
+                for et in edge_types
+            }
+        elif aggregation == 'mean':
+            # Ablation: attention removed, replaced with mean aggregation
+            # (SAGEConv). Output width is matched to GATv2's concatenated
+            # heads (out_channels * n_heads) so that only the attention
+            # mechanism is removed and overall model capacity is held fixed.
+            convs = {
+                et: SAGEConv(
                     in_channels=in_channels,
-                    out_channels=out_channels,
-                    heads=n_heads,
-                    add_self_loops=False,
-                    dropout=0.2,
-                ),
-                ('bd', 'contains', 'tx'): GATv2Conv(
-                    in_channels=in_channels,
-                    out_channels=out_channels,
-                    heads=n_heads,
-                    add_self_loops=False,
-                    dropout=0.2,
-                ),
-            },
-            aggr='sum'
-        )
+                    out_channels=out_channels * n_heads,
+                    aggr='mean',
+                )
+                for et in edge_types
+            }
+        else:
+            raise ValueError(
+                f"Unrecognized aggregation: '{aggregation}'. "
+                f"Acceptable values are 'gatv2' and 'mean'."
+            )
+
+        # Build a HeteroConv that internally uses one conv per edge type.
+        self.conv = HeteroConv(convs=convs, aggr='sum')
 
         # This will store the attention weights from the last forward pass.
         self._attn_weights: Dict[Tuple[str, str, str], Tensor] = {}
 
         # Register a forward hook to capture attention weights internally.
-        edge_type = 'tx', 'neighbors', 'tx'
-        self.conv.convs[edge_type].register_forward_hook(
-            self._make_hook(edge_type),
-            with_kwargs=True,
-        )
+        # Only meaningful for the attention-based (gatv2) variant.
+        if aggregation == 'gatv2':
+            edge_type = 'tx', 'neighbors', 'tx'
+            self.conv.convs[edge_type].register_forward_hook(
+                self._make_hook(edge_type),
+                with_kwargs=True,
+            )
 
     def _make_hook(self, edge_type: Tuple[str, str, str]):
         """
@@ -185,14 +201,18 @@ class SkipGAT(Module):
         x_dict_out : dict of str -> Tensor
             Updated node embeddings after convolution.
         """
-        # Always request attention weights, but do not return them here.
-        x_dict = self.conv(
-            x_dict,
-            edge_index_dict,
-            return_attention_weights_dict = {
-                edge: False for edge in self.conv.convs
-            },
-        )
+        # Request attention weights only for the attention-based variant;
+        # SAGEConv (mean aggregation) does not accept this argument.
+        if self.aggregation == 'gatv2':
+            x_dict = self.conv(
+                x_dict,
+                edge_index_dict,
+                return_attention_weights_dict = {
+                    edge: False for edge in self.conv.convs
+                },
+            )
+        else:
+            x_dict = self.conv(x_dict, edge_index_dict)
         return x_dict
 
     @property
@@ -232,6 +252,7 @@ class ISTEncoder(torch.nn.Module):
         n_heads: int = 3,
         normalize_embeddings: bool = True,
         use_positional_embeddings: bool = True,
+        aggregation: str = 'gatv2',
     ):
         """
         Initialize the Segger model.
@@ -273,16 +294,16 @@ class ISTEncoder(torch.nn.Module):
         self.conv_layers = ModuleList()
         # First convolution: in -> hidden x heads
         self.conv_layers.append(
-            SkipGAT((-1, -1), hidden_channels, n_heads)
+            SkipGAT((-1, -1), hidden_channels, n_heads, aggregation=aggregation)
         )
         # Middle convolutions: hidden x heads -> hidden x heads
         for _ in range(n_mid_layers):
             self.conv_layers.append(
-                SkipGAT((-1, -1), hidden_channels, n_heads)
+                SkipGAT((-1, -1), hidden_channels, n_heads, aggregation=aggregation)
             )
         # Last convolution: hidden x heads -> out x heads
         self.conv_layers.append(
-            SkipGAT((-1, -1), out_channels, n_heads)
+            SkipGAT((-1, -1), out_channels, n_heads, aggregation=aggregation)
         )
         # Last layer: out x heads -> out
         self.lin_last = HeteroDictLinear(

@@ -45,6 +45,7 @@ class LitISTEncoder(LightningModule):
         update_gene_embedding: bool = True,
         use_positional_embeddings: bool = True,
         normalize_embeddings: bool = True,
+        aggregation: str = 'gatv2',
     ):
         """TODO: Description.
 
@@ -66,6 +67,7 @@ class LitISTEncoder(LightningModule):
             n_heads=n_heads,
             normalize_embeddings=normalize_embeddings,
             use_positional_embeddings=use_positional_embeddings,
+            aggregation=aggregation,
         )
         self.learning_rate = learning_rate
         self._sg_loss_type = sg_loss_type
