@@ -207,3 +207,6 @@ __marimo__/
 .dev/*
 *.pyc
 *memray*
+
+# Local-only working docs (kept out of the tracked tree to match `main`)
+docs/

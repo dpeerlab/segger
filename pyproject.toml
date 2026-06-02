@@ -32,7 +32,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # CPU Leiden parity for fragment mode (Stage B). Optional: when absent, fragment
-# mode falls back to the numpy `_threshold_cut` splitter.
+# mode falls back to the numpy `_threshold_cut` splitter. GPU paths (cuGraph
+# Leiden / cuML) and the HDBSCAN backend (sklearn.cluster.HDBSCAN, already a core
+# dep) need nothing extra here.
 cluster = [
     "leidenalg>=0.10",
     "python-igraph>=0.11",
