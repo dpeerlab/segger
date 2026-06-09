@@ -100,16 +100,30 @@ class Tiling(ABC):
                 join_style='mitre',
                 mitre_limit=margin / 2,
             )
-            missing = buffered.is_empty.sum()
-            # handling tiles too small for buffer
-            if missing != 0:
-                import warnings
+            # Fallback: an over-aggressive margin shrinks small tiles to nothing,
+            # which would drop their geometries from the query entirely (leaving
+            # many transcripts unassigned). Rather than lose them, progressively
+            # halve the margin until every tile survives the negative buffer.
+            import warnings
+            eff_margin = margin
+            while eff_margin > 0 and bool(buffered.is_empty.any()):
+                n_lost = int(buffered.is_empty.sum())
+                eff_margin = eff_margin / 2 if eff_margin > 1e-6 else 0.0
                 warnings.warn(
-                    f"Margin ({margin}) is too large, causing {missing} "
-                    f"tile(s) to disappear. These tiles will be removed from the query."
+                    f"Margin ({margin}) is too large, causing {n_lost} tile(s) to "
+                    f"disappear; retrying with a reduced margin ({eff_margin}) so "
+                    f"their geometries are not dropped from the query."
                 )
-                # Filter out the empty tiles
-                buffered = buffered[~buffered.is_empty]
+                buffered = (
+                    tiles.buffer(
+                        -eff_margin,
+                        cap_style='square',
+                        join_style='mitre',
+                        mitre_limit=max(eff_margin / 2, 1e-9),
+                    )
+                    if eff_margin > 0
+                    else tiles
+                )
             tiles = buffered
 
         # Spatial query
