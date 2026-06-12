@@ -149,7 +149,6 @@ class ISTDataModule(LightningDataModule):
     genes_clusters_resolution: float = 2.
     transcripts_graph_max_k: int = 5
     transcripts_graph_max_dist: float = 5.
-    use_tx_tx_edges: bool = True
     segmentation_graph_mode: Literal["nucleus", "cell"] = "nucleus"
     segmentation_graph_negative_edge_rate: float = 1.
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"] = "cell"
@@ -250,7 +249,6 @@ class ISTDataModule(LightningDataModule):
             ),
             transcripts_graph_max_k=self.transcripts_graph_max_k,
             transcripts_graph_max_dist=self.transcripts_graph_max_dist,
-            use_tx_tx_edges=self.use_tx_tx_edges,
             prediction_graph_mode=self.prediction_graph_mode,
             prediction_graph_max_k=self.prediction_graph_max_k,
             prediction_graph_buffer_ratio=self.prediction_graph_buffer_ratio,

@@ -25,7 +25,6 @@ def setup_heterodata(
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"],
     prediction_graph_max_k: int,
     prediction_graph_buffer_ratio: float,
-    use_tx_tx_edges: bool = True,
     cells_embedding_key: str = 'X_pca',
     cells_clusters_column: str = 'phenograph_cluster',
     cells_encoding_column: str = 'cell_encoding',
@@ -135,21 +134,13 @@ def setup_heterodata(
     data['bd']['pos'] = data['bd']['geometry']
 
     # Transcript neighbors graph
-    # Ablation: when use_tx_tx_edges is False, the ('tx','neighbors','tx')
-    # edge type is omitted entirely. HeteroConv iterates the edge types
-    # present in the data, so the model simply skips transcript-transcript
-    # message passing; transcript nodes are then updated only via the
-    # ('bd','contains','tx') edges.
-    if use_tx_tx_edges:
-        logger.debug("Setting up transcript neighbors graph")
-        data['tx', 'neighbors', 'tx'].edge_index = setup_transcripts_graph(
-            transcripts,
-            max_k=transcripts_graph_max_k,
-            max_dist=transcripts_graph_max_dist,
-        )
-        logger.info(f"  tx-neighbors-tx edges: {data['tx', 'neighbors', 'tx'].edge_index.shape[1]:,}")
-    else:
-        logger.info("  tx-neighbors-tx edges: 0 (ablated via use_tx_tx_edges=False)")
+    logger.debug("Setting up transcript neighbors graph")
+    data['tx', 'neighbors', 'tx'].edge_index = setup_transcripts_graph(
+        transcripts,
+        max_k=transcripts_graph_max_k,
+        max_dist=transcripts_graph_max_dist,
+    )
+    logger.info(f"  tx-neighbors-tx edges: {data['tx', 'neighbors', 'tx'].edge_index.shape[1]:,}")
 
     # Reference segmentation graph
     logger.debug("Setting up segmentation graph")
