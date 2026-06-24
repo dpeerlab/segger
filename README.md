@@ -64,3 +64,24 @@ To see all available parameter options:
 ```bash
 segger segment --help
 ```
+
+## Exporting segmentation outputs for interoperability
+
+`segger export` writes a segger segmentation to plain files from which a SpatialData object can be
+assembled. Name which elements to write: `anndata` (cell by gene table), `transcripts` (the assigned
+transcripts), or `boundaries` (one polygon per cell). With no element named it writes `anndata` and
+`boundaries`; add `transcripts` for the per-transcript assignment.
+```bash
+segger export                     -s outputs/segger_segmentation.parquet -i /path/to/ist/data/ -o export/   # anndata.h5ad + cell_boundaries.parquet
+segger export anndata transcripts -s outputs/segger_segmentation.parquet -i /path/to/ist/data/ -o export/   # select which elements to write
+```
+Boundaries are traced with `--method`: `delaunay` (the default) prunes a Delaunay triangulation into a
+concave outline, while `convex_hull` takes the convex hull; both are Chaikin-smoothed unless
+`--no-smooth-masks`. The exported transcripts are controlled by `--include-all-transcripts`,
+`--min-similarity`, and `--min-transcripts` (see `segger export --help`).
+
+The column names follow SOPA's SpatialData conventions. `anndata.h5ad` and `cell_boundaries.parquet`
+share `cell_id`, the instance key SOPA uses to join a table to its shapes. `transcripts.parquet` keeps
+the segger assignment as `segger_cell_id` (plus `row_index`), a sibling column in the spirit of SOPA's
+`sopa_prior`, so it merges onto an existing transcripts dataframe by `row_index` without overwriting
+the vendor `cell_id`; its values match the `cell_id` in the other two files.

@@ -1,12 +1,10 @@
 from cyclopts import App
 from .segment import segment
 from .debug import debug
+from .export import export
 
-# CLI App
 app = App(name="Segger")
 
-# Main segmentation
 app.command(segment)
-
-# Debugging utilities
 app.command(debug)
+app.command(export)
