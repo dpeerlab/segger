@@ -164,7 +164,14 @@ class ISTDataModule(LightningDataModule):
         """TODO: Description
         """
         super().__init__()
+
+        # setup logging
         self.logger = logging.getLogger(__name__)
+        if self.debug_dir is not None:
+            self.debug_dir = Path(self.debug_dir)
+            self.debug_dir.mkdir(exist_ok=True, parents=True)
+        
+        # load data
         self.save_hyperparameters()
         self.load()
 
@@ -239,6 +246,10 @@ class ISTDataModule(LightningDataModule):
             prediction_graph_buffer_ratio=self.prediction_graph_buffer_ratio,
         )
 
+        if self.debug_dir is not None:
+            self.logger.info(f"Saving processed data to {self.debug_dir / 'data.pt'}...")
+            torch.save(self.data, self.debug_dir / "data.pt")
+
         # Tile graph dataset
         node_positions = torch.vstack([
             self.data['tx']['pos'],
@@ -282,11 +293,8 @@ class ISTDataModule(LightningDataModule):
         
         if self.debug_dir is not None:
             import pickle
-            debug_dir = Path(self.debug_dir)
-            debug_dir.mkdir(exist_ok=True, parents=True)
-            self.logger.info(f"Saving full graph + tiling to {debug_dir} for debug reproduction")
-            torch.save(self.data, debug_dir / "data.pt")
-            with open(debug_dir / "tiles.pkl", "wb") as f:
+            self.logger.info(f"Saving training tiles to {self.debug_dir / 'tiles.pkl'}...")
+            with open(self.debug_dir / "tiles.pkl", "wb") as f:
                 pickle.dump(self.tiling.tiles, f)
 
         self.logger.debug("Data loading is complete.")

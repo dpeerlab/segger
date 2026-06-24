@@ -50,7 +50,10 @@ def best_fit_decreasing(
     else:
         if not all(0 < item <= bin_capacity for item in items):
             raise ValueError(
-                "All items must be > 0 and <= bin_capacity."
+                f"At least one tile has size 0 or greater than bin_capacity ({bin_capacity})."
+                f"\n- Smallest item: {min(items)}"
+                f"\n- Largest item: {max(items)}"
+                f"\nIncrease bin with --max-edges-per-batch (Currently {bin_capacity}), use --skip-too-big to ignore these items, or decrease --max-nodes-per-tile"
             )
         indexed_items = [(val, i) for i, val in enumerate(items)]
 
