@@ -52,7 +52,20 @@ def _points_in_polygons_contains(
     """
     # Setup inputs for spatial join
     if max_size is None:
-        max_size = 10000 if len(points) > 5e7 else 1000  # heuristic
+        # Heuristic: larger point clouds need a larger max_size (shallower tree).
+        # A small max_size on very large/concentrated inputs makes cuSpatial's
+        # int32-sized construction buffers overflow, producing invalid quadtrees
+        # (see segger issue #40). Empirically 624M points need >=50k.
+        n = len(points)
+        if n > 5e8:
+            max_size = 100000
+        elif n > 1e8:
+            max_size = 50000
+        elif n > 5e7:
+            max_size = 10000
+        else:
+            max_size = 1000
+    
     point_indices, quadtree, kwargs = get_quadtree_index(
         points,
         max_size,

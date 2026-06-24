@@ -143,7 +143,6 @@ def get_quadtree_index(
     points: cuspatial.GeoSeries,
     max_size: int,
     with_bounds: bool = True,
-    max_retries: int = 8,
 ) -> tuple[cudf.Series, cudf.DataFrame, dict]:
     """Build a cuSpatial quadtree from 2D point data.
 
@@ -156,8 +155,6 @@ def get_quadtree_index(
     with_bounds : bool, optional
         Whether to return the x, y bounds of each leaf with the quadtree
         DataFrame. Default is True.
-    max_retries : int, optional
-        Retries on invalid tree, each growing ``max_size`` by 5%. Default 6.
 
     Returns
     -------
@@ -178,8 +175,13 @@ def get_quadtree_index(
 
     logger.debug(f"Building quadtree on {len(points)} points with max_size={max_size}, max_depth={max_depth}")
 
-    # Calculate quadtree on region (retry on invalid tree, see issue #40)
-    for i in range(max_retries + 1):
+
+    # Hardcoded fallbacks
+    retry_sizes = [max_size_input, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 250000, 500000]
+
+    found_valid_tree = False
+    for ms in retry_sizes:
+        # build tree
         indices, quadtree = cuspatial.quadtree_on_points(
             points,
             x_min=x_min,
@@ -188,19 +190,20 @@ def get_quadtree_index(
             y_max=y_max,
             scale=scale,
             max_depth=max_depth,
-            max_size=max_size,
+            max_size=ms,
         )
-
-        # check if valid (see segger issue #40)
-        if is_quadtree_valid(quadtree, len(points)):
+        # check if valid
+        valid, info = is_quadtree_valid(quadtree, len(points))
+        if valid:
+            found_valid_tree = True
+            if ms != max_size_input:
+                msg_quadtree = f"Had to override input max-size: Input: {max_size_input / 1000:.1f}k, Used: {ms / 1000:.1f}k"
+                logger.warning(msg_quadtree)
             break
-        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size + max_size_input}.")
-        max_size += max_size_input
-    else:
-        raise RuntimeError(
-            f"cuSpatial returned an invalid quadtree after {max_retries + 1} "
-            f"attempts (see segger issue #40)."
-        )
+        logger.warning(f"Invalid quadtree with max_size={ms} ({info['points_in_tree']}/{info['n_points']} points indexed).")
+
+    if not found_valid_tree:
+        raise RuntimeError(f"cuSpatial invalid quadtree after sizes {retry_sizes} (see segger issue #40).")
 
     logger.debug(f"Quadtree built: {int((~quadtree['is_internal_node']).sum())} leaves")
 
@@ -268,4 +271,4 @@ def is_quadtree_valid(quadtree: cudf.DataFrame, n_points: int) -> bool:
     """
     leaves = quadtree[~quadtree['is_internal_node']]
     points_tree = leaves["length"].sum()
-    return points_tree == n_points
+    return (points_tree == n_points), {"points_in_tree": points_tree, "n_points": n_points}
