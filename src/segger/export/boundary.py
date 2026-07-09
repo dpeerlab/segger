@@ -16,6 +16,7 @@ import polars as pl
 from scipy.spatial import Delaunay, cKDTree
 from shapely.geometry import LineString, MultiPoint, Polygon
 from shapely.ops import polygonize
+from tqdm import tqdm
 
 
 def _as_polygon(geom) -> Optional[Polygon]:
@@ -124,7 +125,7 @@ class _CellOutline:
                     nxt.append(edge)
             boundary = nxt
 
-    def refine(self, connectivity: float = 1.0) -> "_CellOutline":
+    def refine(self, connectivity: float = 2.0) -> "_CellOutline":
         """Prune the triangulation to a concave outline.
 
         ``connectivity`` scales how readily boundary edges are pruned: 1.0 reproduces the
@@ -156,8 +157,8 @@ class _CellOutline:
 def cell_boundary(
     points: np.ndarray,
     method: Literal["delaunay", "convex_hull"] = "delaunay",
-    smoothing: int = 2,
-    connectivity: float = 1.0,
+    smoothing: int = 0,
+    connectivity: float = 2.0,
 ) -> Optional[Polygon]:
     """Boundary polygon for one cell's transcript coordinates, or None if degenerate.
 
@@ -189,18 +190,21 @@ def generate_boundaries(
     x: str = "x",
     y: str = "y",
     method: Literal["delaunay", "convex_hull"] = "delaunay",
-    smoothing: int = 2,
-    connectivity: float = 1.0,
+    smoothing: int = 0,
+    connectivity: float = 2.0,
 ) -> gpd.GeoDataFrame:
     """Build a GeoDataFrame of cell polygons (indexed by ``cell_id``) from assigned transcripts."""
     if isinstance(transcripts, pl.DataFrame):
         grouped = transcripts.group_by(cell_id).agg(pl.col(x), pl.col(y))
+        n_groups = grouped.height
         groups = ((cid, np.column_stack((xs, ys))) for cid, xs, ys in grouped.iter_rows())
     else:
-        groups = ((cid, g[[x, y]].to_numpy()) for cid, g in transcripts.groupby(cell_id))
+        grouped = transcripts.groupby(cell_id)
+        n_groups = grouped.ngroups
+        groups = ((cid, g[[x, y]].to_numpy()) for cid, g in grouped)
 
     ids, n_tx, geoms = [], [], []
-    for cid, pts in groups:
+    for cid, pts in tqdm(groups, total=n_groups, desc="Building cell boundaries"):
         ids.append(str(cid))
         n_tx.append(len(pts))
         geoms.append(cell_boundary(pts, method=method, smoothing=smoothing, connectivity=connectivity))

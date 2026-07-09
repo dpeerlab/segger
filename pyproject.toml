@@ -26,7 +26,8 @@ dependencies = [
     "shapely",
     "scikit-image",
     "scikit-learn",
-    "tifffile"
+    "tifffile",
+    "tqdm"
 ]
 
 [build-system]

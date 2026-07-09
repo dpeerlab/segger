@@ -103,7 +103,9 @@ def export(
         Literal["delaunay", "convex_hull"],
         Parameter(group=_group_opts, help="Cell-polygon method for boundaries."),
     ] = "delaunay",
-    smooth_masks: Annotated[bool, Parameter(group=_group_opts, help="Round boundaries with Chaikin smoothing.")] = True,
+    chaikin_iterations: Annotated[
+        int, Parameter(group=_group_opts, help="Chaikin corner-cutting iterations to round boundaries (0 disables).")
+    ] = 0,
     include_all_transcripts: _IncludeAll = False,
     min_similarity: _MinSim = None,
     min_transcripts: _MinTx = 10,
@@ -117,7 +119,7 @@ def export(
     if "boundaries" in selected:
         from ..export import generate_boundaries
 
-        gdf = generate_boundaries(assigned, cell_id="segger_cell_id", method=method, smoothing=2 if smooth_masks else 0)
+        gdf = generate_boundaries(assigned, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
         gdf.to_parquet(output_directory / "cell_boundaries.parquet")
         print(f"Wrote {len(gdf)} {method} cell boundaries: {output_directory / 'cell_boundaries.parquet'}")
 

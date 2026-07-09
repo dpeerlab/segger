@@ -76,9 +76,10 @@ segger export                     -s outputs/segger_segmentation.parquet -i /pat
 segger export anndata transcripts -s outputs/segger_segmentation.parquet -i /path/to/ist/data/ -o export/   # select which elements to write
 ```
 Boundaries are traced with `--method`: `delaunay` (the default) prunes a Delaunay triangulation into a
-concave outline, while `convex_hull` takes the convex hull; both are Chaikin-smoothed unless
-`--no-smooth-masks`. The exported transcripts are controlled by `--include-all-transcripts`,
-`--min-similarity`, and `--min-transcripts` (see `segger export --help`).
+concave outline, while `convex_hull` takes the convex hull; neither is smoothed by default, but
+`--chaikin-iterations` rounds them with that many rounds of Chaikin corner-cutting. The exported
+transcripts are controlled by `--include-all-transcripts`, `--min-similarity`, and `--min-transcripts`
+(see `segger export --help`).
 
 The column names follow SOPA's SpatialData conventions. `anndata.h5ad` and `cell_boundaries.parquet`
 share `cell_id`, the instance key SOPA uses to join a table to its shapes. `transcripts.parquet` keeps
