@@ -1,7 +1,7 @@
 """``segger export``: write a segger segmentation as scverse-compatible files.
 
 One command writes the chosen SpatialData elements: ``anndata`` the cell by gene table
-(``anndata.h5ad``), ``transcripts`` the assigned transcripts/points (``transcripts.parquet``),
+(``adata.h5ad``), ``transcripts`` the assigned transcripts/points (``transcripts.parquet``),
 and ``boundaries`` one polygon per cell/shapes (``cell_boundaries.parquet``). Default: anndata + boundaries.
 """
 
@@ -128,8 +128,8 @@ def export(
 
         # Use the exported polygon areas so obs["area"] matches the boundaries; omitted otherwise.
         adata = build_anndata(assigned, cell_id="segger_cell_id", area=gdf.geometry.area if gdf is not None else None)
-        adata.write_h5ad(output_directory / "anndata.h5ad")
-        print(f"Wrote AnnData ({adata.n_obs} cells x {adata.n_vars} genes): {output_directory / 'anndata.h5ad'}")
+        adata.write_h5ad(output_directory / "adata.h5ad")
+        print(f"Wrote AnnData ({adata.n_obs} cells x {adata.n_vars} genes): {output_directory / 'adata.h5ad'}")
 
     if "transcripts" in selected:
         assigned.write_parquet(output_directory / "transcripts.parquet")
