@@ -207,3 +207,5 @@ __marimo__/
 .dev/*
 *.pyc
 *memray*
+rmm_log.txt
+/nvidia/

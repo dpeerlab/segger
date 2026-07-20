@@ -1,5 +1,3 @@
-from email.message import Message
-
 from torch.nn.functional import normalize
 from scipy import sparse as sp
 import geopandas as gpd
@@ -9,13 +7,13 @@ import scanpy as sc
 import numpy as np
 import sklearn
 import torch
-import cupyx
-import cuml
 import warnings
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
-from .neighbors import phenograph_rapids
 from segger.geometry.morphology import get_polygon_props
+
+# cupyx/cuml/phenograph_rapids are imported inside setup_anndata so anndata_from_transcripts
+# stays importable without a GPU (e.g. for segger export on a CPU-only machine).
 
 def anndata_from_transcripts(
     tx: pl.DataFrame,
@@ -146,6 +144,10 @@ def setup_anndata(
     gene_missing_strategy: str = "error",
 ):
     """TODO: Add description."""
+    import cupyx
+    import cuml
+    from .neighbors import phenograph_rapids
+
     # Standard fields
     tx_fields = TrainingTranscriptFields()
     bd_fields = TrainingBoundaryFields()
