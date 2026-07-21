@@ -118,7 +118,7 @@ def fix_self_intersection(poly):
         fixed_poly = max(fixed_poly.geoms, key=lambda p: p.area)
         
     # Ensure the result is actually a Polygon (not Point/LineString/Empty)
-    if fixed_poly.geom_type == 'Polygon':
+    if (fixed_poly.geom_type == 'Polygon') and (fixed_poly.is_valid):
         return fixed_poly
     
     raise Exception("Running the Zero-Distance Buffer failed to handle the error")
