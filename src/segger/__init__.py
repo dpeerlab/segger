@@ -31,6 +31,8 @@ _apply_patches()
 
 def free_mem_str() -> str:
     stats = get_statistics()
+    if stats is None:
+        return "GPU: stats not enabled (call segger.configure_memory() first)"
     return (
         f"GPU: {stats.current_bytes / 1e9:.2f} GB "
         f"(peak {stats.peak_bytes / 1e9:.2f} GB)"
