@@ -110,22 +110,18 @@ def fix_self_intersection(poly):
     if poly.is_valid:
         return poly
 
-    try:
-        # buffer(0) is a common trick to fix self-intersections
-        fixed_poly = poly.buffer(0)
+    # buffer(0) is a common trick to fix self-intersections
+    fixed_poly = poly.buffer(0)
 
-        # buffer(0) might return MultiPolygon - take largest component
-        if fixed_poly.geom_type == 'MultiPolygon':
-            fixed_poly = max(fixed_poly.geoms, key=lambda p: p.area)
+    # buffer(0) might return MultiPolygon - take largest component
+    if fixed_poly.geom_type == 'MultiPolygon':
+        fixed_poly = max(fixed_poly.geoms, key=lambda p: p.area)
         
-        # Ensure the result is actually a Polygon (not Point/LineString/Empty)
-        if fixed_poly.geom_type == 'Polygon':
-            return fixed_poly
-        
-        return None
-        
-    except Exception:
-        return None
+    # Ensure the result is actually a Polygon (not Point/LineString/Empty)
+    if fixed_poly.geom_type == 'Polygon':
+        return fixed_poly
+    
+    raise Exception("Running the Zero-Distance Buffer failed to handle the error")
         
 
 def fix_invalid_geometry(gdf: gpd.GeoDataFrame):
