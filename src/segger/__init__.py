@@ -14,10 +14,16 @@ def configure_memory(force: bool = False) -> None:
     Must run before any CUDA tensor is created. Only called from the CLI
     entry point (segger/cli/main.py) — importing segger as a library should
     not mutate global CUDA allocator state as a side effect.
+
+    Note: rmm.is_initialized() is True as soon as `rmm` is imported (its
+    default, unpooled resource counts as "initialized"), so it can't be used
+    to detect whether this pool/managed-memory config was already applied.
+    We check cp's allocator directly instead — it's set together with
+    torch's in this function, so it's a reliable proxy for both.
     """
     if not force and os.environ.get("SEGGER_SKIP_ALLOCATOR_INIT") == "1":
         return
-    if not force and rmm.is_initialized():
+    if not force and cp.cuda.get_allocator() is rmm_cupy_allocator:
         return
     rmm.reinitialize(pool_allocator=True, managed_memory=True)
     cp.cuda.set_allocator(rmm_cupy_allocator)
