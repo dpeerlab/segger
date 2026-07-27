@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 import cupy as cp
@@ -7,23 +8,25 @@ from rmm.allocators.cupy import rmm_cupy_allocator
 from rmm.allocators.torch import rmm_torch_allocator
 from rmm.statistics import enable_statistics, get_statistics
 
+logger = logging.getLogger(__name__)
+
 
 def configure_memory(force: bool = False) -> None:
     """Point CuPy/cuDF/cuSpatial and PyTorch at a single shared RMM pool.
 
-    Must run before any CUDA tensor is created. Only called from the CLI
-    entry point (segger/cli/main.py) — importing segger as a library should
-    not mutate global CUDA allocator state as a side effect.
+    Must run before any CUDA tensor is created. Run by default from the CLI.
+    Importing segger as a library should not change already set allocators.
 
-    Note: rmm.is_initialized() is True as soon as `rmm` is imported (its
-    default, unpooled resource counts as "initialized"), so it can't be used
-    to detect whether this pool/managed-memory config was already applied.
-    We check cp's allocator directly instead — it's set together with
-    torch's in this function, so it's a reliable proxy for both.
+    Check if cp allocators are already set to RMM's pool, if not, set them.
+
+    Note: rmm.is_initialized() is True as soon as `rmm` is imported, thus
+    we can't use this to check if memory allocators are already initialised.
     """
     if not force and os.environ.get("SEGGER_SKIP_ALLOCATOR_INIT") == "1":
+        logger.info("Allocators not configured: SEGGER_SKIP_ALLOCATOR_INIT is set.")
         return
     if not force and cp.cuda.get_allocator() is rmm_cupy_allocator:
+        logger.info("Allocators not configured: RMM pool already active.")
         return
     rmm.reinitialize(pool_allocator=True, managed_memory=True)
     cp.cuda.set_allocator(rmm_cupy_allocator)
