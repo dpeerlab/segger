@@ -102,13 +102,58 @@ def resort_coordinates(poly):
     return shapely.Polygon(sorted_coords)
 
 
+def fix_self_intersection(poly):
+    """
+    Attempts to fix self-intersecting polygons using buffer(0).
+    Returns the fixed Polygon, or None if fixing failed or result is not a Polygon.
+    """
+    if poly.is_valid:
+        return poly
+
+    # buffer(0) is a common trick to fix self-intersections
+    fixed_poly = poly.buffer(0)
+
+    # buffer(0) might return MultiPolygon - take largest component
+    if fixed_poly.geom_type == 'MultiPolygon':
+        fixed_poly = max(fixed_poly.geoms, key=lambda p: p.area)
+        
+    # Ensure the result is actually a Polygon (not Point/LineString/Empty)
+    if (fixed_poly.geom_type == 'Polygon') and (fixed_poly.is_valid):
+        return fixed_poly
+    
+    raise Exception("Running the Zero-Distance Buffer failed to handle the error")
+        
+
 def fix_invalid_geometry(gdf: gpd.GeoDataFrame):
     """
-    Fix invalid geometries by resorting coordinates.
+    Fix invalid geometries by first resorting coordinates, 
+    and then attempting to fix self-intersections via buffer(0) 
+    for those that remain invalid.
     """
+    
+    # Identify initial invalid geometries
     mask = ~gdf.geometry.is_valid
     if not mask.any(): return gdf
+
+    # First attempt: Resort coordinates
+    fixed_step1 = gdf.loc[mask].geometry.apply(resort_coordinates)
+    gdf.loc[mask, gdf.geometry.name] = fixed_step1
+
+    # Check if any are STILL invalid after resort and identify them
+    sub_gdf = gdf.loc[mask]
+    mask_still_invalid = ~sub_gdf.geometry.is_valid
     
-    fixed = gdf.loc[mask].geometry.apply(resort_coordinates)
-    gdf.loc[mask, gdf.geometry.name] = fixed
+    # If everything is fixed, we are done
+    if not mask_still_invalid.any(): return gdf
+
+    # Get the global indices of rows that are still invalid
+    problem_indices = sub_gdf[mask_still_invalid].index
+
+    # Second attempt: Fix self-intersections (buffer(0))
+    fixed_step2 = gdf.loc[problem_indices].geometry.apply(fix_self_intersection)
+
+    # Update the GeoDataFrame
+    # Note: this will assign None if the fix failed.
+    gdf.loc[problem_indices, gdf.geometry.name] = fixed_step2
+    
     return gdf
