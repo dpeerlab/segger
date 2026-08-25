@@ -21,7 +21,15 @@ _Element = Literal["anndata", "transcripts", "boundaries", "spatialdata"]
 _DEFAULT_ELEMENTS = ("anndata", "boundaries")
 
 _Seg = Annotated[Path, Parameter(alias="-s", group=_group_io, validator=validators.Path(exists=True, dir_okay=False))]
-_Source = Annotated[Path, Parameter(alias="-i", group=_group_io, validator=validators.Path(exists=True, dir_okay=True))]
+_Source = Annotated[
+    Optional[Path],
+    Parameter(
+        alias="-i",
+        group=_group_io,
+        validator=validators.Path(exists=True, dir_okay=True),
+        help="Source transcripts directory; only needed for segmentation outputs written before x/y/feature_name were included inline.",
+    ),
+]
 _Out = Annotated[Path, Parameter(alias="-o", group=_group_io)]
 _Sdata = Annotated[
     Optional[Path],
@@ -54,37 +62,48 @@ _MinTx = Annotated[
 ]
 
 
+def _legacy_join(seg: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.DataFrame":
+    """Join x/y/feature_name onto a segmentation output written before they were included inline."""
+    if source_path is None:
+        raise ValueError("This segmentation output predates inline x/y/feature_name; pass -i/--source-path to join them from the source transcripts.")
+    import polars as pl
+
+    from ..io import get_preprocessor
+
+    tx = get_preprocessor(source_path).transcripts
+    tx = tx.collect() if isinstance(tx, pl.LazyFrame) else tx
+    pred_cols = [c for c in (std.row_index, "segger_cell_id", "segger_similarity", "similarity_threshold") if c in seg.columns]
+    return tx.join(seg.select(pred_cols), on=std.row_index, how="left")
+
+
 def _load_assigned(
     segmentation_path: Path,
-    source_path: Path,
+    source_path: Optional[Path],
     include_all_transcripts: bool,
     min_similarity: Optional[float],
     min_transcripts: int = 10,
 ) -> "pl.DataFrame":
-    """Join predictions onto source transcripts; return the kept tx (row_index/segger_cell_id/feature_name/x/y)."""
+    """Return the kept assigned tx (row_index/segger_cell_id/feature_name/x/y)."""
     import polars as pl
 
-    from ..io import StandardTranscriptFields, get_preprocessor
+    from ..io import StandardTranscriptFields
 
     std = StandardTranscriptFields()
     seg = pl.read_parquet(segmentation_path)
     if "segger_cell_id" not in seg.columns:
         raise ValueError(f"No 'segger_cell_id' column in {segmentation_path}.")
 
-    tx = get_preprocessor(source_path).transcripts
-    if isinstance(tx, pl.LazyFrame):
-        tx = tx.collect()
-
-    pred_cols = [c for c in (std.row_index, "segger_cell_id", "segger_similarity", "similarity_threshold") if c in seg.columns]
-    merged = tx.join(seg.select(pred_cols), on=std.row_index, how="left")
+    merged = seg if {std.x, std.y, std.feature} <= set(seg.columns) else _legacy_join(seg, source_path, std)
 
     if include_all_transcripts:
         keep = pl.col("segger_cell_id").is_not_null()
     elif min_similarity is not None:
         keep = pl.col("segger_cell_id").is_not_null() & (pl.col("segger_similarity") >= min_similarity)
-    else:
+    elif "filtered" in merged.columns:
         keep = pl.col("filtered")
-    
+    else:
+        keep = pl.col("segger_cell_id").is_not_null() & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
+
     assigned = merged.filter(keep).select(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
@@ -123,8 +142,8 @@ def _write_to_sdata(sdata_path: Path, output_directory: Path, assigned: "pl.Data
 def export(
     *elements: Annotated[_Element, Parameter(help="Elements to write (default: anndata boundaries).")],
     segmentation_path: _Seg,
-    source_path: _Source,
     output_directory: _Out,
+    source_path: _Source = None,
     sdata_path: _Sdata = None,
     method: Annotated[
         Literal["delaunay", "convex_hull"],
