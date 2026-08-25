@@ -24,7 +24,5 @@ Install segger
    cd segger
    pixi install -e cuda121
 
-Adjust the environment name in ``pixi.toml`` if you need a different CUDA version.
-
 Run commands inside the environment with ``pixi run -e cuda121 <command>``, or activate it with
 ``pixi shell -e cuda121``.

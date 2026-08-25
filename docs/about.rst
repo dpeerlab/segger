@@ -1,5 +1,5 @@
-segger
-======
+About
+=====
 
 Segger: Fast and accurate cell segmentation of imaging-based spatial transcriptomics data
 
@@ -23,14 +23,3 @@ If you use segger in your research, please cite:
      year={2025},
      doi={10.1101/2025.03.14.643160}
    }
-
-
-.. toctree::
-   :maxdepth: 2
-
-   about
-   installation
-   quickstart
-   outputs
-   notebook
-   api/index
