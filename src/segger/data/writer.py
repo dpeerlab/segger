@@ -74,6 +74,24 @@ class ISTSegmentationWriter(BasePredictionWriter):
         obs = trainer.datamodule.ad.obs
         segmentation = self.assign_transcripts_to_cells(obs, predictions, logger=logger)
 
+        # add x/y coordinates and a `filtered` flag for assigned transcripts
+        tx_fields = TrainingTranscriptFields()
+        segmentation = (
+            segmentation
+            .join(
+                trainer.datamodule.tx.select([tx_fields.row_index, tx_fields.x, tx_fields.y, tx_fields.feature]),
+                on=tx_fields.row_index,
+                how="left",
+            )
+            .with_columns(
+                (
+                    pl.col("segger_cell_id").is_not_null()
+                    & pl.col("converged")
+                    & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
+                ).alias("filtered")
+            )
+        )
+
         # write transcripts
         logger.debug(f"Writing segmentation output to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
