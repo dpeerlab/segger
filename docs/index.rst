@@ -33,4 +33,5 @@ If you use segger in your research, please cite:
    quickstart
    outputs
    notebook
+   common-issues
    api/index
