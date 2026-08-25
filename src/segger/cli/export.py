@@ -1,10 +1,16 @@
 """``segger export``: write a segger segmentation as scverse-compatible files.
 
-One command writes the chosen SpatialData elements: ``anndata`` the cell by gene table
-(``adata.h5ad``), ``transcripts`` the assigned transcripts/points (``transcripts.parquet``),
-``boundaries`` one polygon per cell/shapes (``cell_boundaries.parquet``), and ``spatialdata``
-which copies an existing SpatialData store (``--sdata``) into the output directory and adds
-the transcripts, cell boundaries, and table elements to the copy. Default: anndata + boundaries.
+Example usage:
+    # save anndata and boundaries
+    segger export anndata \
+      -s $PATH_OUTPUT/segger_segmentation.parquet \
+      -o $PATH_OUTPUT/adata_export
+
+    # save spatialdata - sdata object must exist already, this will copy it
+    segger export spatialdata \
+      -s $PATH_OUTPUT/segger_segmentation.parquet \
+      -o $PATH_OUTPUT/sdata_export \
+      --sdata $PATH_INPUT/sdata.zarr
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ _Source = Annotated[
         alias="-i",
         group=_group_io,
         validator=validators.Path(exists=True, dir_okay=True),
-        help="Source transcripts directory; only needed for segmentation outputs written before x/y/feature_name were included inline.",
+        help="Source transcripts directory. Only needed for segger v0.2.0 (before x/y/feature_name were included in outputs).",
     ),
 ]
 _Out = Annotated[Path, Parameter(alias="-o", group=_group_io)]
