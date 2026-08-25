@@ -41,8 +41,7 @@ _MinSim = Annotated[
     Optional[float],
     Parameter(
         group=_group_opts,
-        validator=validators.Number(gte=0, lte=1),
-        help="Fixed similarity threshold (0-1), overriding the per-gene threshold from segmentation.",
+        help="Custom required similarity threshold, overriding the per-gene threshold from segmentation.",
     ),
 ]
 _MinTx = Annotated[
@@ -79,18 +78,13 @@ def _load_assigned(
     pred_cols = [c for c in (std.row_index, "segger_cell_id", "segger_similarity", "similarity_threshold") if c in seg.columns]
     merged = tx.join(seg.select(pred_cols), on=std.row_index, how="left")
 
-    has_assignment = pl.col("segger_cell_id").is_not_null()
     if include_all_transcripts:
-        keep = has_assignment
+        keep = pl.col("segger_cell_id").is_not_null()
     elif min_similarity is not None:
-        if "segger_similarity" not in merged.columns:
-            raise ValueError("--min-similarity needs a 'segger_similarity' column in the segmentation file.")
-        keep = has_assignment & (pl.col("segger_similarity") >= min_similarity)
-    elif {"segger_similarity", "similarity_threshold"} <= set(merged.columns):
-        keep = has_assignment & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
+        keep = pl.col("segger_cell_id").is_not_null() & (pl.col("segger_similarity") >= min_similarity)
     else:
-        keep = has_assignment
-
+        keep = pl.col("filtered")
+    
     assigned = merged.filter(keep).select(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
