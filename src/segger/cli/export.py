@@ -124,15 +124,13 @@ def _load_assigned(
     return assigned
 
 
-def _write_to_sdata(sdata_path: Path, output_directory: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDataFrame", adata: "AnnData") -> Path:
-    """Copy the source SpatialData store into the output directory, then add segger's elements to the copy."""
+def _write_to_sdata(sdata_path: Path, dest: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDataFrame", adata: "AnnData") -> Path:
+    """Copy the source SpatialData store to ``dest``, then add segger's elements to the copy."""
     import shutil
     import spatialdata
     from spatialdata.models import PointsModel, ShapesModel, TableModel
 
-    dest = output_directory / sdata_path.name
-    if dest.exists():
-        raise FileExistsError(f"{dest} already exists; aborting to avoid overwriting an existing SpatialData store.")
+    print(f"Copying {sdata_path} to {dest}...")
     shutil.copytree(sdata_path, dest)
 
     sdata = spatialdata.read_zarr(dest)
@@ -141,6 +139,8 @@ def _write_to_sdata(sdata_path: Path, output_directory: Path, assigned: "pl.Data
     )
     sdata["cell_boundaries"] = ShapesModel.parse(gdf)
     sdata["table"] = TableModel.parse(adata)
+
+    print(f"Writing transcripts, cell_boundaries and table to {dest}...")
     sdata.write_element(["transcripts", "cell_boundaries", "table"], overwrite=True)
     return dest
 
@@ -164,8 +164,14 @@ def export(
 ):
     """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
     selected = elements or _DEFAULT_ELEMENTS
-    if "spatialdata" in selected and sdata_path is None:
-        raise ValueError("--sdata is required when exporting 'spatialdata'.")
+
+    sdata_dest = None
+    if "spatialdata" in selected:
+        if sdata_path is None:
+            raise ValueError("--sdata is required when exporting 'spatialdata'.")
+        sdata_dest = output_directory / sdata_path.name
+        if sdata_dest.exists():
+            raise FileExistsError(f"{sdata_dest} already exists; aborting to avoid overwriting an existing SpatialData store.")
 
     assigned = _load_assigned(segmentation_path, source_path, include_all_transcripts, min_similarity, min_transcripts)
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -195,5 +201,5 @@ def export(
         print(f"Wrote AnnData ({adata.n_obs} cells x {adata.n_vars} genes): {output_directory / 'adata.h5ad'}")
 
     if "spatialdata" in selected:
-        dest = _write_to_sdata(sdata_path, output_directory, assigned, gdf, adata)
+        dest = _write_to_sdata(sdata_path, sdata_dest, assigned, gdf, adata)
         print(f"Added transcripts, cell_boundaries and table to {dest}")
