@@ -20,7 +20,7 @@ See all available options:
    segger segment --help
 
 Export the segmentation to other formats
-------------------------
+------------------------------------------------
 
 .. code-block:: bash
 
