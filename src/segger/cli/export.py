@@ -2,7 +2,9 @@
 
 One command writes the chosen SpatialData elements: ``anndata`` the cell by gene table
 (``adata.h5ad``), ``transcripts`` the assigned transcripts/points (``transcripts.parquet``),
-and ``boundaries`` one polygon per cell/shapes (``cell_boundaries.parquet``). Default: anndata + boundaries.
+``boundaries`` one polygon per cell/shapes (``cell_boundaries.parquet``), and ``spatialdata``
+which copies an existing SpatialData store (``--sdata``) into the output directory and adds
+the transcripts, cell boundaries, and table elements to the copy. Default: anndata + boundaries.
 """
 
 from __future__ import annotations
@@ -15,12 +17,21 @@ from cyclopts import Parameter, Group, validators
 _group_io = Group(name="I/O", sort_key=0)
 _group_opts = Group(name="Options", sort_key=1)
 
-_Element = Literal["anndata", "transcripts", "boundaries"]
+_Element = Literal["anndata", "transcripts", "boundaries", "spatialdata"]
 _DEFAULT_ELEMENTS = ("anndata", "boundaries")
 
 _Seg = Annotated[Path, Parameter(alias="-s", group=_group_io, validator=validators.Path(exists=True, dir_okay=False))]
 _Source = Annotated[Path, Parameter(alias="-i", group=_group_io, validator=validators.Path(exists=True, dir_okay=True))]
 _Out = Annotated[Path, Parameter(alias="-o", group=_group_io)]
+_Sdata = Annotated[
+    Optional[Path],
+    Parameter(
+        alias="--sdata",
+        group=_group_io,
+        validator=validators.Path(exists=True, dir_okay=True),
+        help="Existing SpatialData Zarr store to copy into the output directory and add elements to (required for 'spatialdata').",
+    ),
+]
 
 _IncludeAll = Annotated[
     bool,
@@ -94,11 +105,33 @@ def _load_assigned(
     return assigned
 
 
+def _write_to_sdata(sdata_path: Path, output_directory: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDataFrame", adata: "AnnData") -> Path:
+    """Copy the source SpatialData store into the output directory, then add segger's elements to the copy."""
+    import shutil
+    import spatialdata
+    from spatialdata.models import PointsModel, ShapesModel, TableModel
+
+    dest = output_directory / sdata_path.name
+    if dest.exists():
+        raise FileExistsError(f"{dest} already exists; aborting to avoid overwriting an existing SpatialData store.")
+    shutil.copytree(sdata_path, dest)
+
+    sdata = spatialdata.read_zarr(dest)
+    sdata["transcripts"] = PointsModel.parse(
+        assigned.to_pandas(), coordinates={"x": "x", "y": "y"}, feature_key="feature_name", instance_key="segger_cell_id"
+    )
+    sdata["cell_boundaries"] = ShapesModel.parse(gdf)
+    sdata["table"] = TableModel.parse(adata)
+    sdata.write_element(["transcripts", "cell_boundaries", "table"], overwrite=True)
+    return dest
+
+
 def export(
     *elements: Annotated[_Element, Parameter(help="Elements to write (default: anndata boundaries).")],
     segmentation_path: _Seg,
     source_path: _Source,
     output_directory: _Out,
+    sdata_path: _Sdata = None,
     method: Annotated[
         Literal["delaunay", "convex_hull"],
         Parameter(group=_group_opts, help="Cell-polygon method for boundaries."),
@@ -110,27 +143,38 @@ def export(
     min_similarity: _MinSim = None,
     min_transcripts: _MinTx = 10,
 ):
-    """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries)."""
+    """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
     selected = elements or _DEFAULT_ELEMENTS
+    if "spatialdata" in selected and sdata_path is None:
+        raise ValueError("--sdata is required when exporting 'spatialdata'.")
+
     assigned = _load_assigned(segmentation_path, source_path, include_all_transcripts, min_similarity, min_transcripts)
     output_directory.mkdir(parents=True, exist_ok=True)
 
+    # compute outputs
     gdf = None
-    if "boundaries" in selected:
+    if "boundaries" in selected or "spatialdata" in selected:
         from ..export import generate_boundaries
-
         gdf = generate_boundaries(assigned, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
+
+    adata = None
+    if "anndata" in selected or "spatialdata" in selected:
+        from ..export import build_anndata
+        adata = build_anndata(assigned, cell_id="segger_cell_id", area=gdf.geometry.area if gdf is not None else None)
+
+    # save outputs
+    if "transcripts" in selected:
+        assigned.write_parquet(output_directory / "transcripts.parquet")
+        print(f"Wrote {assigned.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
+
+    if "boundaries" in selected:
         gdf.to_parquet(output_directory / "cell_boundaries.parquet")
         print(f"Wrote {len(gdf)} {method} cell boundaries: {output_directory / 'cell_boundaries.parquet'}")
 
     if "anndata" in selected:
-        from ..export import build_anndata
-
-        # Use the exported polygon areas so obs["area"] matches the boundaries; omitted otherwise.
-        adata = build_anndata(assigned, cell_id="segger_cell_id", area=gdf.geometry.area if gdf is not None else None)
         adata.write_h5ad(output_directory / "adata.h5ad")
         print(f"Wrote AnnData ({adata.n_obs} cells x {adata.n_vars} genes): {output_directory / 'adata.h5ad'}")
 
-    if "transcripts" in selected:
-        assigned.write_parquet(output_directory / "transcripts.parquet")
-        print(f"Wrote {assigned.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
+    if "spatialdata" in selected:
+        dest = _write_to_sdata(sdata_path, output_directory, assigned, gdf, adata)
+        print(f"Added transcripts, cell_boundaries and table to {dest}")
