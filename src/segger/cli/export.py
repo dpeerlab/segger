@@ -167,6 +167,10 @@ def export(
 
     sdata_dest = None
     if "spatialdata" in selected:
+        import importlib.util
+
+        if importlib.util.find_spec("spatialdata") is None:
+            raise ImportError("The 'spatialdata' element needs the spatialdata package: pip install segger[spatialdata]")
         if sdata_path is None:
             raise ValueError("--sdata is required when exporting 'spatialdata'.")
         sdata_dest = output_directory / sdata_path.name
