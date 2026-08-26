@@ -26,11 +26,11 @@ Export the segmentation to other formats
 
    segger export \
        -s /path/to/save/outputs/segger_segmentation.parquet \
-       -i /path/to/your/ist/data/ \
        -o /path/to/export/
 
 Writes ``anndata`` and ``boundaries`` by default (add ``transcripts`` to also write the assigned
-transcript table). See :doc:`outputs` for a description of each file, or:
+transcript table, or ``spatialdata --sdata /path/to/sdata.zarr`` to add segger's elements to an
+existing SpatialData store). See :doc:`outputs` for a description of each file, or:
 
 .. code-block:: bash
 

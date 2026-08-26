@@ -11,20 +11,18 @@ See `#33 <https://github.com/dpeerlab/segger/issues/33>`_. Main reasons a gene d
 - It has few nuclear transcripts and gets pruned during node/cluster construction, even if it's
   abundant in the cytoplasm.
 
-Noisy results from ``transcripts.parquet``
----------------------------------------------
+Noisy results from ``segger_segmentation.parquet``
+-----------------------------------------------------
 
 Using the raw per-transcript output without filtering by similarity produces noisy assignments
-(related: `#73 <https://github.com/dpeerlab/segger/issues/73>`_). Always filter before use:
+(related: `#73 <https://github.com/dpeerlab/segger/issues/73>`_). Always filter on the
+``filtered`` column before use:
 
 .. code-block:: python
 
-   assigned = merged.filter(
-       pl.col("segger_cell_id").is_not_null()
-       & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
-   )
+   assigned = seg.filter(pl.col("filtered"))
 
-See :doc:`outputs` for the full join example.
+See :doc:`outputs` for details.
 
 CUDA 13 driver segfaults
 --------------------------

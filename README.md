@@ -19,7 +19,7 @@ pixi install -e cuda121
 
 ```bash
 segger segment -i /path/to/your/ist/data/ -o /path/to/save/outputs/
-segger export  -s /path/to/save/outputs/segger_segmentation.parquet -i /path/to/your/ist/data/ -o /path/to/export/
+segger export  -s /path/to/save/outputs/segger_segmentation.parquet -o /path/to/export/
 ```
 
 ## Preprint

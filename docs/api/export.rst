@@ -2,8 +2,8 @@ segger export
 ==============
 
 Positional arguments select which elements to write: ``anndata``, ``transcripts``,
-``boundaries`` (default: ``anndata boundaries``). Run ``segger export --help`` for the
-authoritative list.
+``boundaries``, ``spatialdata`` (default: ``anndata boundaries``). Run ``segger export --help``
+for the authoritative list.
 
 .. list-table::
    :header-rows: 1
@@ -15,11 +15,16 @@ authoritative list.
      - *required*
      - Path to ``segger_segmentation.parquet``.
    * - ``-i, --source-path``
-     - *required*
-     - Path to the input IST dataset directory.
+     - None
+     - Source transcripts directory. Only needed for segger v0.2.0 outputs, which predate inline
+       ``x``/``y``/``feature_name`` columns.
    * - ``-o, --output-directory``
      - *required*
      - Output directory.
+   * - ``--sdata``
+     - None
+     - Existing SpatialData Zarr store to copy into the output directory and add elements to
+       (required for the ``spatialdata`` element).
    * - ``--method``
      - delaunay
      - Cell-polygon method for boundaries (``delaunay`` or ``convex_hull``).

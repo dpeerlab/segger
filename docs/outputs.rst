@@ -8,22 +8,15 @@ Outputs
    Per-transcript assignment table, indexed by ``row_index`` (aligns with the input transcripts).
    Columns: ``segger_cell_id``, ``segger_similarity``, ``similarity_threshold`` (per-gene cutoff),
    ``converged`` (whether the cutoff was computed directly for that gene or backfilled from the
-   global median).
+   global median), ``x``, ``y``, ``feature_name``, and ``filtered`` (assigned, converged, and above
+   threshold — the recommended keep mask).
 
    .. code-block:: python
 
       import polars as pl
-      from segger.io import get_preprocessor, StandardTranscriptFields
 
-      std = StandardTranscriptFields()
-      tx = get_preprocessor("/path/to/your/ist/data/").transcripts
       seg = pl.read_parquet("outputs/segger_segmentation.parquet")
-
-      merged = tx.join(seg, on=std.row_index, how="left")
-      assigned = merged.filter(
-          pl.col("segger_cell_id").is_not_null()
-          & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
-      )
+      assigned = seg.filter(pl.col("filtered"))
 
 ``segger_anndata.h5ad``
    Cell x gene table (written only with ``--save-anndata``, the CLI default).
@@ -59,3 +52,17 @@ Outputs
 
       import polars as pl
       transcripts = pl.read_parquet("export/transcripts.parquet")
+
+``<sdata>.zarr``
+   Written with ``segger export spatialdata --sdata /path/to/sdata.zarr``: copies the given
+   SpatialData Zarr store into the output directory and adds segger's ``transcripts`` (points),
+   ``cell_boundaries`` (shapes), and ``table`` (the ``adata.h5ad`` cell x gene table) elements to
+   the copy. Requires the ``spatialdata`` extra (``pip install segger[spatialdata]``).
+
+   .. code-block:: python
+
+      import spatialdata
+      sdata = spatialdata.read_zarr("export/sdata.zarr")
+      sdata["transcripts"]      # assigned transcripts as points
+      sdata["cell_boundaries"]  # cell polygons as shapes
+      sdata["table"]            # cell x gene AnnData table
