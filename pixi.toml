@@ -38,6 +38,7 @@ cuml-cu12 = "==24.10.*"
 cugraph-cu12 = "==24.10.*"
 cupy-cuda12x = ">=12.2,<13.0"
 spatialdata = ">=0.4.0, <0.5"
+setuptools = ">=81.0.0, <82"
 
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["torch"]
