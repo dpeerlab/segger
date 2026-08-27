@@ -214,7 +214,7 @@ def generate_boundaries(
 
     inputs = [(cid, pts, method, smoothing, connectivity) for cid, pts in groups]
 
-    n_workers = len(os.sched_getaffinity(0))
+    n_workers = max(len(os.sched_getaffinity(0)) - 1, 1)
     with ProcessPoolExecutor(max_workers=n_workers) as pool:
         results = list(
             tqdm(
@@ -223,10 +223,9 @@ def generate_boundaries(
                 desc="Building cell boundaries",
             )
         )
-    ids, n_tx, geoms = zip(*results) if results else ((), (), ())
+    ids, n_tx, geoms = map(list, zip(*results)) if results else ([], [], [])
 
-    # Output the SpatialData instance key as "cell_id" regardless of the input column name. Keep it as
-    # a column too: geoparquet drops a named index, and it must match the table instance key to join.
+    # Output the SpatialData instance key as "cell_id" regardless of the input column name.
     gdf = gpd.GeoDataFrame(
         {"cell_id": ids, "n_transcripts": n_tx}, geometry=geoms, index=pd.Index(ids, name="cell_id")
     )
