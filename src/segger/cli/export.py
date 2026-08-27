@@ -6,10 +6,9 @@ Example usage:
       -s $PATH_OUTPUT/segger_segmentation.parquet \
       -o $PATH_OUTPUT/adata_export
 
-    # save spatialdata - sdata object must exist already, this will copy it
+    # save spatialdata - adds elements directly to an existing sdata object, no -o needed
     segger export spatialdata \
       -s $PATH_OUTPUT/segger_segmentation.parquet \
-      -o $PATH_OUTPUT/sdata_export \
       --sdata $PATH_INPUT/sdata.zarr
 """
 
@@ -36,14 +35,17 @@ _Source = Annotated[
         help="Source transcripts directory. Only needed for segger v0.2.0 (before x/y/feature_name were included in outputs).",
     ),
 ]
-_Out = Annotated[Path, Parameter(alias="-o", group=_group_io)]
+_Out = Annotated[
+    Optional[Path],
+    Parameter(alias="-o", group=_group_io, help="Required unless the only element being exported is 'spatialdata'."),
+]
 _Sdata = Annotated[
     Optional[Path],
     Parameter(
         alias="--sdata",
         group=_group_io,
         validator=validators.Path(exists=True, dir_okay=True),
-        help="Existing SpatialData Zarr store to copy into the output directory and add elements to (required for 'spatialdata').",
+        help="Existing SpatialData Zarr store to add elements to in place (required for 'spatialdata').",
     ),
 ]
 
@@ -64,6 +66,14 @@ _MinTx = Annotated[
         group=_group_opts,
         validator=validators.Number(gte=0),
         help="Minimum number of assigned transcripts a cell must have to be included.",
+    ),
+]
+_SpatialdataElementPrefix = Annotated[
+    str,
+    Parameter(
+        group=_group_opts,
+        help="Appended to spatialdata element names, e.g. '_segger' -> 'transcripts_segger' "
+        "(avoids colliding with an existing same-named element, e.g. from the raw Xenium sdata).",
     ),
 ]
 
@@ -124,31 +134,42 @@ def _load_assigned(
     return assigned
 
 
-def _write_to_sdata(sdata_path: Path, dest: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDataFrame", adata: "AnnData") -> Path:
-    """Copy the source SpatialData store to ``dest``, then add segger's elements to the copy."""
-    import shutil
+def _sdata_element_names(spatialdata_element_prefix: str) -> list:
+    return [
+        f"transcripts{spatialdata_element_prefix}",
+        f"cell_boundaries{spatialdata_element_prefix}",
+        f"table{spatialdata_element_prefix}"
+    ]
+
+def _check_sdata_writable(sdata_path: Path, spatialdata_element_prefix: str) -> None:
+    """Fail fast if any target element name already exists, before doing any of the actual work."""
+    kinds = ("points", "shapes", "tables")
+    for kind, name in zip(kinds, _sdata_element_names(spatialdata_element_prefix)):
+        if (sdata_path / kind / name).exists():
+            raise FileExistsError(f"{sdata_path / kind / name} already exists; pick a different --spatialdata-element-prefix.")
+
+
+def _write_to_sdata(sdata_path: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDataFrame", adata: "AnnData", spatialdata_element_prefix: str = "") -> None:
+    """Add segger's elements directly to the existing SpatialData store at ``sdata_path``."""
     import spatialdata
     from spatialdata.models import PointsModel, ShapesModel, TableModel
 
-    print(f"Copying {sdata_path} to {dest}...")
-    shutil.copytree(sdata_path, dest)
-
-    sdata = spatialdata.read_zarr(dest)
-    sdata["transcripts"] = PointsModel.parse(
+    names = _sdata_element_names(spatialdata_element_prefix)
+    sdata = spatialdata.read_zarr(sdata_path)
+    sdata[names[0]] = PointsModel.parse(
         assigned.to_pandas(), coordinates={"x": "x", "y": "y"}, feature_key="feature_name", instance_key="segger_cell_id"
     )
-    sdata["cell_boundaries"] = ShapesModel.parse(gdf)
-    sdata["table"] = TableModel.parse(adata)
+    sdata[names[1]] = ShapesModel.parse(gdf)
+    sdata[names[2]] = TableModel.parse(adata)
 
-    print(f"Writing transcripts, cell_boundaries and table to {dest}...")
-    sdata.write_element(["transcripts", "cell_boundaries", "table"], overwrite=True)
-    return dest
+    print(f"Writing {', '.join(names)} to {sdata_path}...")
+    sdata.write_element(names, overwrite=True)
 
 
 def export(
     *elements: Annotated[_Element, Parameter(help="Elements to write (default: anndata boundaries).")],
     segmentation_path: _Seg,
-    output_directory: _Out,
+    output_directory: _Out = None,
     source_path: _Source = None,
     sdata_path: _Sdata = None,
     method: Annotated[
@@ -161,11 +182,11 @@ def export(
     include_all_transcripts: _IncludeAll = False,
     min_similarity: _MinSim = None,
     min_transcripts: _MinTx = 10,
+    spatialdata_element_prefix: _SpatialdataElementPrefix = "_segger",
 ):
     """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
     selected = elements or _DEFAULT_ELEMENTS
 
-    sdata_dest = None
     if "spatialdata" in selected:
         import importlib.util
 
@@ -173,12 +194,13 @@ def export(
             raise ImportError("The 'spatialdata' element needs the spatialdata package. Make sure spatialdata is installed in your environment, for example with `pip install spatialdata`.")
         if sdata_path is None:
             raise ValueError("--sdata is required when exporting 'spatialdata'.")
-        sdata_dest = output_directory / sdata_path.name
-        if sdata_dest.exists():
-            raise FileExistsError(f"{sdata_dest} already exists; aborting to avoid overwriting an existing SpatialData store.")
+        _check_sdata_writable(sdata_path, spatialdata_element_prefix)
+    if set(selected) - {"spatialdata"} and output_directory is None:
+        raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
     assigned = _load_assigned(segmentation_path, source_path, include_all_transcripts, min_similarity, min_transcripts)
-    output_directory.mkdir(parents=True, exist_ok=True)
+    if output_directory is not None:
+        output_directory.mkdir(parents=True, exist_ok=True)
 
     # compute outputs
     gdf = None
@@ -189,7 +211,12 @@ def export(
     adata = None
     if "anndata" in selected or "spatialdata" in selected:
         from ..export import build_anndata
-        adata = build_anndata(assigned, cell_id="segger_cell_id", area=gdf.geometry.area if gdf is not None else None)
+        adata = build_anndata(
+            assigned,
+            cell_id="segger_cell_id",
+            area=gdf.geometry.area if gdf is not None else None,
+            region=f"cell_boundaries{spatialdata_element_prefix}",
+        )
 
     # save outputs
     if "transcripts" in selected:
@@ -205,5 +232,5 @@ def export(
         print(f"Wrote AnnData ({adata.n_obs} cells x {adata.n_vars} genes): {output_directory / 'adata.h5ad'}")
 
     if "spatialdata" in selected:
-        dest = _write_to_sdata(sdata_path, sdata_dest, assigned, gdf, adata)
-        print(f"Added transcripts, cell_boundaries and table to {dest}")
+        _write_to_sdata(sdata_path, assigned, gdf, adata, spatialdata_element_prefix=spatialdata_element_prefix)
+        print(f"Added {', '.join(_sdata_element_names(spatialdata_element_prefix))} to {sdata_path}")

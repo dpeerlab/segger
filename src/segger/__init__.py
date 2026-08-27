@@ -1,6 +1,11 @@
 import logging
 import os
 from pathlib import Path
+
+import dask
+
+dask.config.set({"dataframe.query-planning": False})  # spatialdata doesn't yet support dask-expr; must be set before cudf pulls in dask.dataframe
+
 import cupy as cp
 import torch
 import rmm
