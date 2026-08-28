@@ -121,6 +121,9 @@ class ISTDataModule(LightningDataModule):
         Margin width (in µm) added to tiles during prediction.
     tiling_nodes_per_tile : int, default=50000
         Maximum number of nodes per tile for adaptive tiling.
+    tiling_max_transcripts : int or None, default=50_000_000
+        Downsample transcripts for quadtree construction to avoid numeric overflows
+        (see segger issue #77). Set to None to disable downsampling
     tiling_side_length : float, default=250.0
         Side length of square tiles (benchmarking only).
     training_fraction : float, default=0.75
@@ -153,6 +156,7 @@ class ISTDataModule(LightningDataModule):
     tiling_margin_training: float = 20.
     tiling_margin_prediction: float = 20.
     tiling_nodes_per_tile: int = 50_000
+    tiling_max_transcripts: int | None = 50_000_000
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
     edges_per_batch: int = 1_000_000
@@ -249,6 +253,7 @@ class ISTDataModule(LightningDataModule):
             self.tiling = QuadTreeTiling(
                 positions=node_positions,
                 max_tile_size=self.tiling_nodes_per_tile,
+                max_transcripts=self.tiling_max_transcripts,
             )
         #TODO: Remove (benchmarking only)
         elif self.tiling_mode == "square":

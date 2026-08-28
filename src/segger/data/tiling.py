@@ -209,11 +209,15 @@ class QuadTreeTiling(Tiling):
         the quadtree.
     max_tile_size : int
         The maximum number of points allowed in any single quadtree tile.
+    max_transcripts : int, optional
+        Downsample transcripts for quadtree construction to avoid numeric overflows
+        (see segger issue #77). Set to None to disable downsampling
     """
     def __init__(
         self,
         positions: torch.Tensor,
         max_tile_size: int,
+        max_transcripts: int | None = None,
     ):
         # Calculate QuadTree on points and set as tiles
         points = points_to_geoseries(positions, backend='cuspatial')
@@ -221,6 +225,7 @@ class QuadTreeTiling(Tiling):
             points,
             max_tile_size,
             with_bounds=True,
+            max_transcripts=max_transcripts,
         )
         self._tiles = quadtree_to_geoseries(quadtree, backend='geopandas')
 
