@@ -107,6 +107,7 @@ class StandardTranscriptFields:
     row_index: str = 'row_index'
     x: str = 'x'
     y: str = 'y'
+    z: str = 'z'
     feature: str = 'feature_name'
     cell_id: str = 'cell_id'
     compartment: str = 'cell_compartment'
