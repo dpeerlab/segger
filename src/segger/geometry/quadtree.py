@@ -144,6 +144,7 @@ def get_quadtree_index(
     max_size: int,
     with_bounds: bool = True,
     max_retries: int = 5,
+    max_transcripts: int | None = None,
 ) -> tuple[cudf.Series, cudf.DataFrame, dict]:
     """Build a cuSpatial quadtree from 2D point data.
 
@@ -158,6 +159,10 @@ def get_quadtree_index(
         DataFrame. Default is True.
     max_retries : int, optional
         Retries on invalid tree, each growing ``max_size`` by 5%. Default 6.
+    max_transcripts : int, optional
+        Downsample transcripts for quadtree construction to avoid numeric overflows
+        (see segger issue #77). While this does not speed up the construction,
+        it becomes more memory efficient. Set to None to disable downsampling.
 
     Returns
     -------
@@ -166,7 +171,7 @@ def get_quadtree_index(
     quadtree : cudf.DataFrame
         DataFrame of quadtree tiles with spatial bounds and metadata.
     """
-    # Get hyperparams for quadtree
+    # Get hyperparams for quadtree (always on the full point set, see issue #77)
     kwargs = get_quadtree_kwargs(points)
     x_min = kwargs['x_min']
     x_max = kwargs['x_max']
@@ -174,6 +179,20 @@ def get_quadtree_index(
     y_max = kwargs['y_max']
     scale = kwargs['scale']
     max_depth = kwargs['max_depth']
+
+    # Subsample points for tree construction to bound memory / avoid overflow
+    # on very large point counts (see segger issue #77)
+    n_points = len(points)
+    retry_step = 10000
+    if max_transcripts is not None and n_points > max_transcripts:
+        fraction = max_transcripts / n_points
+        sample_idx = cp.random.randint(0, n_points, size=max_transcripts)
+        points = points.iloc[sample_idx]
+
+        # adjust max-size and growth parameter
+        max_size = max(1, round(max_size * fraction))
+        retry_step = max(1, round(retry_step * fraction))
+        logger.debug(f"Subsampling {max_transcripts / (1e6):.1f}M / {n_points / (1e6):.1f}M ({fraction:.1%}) points for quadtree ")
 
     logger.debug(f"Building quadtree on {len(points)} points with max_size={max_size}, max_depth={max_depth}")
 
@@ -193,8 +212,8 @@ def get_quadtree_index(
         # check if valid (see segger issue #40)
         if is_quadtree_valid(quadtree, len(points)):
             break
-        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size + 10000}.")
-        max_size += 10000
+        logger.warning(f"Invalid quadtree generated with max_size={max_size}. Retry with max_size={max_size + retry_step}.")
+        max_size += retry_step
     else:
         raise RuntimeError(
             f"cuSpatial returned an invalid quadtree after {max_retries + 1} "

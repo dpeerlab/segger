@@ -191,6 +191,11 @@ def segment(
         group=group_tiling,
     )] = registry.get_default("tiling_nodes_per_tile"),
 
+    max_transcripts_per_tiling: Annotated[int | None, registry.get_parameter(
+        "tiling_max_transcripts",
+        group=group_tiling,
+    )] = registry.get_default("tiling_max_transcripts"),
+
     max_edges_per_batch: Annotated[int, registry.get_parameter(
         "edges_per_batch",
         validator=validators.Number(gt=0),
@@ -353,6 +358,7 @@ def segment(
         tiling_margin_training=tiling_margin_training,
         tiling_margin_prediction=tiling_margin_prediction,
         tiling_nodes_per_tile=max_nodes_per_tile,
+        tiling_max_transcripts=max_transcripts_per_tiling,
         edges_per_batch=max_edges_per_batch,
         gene_corr_reference_path=gene_corr_reference_path,
         gene_missing_strategy=gene_missing_strategy,
