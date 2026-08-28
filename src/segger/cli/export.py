@@ -120,12 +120,15 @@ def _load_assigned(
     else:
         keep = pl.col("segger_cell_id").is_not_null() & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
 
+    coord_cols = [pl.col(std.x).alias("x"), pl.col(std.y).alias("y")]
+    if std.z in merged.columns:
+        coord_cols.append(pl.col(std.z).alias("z"))
+
     assigned = merged.filter(keep).select(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
         pl.col(std.feature).alias("feature_name"),
-        pl.col(std.x).alias("x"),
-        pl.col(std.y).alias("y"),
+        *coord_cols,
     )
 
     if min_transcripts > 0:
@@ -144,6 +147,7 @@ def _sdata_element_names(spatialdata_element_prefix: str) -> list:
 def _check_sdata_writable(sdata_path: Path, spatialdata_element_prefix: str) -> None:
     """Fail fast if any target element name already exists, before doing any of the actual work."""
     kinds = ("points", "shapes", "tables")
+    # TODO: Load sdata, instead of assuming that files exist
     for kind, name in zip(kinds, _sdata_element_names(spatialdata_element_prefix)):
         if (sdata_path / kind / name).exists():
             raise FileExistsError(f"{sdata_path / kind / name} already exists; pick a different --spatialdata-element-prefix.")
@@ -156,14 +160,18 @@ def _write_to_sdata(sdata_path: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDat
 
     names = _sdata_element_names(spatialdata_element_prefix)
     sdata = spatialdata.read_zarr(sdata_path)
+    coordinates = {"x": "x", "y": "y"}
+    if "z" in assigned.columns:
+        coordinates["z"] = "z"
+    # TODO: Consider using the transformations from the base elements!
     sdata[names[0]] = PointsModel.parse(
-        assigned.to_pandas(), coordinates={"x": "x", "y": "y"}, feature_key="feature_name", instance_key="segger_cell_id"
+        assigned.to_pandas(), coordinates=coordinates, feature_key="feature_name", instance_key="segger_cell_id"
     )
     sdata[names[1]] = ShapesModel.parse(gdf)
     sdata[names[2]] = TableModel.parse(adata)
 
     print(f"Writing {', '.join(names)} to {sdata_path}...")
-    sdata.write_element(names, overwrite=True)
+    sdata.write_element(names, overwrite=False)
 
 
 def export(
@@ -214,6 +222,7 @@ def export(
         adata = build_anndata(
             assigned,
             cell_id="segger_cell_id",
+            z="z",
             area=gdf.geometry.area if gdf is not None else None,
             region=f"cell_boundaries{spatialdata_element_prefix}",
         )
