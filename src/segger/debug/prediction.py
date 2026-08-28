@@ -9,6 +9,7 @@ def run_prediction_only(
     from segger.data import ISTDataModule
     from segger.data import ISTSegmentationWriter
     from segger.models import LitISTEncoder
+    from segger.utils import resolve_trainer_devices
 
     from lightning.pytorch.loggers import CSVLogger
     from lightning.pytorch import Trainer
@@ -22,7 +23,12 @@ def run_prediction_only(
     csvlogger = CSVLogger(path_outputs)
     writer = ISTSegmentationWriter(path_outputs, debug=True)
 
-    trainer = Trainer(logger=csvlogger, reload_dataloaders_every_n_epochs=1, callbacks=[writer],)
+    trainer = Trainer(
+        logger=csvlogger,
+        reload_dataloaders_every_n_epochs=1,
+        callbacks=[writer],
+        devices=resolve_trainer_devices(),
+    )
     datamodule = ISTDataModule.load_from_checkpoint(path_checkpoint)
     model = LitISTEncoder.load_from_checkpoint(path_checkpoint)
 

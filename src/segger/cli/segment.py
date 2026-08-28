@@ -1,6 +1,6 @@
 import os
 import logging
-from ..utils import setup_logging
+from ..utils import setup_logging, resolve_trainer_devices
 
 from cyclopts import App, Parameter, Group, validators
 from typing import Annotated, Literal
@@ -310,6 +310,16 @@ def segment(
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = False,
+
+    devices: Annotated[int, Parameter(
+        validator=validators.Number(gt=0),
+        group=group_model,
+        help=(
+            "Number of accelerators to run on. Segger's cuDF/cuSpatial pipeline is "
+            "single-device; values above 1 let Lightning spawn one process per GPU, "
+            "which is not supported (see issue #12)."
+        ),
+    )] = 1,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 
@@ -402,6 +412,7 @@ def segment(
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
         callbacks=[writer],
+        devices=resolve_trainer_devices(devices),
     )
 
     # Training
