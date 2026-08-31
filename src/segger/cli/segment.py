@@ -415,6 +415,7 @@ def segment(
         max_epochs=n_epochs,
         reload_dataloaders_every_n_epochs=1,
         callbacks=callbacks,
+        devices=1,
     )
 
     # Training
