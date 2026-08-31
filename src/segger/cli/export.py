@@ -134,15 +134,17 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
 # -- Spatial Data Support
 def _check_sdata_elements(
         sdata,
-        element_names: dict,
+        transcripts_element: str,
+        cell_boundaries_element: str,
+        table_element: str,
     ) -> None:
     """Fail fast if the transcripts element is missing, or any target element name already exists."""
-    if element_names["transcripts"] not in sdata.points:
-        raise KeyError(f"{element_names['transcripts']!r} not found in sdata.points; pass --sdata-transcripts-name to point at the right one.")
-    if element_names["cell_boundaries"] in sdata.shapes:
-        raise FileExistsError(f"{element_names['cell_boundaries']!r} already exists in sdata.shapes; pass --sdata-cell-boundaries-name to specify a different name.")
-    if element_names["table"] in sdata.tables:
-        raise FileExistsError(f"{element_names['table']!r} already exists in sdata.tables; pass --sdata-table-name to specify a different name.")
+    if transcripts_element not in sdata.points:
+        raise KeyError(f"{transcripts_element!r} not found in sdata.points; pass --sdata-transcripts-name to point at the right one.")
+    if cell_boundaries_element in sdata.shapes:
+        raise FileExistsError(f"{cell_boundaries_element!r} already exists in sdata.shapes; pass --sdata-cell-boundaries-name to specify a different name.")
+    if table_element in sdata.tables:
+        raise FileExistsError(f"{table_element!r} already exists in sdata.tables; pass --sdata-table-name to specify a different name.")
 
 
 
@@ -231,20 +233,12 @@ def export(
 
     sdata = None
     if "spatialdata" in selected:
-        import importlib.util
-
-        if importlib.util.find_spec("spatialdata") is None:
-            raise ImportError("The 'spatialdata' element needs the spatialdata package. Make sure spatialdata is installed in your environment, for example with `pip install spatialdata`.")
         if sdata_path is None:
             raise ValueError("--sdata is required when exporting 'spatialdata'.")
-        import spatialdata as _spatialdata
+        import spatialdata as sd
 
-        sdata = _spatialdata.read_zarr(sdata_path)
-        _check_sdata_elements(sdata, {
-            "transcripts": sdata_transcripts_name,
-            "cell_boundaries": sdata_cell_boundaries_name,
-            "table": sdata_table_name,
-        })
+        sdata = sd.read_zarr(sdata_path)
+        _check_sdata_elements(sdata, sdata_transcripts_name, sdata_cell_boundaries_name, sdata_table_name)
 
     if set(selected) - {"spatialdata"} and output_directory is None:
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
