@@ -128,6 +128,12 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
     tx = tx.with_columns((
         (pl.col("segger_cell_id").is_not_null()) & (pl.col("segger_similarity") >= pl.col("similarity_threshold"))
     ).alias("filtered"))
+
+    # if "converged" exists, also require this to be true
+    if "converged" in tx.columns:
+        tx = tx.with_columns(
+            (pl.col("filtered") & pl.col("converged")).alias("filtered")
+        )
     
     return tx
 
@@ -148,8 +154,8 @@ def _check_sdata_elements(
 
 
 
-def _merge_sdata_transcripts(sdata_tx: "pl.DataFrame", tx: "pl.DataFrame", row_index: str) -> "pl.DataFrame":
-    """Segger's per-transcript outputs, renamed for joining onto an existing transcripts table."""
+def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_index: str) -> "dd.DataFrame":
+    """Segger's per-transcript outputs, joined onto the existing (dask-backed) transcripts table. Stays lazy throughout."""
 
     # rename; these names are hardcoded. make sure to update this if any name should change going forward
     map_columns = {
@@ -159,19 +165,15 @@ def _merge_sdata_transcripts(sdata_tx: "pl.DataFrame", tx: "pl.DataFrame", row_i
         "converged": "segger_converged",
         "filtered": "segger_filtered",
     }
-    tx = tx \
-        .rename(map_columns) \
-        .select(row_index, *map_columns.values()) \
+    tx = tx.rename(map_columns).select(row_index, *map_columns.values()).to_pandas()
 
-    # sdata_tx is already passed in as a DataFrame
-    if hasattr(sdata_tx, "compute"):
-        sdata_tx = sdata_tx.compute()
-    sdata_tx = pl.from_pandas(sdata_tx).with_row_index(name=row_index)
+    # sdata_tx has no row_index column; construct it
+    sdata_tx = sdata_tx.assign(**{row_index: 1})
+    sdata_tx[row_index] = sdata_tx[row_index].cumsum() - 1
 
-    # merge
-    sdata_tx = sdata_tx \
-        .join(tx, on=row_index, how="left") \
-        .with_columns(pl.col("segger_filtered").is_not_null().alias("segger_seen")) \
+    # merge (tx is small enough to broadcast onto every partition; no shuffle needed)
+    sdata_tx = sdata_tx.merge(tx, on=row_index, how="left")
+    sdata_tx["segger_seen"] = sdata_tx["segger_filtered"].notnull()
 
     return sdata_tx
 
@@ -186,23 +188,30 @@ def _write_to_sdata(
 ) -> None:
     """Append segger's columns to the existing transcripts element, and add its boundaries/table elements to the given SpatialData store."""
     from spatialdata.models import PointsModel, ShapesModel, TableModel
+    from spatialdata.transformations import get_transformation
 
-    std = StandardTranscriptFields()
+    # get current transcripts
+    base_transcripts = sdata.points[transcripts_element]
+    attrs = base_transcripts.attrs.get("spatialdata_attrs", {})
+    transformations = get_transformation(base_transcripts, get_all=True)
 
-    attrs = sdata.points[transcripts_element].attrs.get("spatialdata_attrs", {})
-    tx = _merge_sdata_transcripts(sdata.points[transcripts_element], tx, "row_index")
+    # add segger info; merge stays lazy in dask, but must be materialized before overwriting
+    # transcripts_element on disk below, since it still lazily reads from that same store.
+    tx = _merge_sdata_transcripts(base_transcripts, tx, "row_index").compute().reset_index(drop=True)
 
     coordinates = {"x": "x", "y": "y"}
     if "z" in tx.columns:
         coordinates["z"] = "z"
-    # TODO: Consider using the transformations from the base elements!
+
+    # add model
     sdata[transcripts_element] = PointsModel.parse(
-        tx.to_pandas(),
+        tx,
         coordinates=coordinates,
         feature_key=attrs.get("feature_key"),
         instance_key=attrs.get("instance_key"),
+        transformations=transformations,
     )
-    sdata[cell_boundaries_element] = ShapesModel.parse(gdf)
+    sdata[cell_boundaries_element] = ShapesModel.parse(gdf, transformations=transformations)
     sdata[table_element] = TableModel.parse(adata)
 
     print(f"Writing {transcripts_element}, {cell_boundaries_element}, {table_element} to {sdata.path}...")
@@ -223,7 +232,7 @@ def export(
     chaikin_iterations: Annotated[
         int, Parameter(group=_group_opts, help="Chaikin corner-cutting iterations to round boundaries (0 disables).")
     ] = 0,
-    include_all_transcripts: _IncludeAll = False,
+    include_all_transcripts: _IncludeAll = True,
     sdata_transcripts_name: _SdataTranscriptsName = "transcripts",
     sdata_cell_boundaries_name: _SdataCellBoundariesName = "cell_boundaries_segger",
     sdata_table_name: _SdataTableName = "table_segger",
@@ -236,13 +245,13 @@ def export(
         if sdata_path is None:
             raise ValueError("--sdata is required when exporting 'spatialdata'.")
         import spatialdata as sd
-
         sdata = sd.read_zarr(sdata_path)
         _check_sdata_elements(sdata, sdata_transcripts_name, sdata_cell_boundaries_name, sdata_table_name)
 
     if set(selected) - {"spatialdata"} and output_directory is None:
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
+    # load tx
     assigned, tx = load_transcripts(segmentation_path, include_all_transcripts, source_path)
     if output_directory is not None:
         output_directory.mkdir(parents=True, exist_ok=True)
