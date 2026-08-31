@@ -72,8 +72,15 @@ _SpatialdataElementPrefix = Annotated[
     str,
     Parameter(
         group=_group_opts,
-        help="Appended to spatialdata element names, e.g. '_segger' -> 'transcripts_segger' "
+        help="Appended to the new spatialdata element names, e.g. '_segger' -> 'cell_boundaries_segger' "
         "(avoids colliding with an existing same-named element, e.g. from the raw Xenium sdata).",
+    ),
+]
+_TranscriptsElement = Annotated[
+    str,
+    Parameter(
+        group=_group_opts,
+        help="Name of the existing points element in --sdata to append segger's columns to.",
     ),
 ]
 
@@ -92,9 +99,22 @@ def _legacy_join(seg: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.D
     return tx.join(seg.select(pred_cols), on=std.row_index, how="left")
 
 
+def _load_merged(segmentation_path: Path, source_path: Optional[Path]) -> "pl.DataFrame":
+    """Full segmentation output (every transcript segger considered), joined with x/y/feature_name when not already inline."""
+    import polars as pl
+
+    from ..io import StandardTranscriptFields
+
+    std = StandardTranscriptFields()
+    seg = pl.read_parquet(segmentation_path)
+    if "segger_cell_id" not in seg.columns:
+        raise ValueError(f"No 'segger_cell_id' column in {segmentation_path}.")
+
+    return seg if {std.x, std.y, std.feature} <= set(seg.columns) else _legacy_join(seg, source_path, std)
+
+
 def _load_assigned(
-    segmentation_path: Path,
-    source_path: Optional[Path],
+    merged: "pl.DataFrame",
     include_all_transcripts: bool,
     min_similarity: Optional[float],
     min_transcripts: int = 10,
@@ -105,11 +125,6 @@ def _load_assigned(
     from ..io import StandardTranscriptFields
 
     std = StandardTranscriptFields()
-    seg = pl.read_parquet(segmentation_path)
-    if "segger_cell_id" not in seg.columns:
-        raise ValueError(f"No 'segger_cell_id' column in {segmentation_path}.")
-
-    merged = seg if {std.x, std.y, std.feature} <= set(seg.columns) else _legacy_join(seg, source_path, std)
 
     if include_all_transcripts:
         keep = pl.col("segger_cell_id").is_not_null()
@@ -139,38 +154,96 @@ def _load_assigned(
 
 def _sdata_element_names(spatialdata_element_prefix: str) -> list:
     return [
-        f"transcripts{spatialdata_element_prefix}",
         f"cell_boundaries{spatialdata_element_prefix}",
         f"table{spatialdata_element_prefix}"
     ]
 
-def _check_sdata_writable(sdata_path: Path, spatialdata_element_prefix: str) -> None:
-    """Fail fast if any target element name already exists, before doing any of the actual work."""
-    kinds = ("points", "shapes", "tables")
-    # TODO: Load sdata, instead of assuming that files exist
-    for kind, name in zip(kinds, _sdata_element_names(spatialdata_element_prefix)):
-        if (sdata_path / kind / name).exists():
-            raise FileExistsError(f"{sdata_path / kind / name} already exists; pick a different --spatialdata-element-prefix.")
+def _check_sdata_writable(sdata, transcripts_element: str, spatialdata_element_prefix: str) -> None:
+    """Fail fast if the transcripts element is missing, or any target element name already exists."""
+    if transcripts_element not in sdata.points:
+        raise KeyError(f"{transcripts_element!r} not found in sdata.points; pass --transcripts-element to point at the right one.")
+    cell_boundaries_name, table_name = _sdata_element_names(spatialdata_element_prefix)
+    if cell_boundaries_name in sdata.shapes:
+        raise FileExistsError(f"{cell_boundaries_name!r} already exists in sdata.shapes; pick a different --spatialdata-element-prefix.")
+    if table_name in sdata.tables:
+        raise FileExistsError(f"{table_name!r} already exists in sdata.tables; pick a different --spatialdata-element-prefix.")
 
 
-def _write_to_sdata(sdata_path: Path, assigned: "pl.DataFrame", gdf: "gpd.GeoDataFrame", adata: "AnnData", spatialdata_element_prefix: str = "") -> None:
-    """Add segger's elements directly to the existing SpatialData store at ``sdata_path``."""
-    import spatialdata
+_SEGGER_COLUMN_RENAMES = {
+    "similarity_threshold": "segger_similarity_threshold",
+    "converged": "segger_converged",
+    "filtered": "segger_filtered",
+}
+
+
+def _segger_transcript_columns(merged: "pl.DataFrame", row_index: str) -> "pl.DataFrame":
+    """Segger's per-transcript outputs, renamed for joining onto an existing transcripts table."""
+    import polars as pl
+
+    present = [c for c in _SEGGER_COLUMN_RENAMES if c in merged.columns]
+    return (
+        merged.select(row_index, "segger_cell_id", "segger_similarity", *present)
+        .rename({c: _SEGGER_COLUMN_RENAMES[c] for c in present})
+        .with_columns(pl.col("segger_cell_id").cast(pl.String))
+    )
+
+
+def _append_segger_to_transcripts(sdata, merged: "pl.DataFrame", std, transcripts_element: str) -> "pl.DataFrame":
+    """Left-join segger's outputs onto the sdata store's existing transcripts table.
+
+    Assumes ``std.row_index`` was assigned over the same rows, in the same order, as the existing
+    transcripts table (true when segger's preprocessor read the same source file spatialdata was
+    built from). Rows absent from ``merged`` -- e.g. control probes or low-quality transcripts
+    dropped before segger ever saw them -- are flagged ``segger_unused``; the rest get segger's own
+    columns, including a null ``segger_cell_id`` for anything segger didn't assign.
+    """
+    import polars as pl
+
+    existing = sdata.points[transcripts_element]
+    existing = existing.compute() if hasattr(existing, "compute") else existing
+    tx = pl.from_pandas(existing).with_row_index(name=std.row_index)
+
+    seg_cols = _segger_transcript_columns(merged, std.row_index).with_columns(pl.lit(True).alias("_segger_seen"))
+    return (
+        tx.join(seg_cols, on=std.row_index, how="left")
+        .with_columns(pl.col("_segger_seen").is_null().alias("segger_unused"))
+        .drop(std.row_index, "_segger_seen")
+    )
+
+
+def _write_to_sdata(
+    sdata,
+    merged: "pl.DataFrame",
+    gdf: "gpd.GeoDataFrame",
+    adata: "AnnData",
+    spatialdata_element_prefix: str = "",
+    transcripts_element: str = "transcripts",
+) -> None:
+    """Append segger's columns to the existing transcripts element, and add its boundaries/table elements to the given SpatialData store."""
     from spatialdata.models import PointsModel, ShapesModel, TableModel
 
+    from ..io import StandardTranscriptFields
+
+    std = StandardTranscriptFields()
     names = _sdata_element_names(spatialdata_element_prefix)
-    sdata = spatialdata.read_zarr(sdata_path)
+
+    attrs = sdata.points[transcripts_element].attrs.get("spatialdata_attrs", {})
+    joined = _append_segger_to_transcripts(sdata, merged, std, transcripts_element)
     coordinates = {"x": "x", "y": "y"}
-    if "z" in assigned.columns:
+    if "z" in joined.columns:
         coordinates["z"] = "z"
     # TODO: Consider using the transformations from the base elements!
-    sdata[names[0]] = PointsModel.parse(
-        assigned.to_pandas(), coordinates=coordinates, feature_key="feature_name", instance_key="segger_cell_id"
+    sdata[transcripts_element] = PointsModel.parse(
+        joined.to_pandas(),
+        coordinates=coordinates,
+        feature_key=attrs.get("feature_key"),
+        instance_key=attrs.get("instance_key"),
     )
-    sdata[names[1]] = ShapesModel.parse(gdf)
-    sdata[names[2]] = TableModel.parse(adata)
+    sdata[names[0]] = ShapesModel.parse(gdf)
+    sdata[names[1]] = TableModel.parse(adata)
 
-    print(f"Writing {', '.join(names)} to {sdata_path}...")
+    print(f"Writing {transcripts_element}, {', '.join(names)} to {sdata.path}...")
+    sdata.write_element([transcripts_element], overwrite=True)
     sdata.write_element(names, overwrite=False)
 
 
@@ -191,10 +264,12 @@ def export(
     min_similarity: _MinSim = None,
     min_transcripts: _MinTx = 10,
     spatialdata_element_prefix: _SpatialdataElementPrefix = "_segger",
+    transcripts_element: _TranscriptsElement = "transcripts",
 ):
     """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
     selected = elements or _DEFAULT_ELEMENTS
 
+    sdata = None
     if "spatialdata" in selected:
         import importlib.util
 
@@ -202,11 +277,15 @@ def export(
             raise ImportError("The 'spatialdata' element needs the spatialdata package. Make sure spatialdata is installed in your environment, for example with `pip install spatialdata`.")
         if sdata_path is None:
             raise ValueError("--sdata is required when exporting 'spatialdata'.")
-        _check_sdata_writable(sdata_path, spatialdata_element_prefix)
+        import spatialdata as _spatialdata
+
+        sdata = _spatialdata.read_zarr(sdata_path)
+        _check_sdata_writable(sdata, transcripts_element, spatialdata_element_prefix)
     if set(selected) - {"spatialdata"} and output_directory is None:
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
-    assigned = _load_assigned(segmentation_path, source_path, include_all_transcripts, min_similarity, min_transcripts)
+    merged = _load_merged(segmentation_path, source_path)
+    assigned = _load_assigned(merged, include_all_transcripts, min_similarity, min_transcripts)
     if output_directory is not None:
         output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -241,5 +320,11 @@ def export(
         print(f"Wrote AnnData ({adata.n_obs} cells x {adata.n_vars} genes): {output_directory / 'adata.h5ad'}")
 
     if "spatialdata" in selected:
-        _write_to_sdata(sdata_path, assigned, gdf, adata, spatialdata_element_prefix=spatialdata_element_prefix)
-        print(f"Added {', '.join(_sdata_element_names(spatialdata_element_prefix))} to {sdata_path}")
+        _write_to_sdata(
+            sdata,
+            merged,
+            gdf,
+            adata,
+            spatialdata_element_prefix=spatialdata_element_prefix,
+            transcripts_element=transcripts_element,
+        )
