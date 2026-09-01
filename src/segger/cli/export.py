@@ -77,6 +77,14 @@ _SdataTableName = Annotated[
         help="Name of the table element segger's AnnData is written to.",
     ),
 ]
+_MinCounts = Annotated[
+    int,
+    Parameter(
+        group=_group_opts,
+        help="Drop cells with fewer than this many assigned transcripts from the table/anndata "
+        "(must be >= 3 for spatialdata, since boundaries need >= 3 points).",
+    ),
+]
 
 
 # -- LOAD TRANSCRIPTS --
@@ -263,12 +271,16 @@ def export(
     sdata_transcripts_name: _SdataTranscriptsName = "transcripts",
     sdata_cell_boundaries_name: _SdataCellBoundariesName = "cell_boundaries_segger",
     sdata_table_name: _SdataTableName = "table_segger",
+    min_counts: _MinCounts = 10,
 ):
     """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
     selected = elements or _DEFAULT_ELEMENTS
 
     sdata = None
     if "spatialdata" in selected:
+        if min_counts < 3:
+            # cell boundaries need >= 3 transcripts to form a polygon; a lower table cutoff leaves cells without one
+            raise ValueError("--min-counts must be >= 3 for spatialdata: boundaries need >= 3 transcripts to form a polygon.")
         if sdata_path is None:
             raise ValueError("--sdata is required when exporting 'spatialdata'.")
         import spatialdata as sd
@@ -298,7 +310,11 @@ def export(
             z="z",
             area=gdf.geometry.area if gdf is not None else None,
             region=sdata_cell_boundaries_name,
+            min_counts=min_counts,
         )
+        # keep only cells that produced a boundary polygon, so the table annotates only real shapes
+        if gdf is not None:
+            adata = adata[adata.obs_names.isin(gdf.index)].copy()
 
     # save outputs
     if "transcripts" in selected:

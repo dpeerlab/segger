@@ -18,6 +18,7 @@ def build_anndata(
     z: Optional[str] = None,
     region: str = "cell_boundaries",
     area: Optional[pd.Series] = None,
+    min_counts: int = 1,
 ) -> AnnData:
     """Cell x gene table built on :func:`anndata_from_transcripts`, with the SpatialData link added.
 
@@ -41,6 +42,9 @@ def build_anndata(
     adata.obs["n_transcripts"] = counts.reindex(adata.obs_names).to_numpy()
     if area is not None:
         adata.obs["area"] = pd.Series(area).reindex(adata.obs_names).to_numpy()
+
+    if min_counts > 1:
+        adata = adata[adata.obs["n_transcripts"] >= min_counts].copy()
 
     # SpatialData link: region/instance_key obs columns plus the attrs that join table to shapes.
     adata.obs["region"] = pd.Categorical([region] * adata.n_obs, categories=[region])
