@@ -175,6 +175,9 @@ def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_i
     sdata_tx = sdata_tx.merge(tx, on=row_index, how="left")
     sdata_tx["segger_seen"] = sdata_tx["segger_filtered"].notnull()
 
+    # row_index is only a join key; drop it from the output
+    sdata_tx = sdata_tx.drop(columns=[row_index])
+
     return sdata_tx
 
 def _write_to_sdata(
@@ -195,28 +198,52 @@ def _write_to_sdata(
     attrs = base_transcripts.attrs.get("spatialdata_attrs", {})
     transformations = get_transformation(base_transcripts, get_all=True)
 
-    # add segger info; merge stays lazy in dask, but must be materialized before overwriting
-    # transcripts_element on disk below, since it still lazily reads from that same store.
+    # new element fully in memory, required for overwriting
     tx = _merge_sdata_transcripts(base_transcripts, tx, "row_index").compute().reset_index(drop=True)
 
     coordinates = {"x": "x", "y": "y"}
     if "z" in tx.columns:
         coordinates["z"] = "z"
 
-    # add model
-    sdata[transcripts_element] = PointsModel.parse(
+    # build the new (in-memory, unbacked) elements
+    new_transcripts = PointsModel.parse(
         tx,
         coordinates=coordinates,
         feature_key=attrs.get("feature_key"),
         instance_key=attrs.get("instance_key"),
         transformations=transformations,
     )
-    sdata[cell_boundaries_element] = ShapesModel.parse(gdf, transformations=transformations)
-    sdata[table_element] = TableModel.parse(adata)
+    new_boundaries = ShapesModel.parse(gdf, transformations=transformations)
+    new_table = TableModel.parse(adata)
 
+    # SpatialData can't overwrite (#520). Do 1) backup, 2) drop in-memory handles, 3) delete original, 4) write new elements, 5) drop backup
+    # 1 backup
+    backup_element = f"{transcripts_element}_backup"
+    sdata[backup_element] = base_transcripts
+    sdata.write_element([backup_element])
+
+    # 2 detach in-memory
+    del sdata.points[backup_element]
+    sdata[transcripts_element] = new_transcripts
+    sdata[cell_boundaries_element] = new_boundaries
+    sdata[table_element] = new_table
+
+    # 3 4 delete and write
     print(f"Writing {transcripts_element}, {cell_boundaries_element}, {table_element} to {sdata.path}...")
-    sdata.write_element([transcripts_element], overwrite=True)
-    sdata.write_element([cell_boundaries_element, table_element], overwrite=False)
+    try:
+        sdata.delete_element_from_disk(transcripts_element)
+        sdata.write_element([transcripts_element, cell_boundaries_element, table_element])
+    except Exception:
+        print(
+            f"Write failed. The original {transcripts_element!r} is preserved on disk as "
+            f"{backup_element!r}; restore it from there."
+        )
+        raise
+    else:
+        # delete backup
+        sdata.delete_element_from_disk(backup_element)
+        if sdata.has_consolidated_metadata():
+            sdata.write_consolidated_metadata()
 
 
 def export(
