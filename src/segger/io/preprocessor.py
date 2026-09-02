@@ -85,16 +85,26 @@ class ISTPreprocessor(ABC):
             ``{'cell_filename': 'my_boundaries.parquet'}``).
         """
         data_dir = Path(data_dir)
-        type(self)._validate_directory(data_dir)
+        type(self)._validate_directory(
+            data_dir,
+            transcript_field_overrides=transcript_field_overrides,
+            boundary_field_overrides=boundary_field_overrides,
+        )
         self.data_dir = data_dir
         self._tx_overrides = transcript_field_overrides or {}
         self._bd_overrides = boundary_field_overrides or {}
 
     @staticmethod
     @abstractmethod
-    def _validate_directory(data_dir: Path):
+    def _validate_directory(
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
         """
-        Check that all required files/directories are present in `data_dir`.
+        Check that all required files/directories are present in `data_dir`,
+        respecting any transcript/boundary field overrides (e.g. custom
+        filenames).
         """
         ...
 
@@ -247,11 +257,15 @@ class CosMXPreprocessor(ISTPreprocessor):
     Preprocessor for NanoString CosMX datasets.
     """
     @staticmethod
-    def _validate_directory(data_dir: Path):
+    def _validate_directory(
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
 
-        # Check required files/directories
-        bd_fields = CosMxBoundaryFields()
-        tx_fields = CosMxTranscriptFields()
+        # Check required files/directories (user overrides applied via dataclasses.replace)
+        bd_fields = dc_replace(CosMxBoundaryFields(), **(boundary_field_overrides or {}))
+        tx_fields = dc_replace(CosMxTranscriptFields(), **(transcript_field_overrides or {}))
         for pat in [
             tx_fields.filename,
             bd_fields.compartment_labels_dirname,
@@ -391,7 +405,12 @@ class XeniumPreprocessor(ISTPreprocessor):
         return version
 
     @classmethod
-    def _validate_directory(cls, data_dir: Path):
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
 
         # Apply xenium software version 2 or higher (when cell id "Unassigned" was introduced. Previously -1)
         version = XeniumPreprocessor._get_analysis_sw_version(data_dir)
@@ -400,12 +419,14 @@ class XeniumPreprocessor(ISTPreprocessor):
                 f"Xenium analysis software version must be 2.0.0 or higher, "
                 f"but found version {'.'.join(version)}."
             )
-        
-        # Check required files/directories
+
+        # Check required files/directories (user overrides applied via dataclasses.replace)
+        tx_fields = dc_replace(cls.tx_fields, **(transcript_field_overrides or {}))
+        bd_fields = dc_replace(cls.bd_fields, **(boundary_field_overrides or {}))
         for pat in [
-            cls.tx_fields.filename,
-            cls.bd_fields.cell_filename,
-            cls.bd_fields.nucleus_filename,
+            tx_fields.filename,
+            bd_fields.cell_filename,
+            bd_fields.nucleus_filename,
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
@@ -552,16 +573,28 @@ class MerscopePreprocessor(ISTPreprocessor):
     Preprocessor for Vizgen MERSCOPE datasets.
     """
     @staticmethod
-    def _validate_directory(data_dir: Path):
+    def _validate_directory(
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
         raise NotImplementedError()
 
 
-def _infer_platform(data_dir: Path) -> str:
+def _infer_platform(
+    data_dir: Path,
+    transcript_field_overrides: dict | None = None,
+    boundary_field_overrides: dict | None = None,
+) -> str:
     matches = []
     exceptions = []
     for platform, preprocessor in PREPROCESSORS.items():
         try:
-            preprocessor._validate_directory(data_dir)
+            preprocessor._validate_directory(
+                data_dir,
+                transcript_field_overrides=transcript_field_overrides,
+                boundary_field_overrides=boundary_field_overrides,
+            )
             matches.append(platform)
         except Exception as e:
             exceptions.append(e)
@@ -587,7 +620,11 @@ def get_preprocessor(
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
-        platform = _infer_platform(data_dir)
+        platform = _infer_platform(
+            data_dir,
+            transcript_field_overrides=transcript_field_overrides,
+            boundary_field_overrides=boundary_field_overrides,
+        )
     if platform not in PREPROCESSORS:
         raise ValueError(
             f"Unknown platform: '{platform}'. "
