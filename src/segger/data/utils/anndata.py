@@ -161,22 +161,25 @@ def setup_anndata(
     )
 
     # Map boundary cell IDs to boundary index
-    ad.obs = (
-        ad.obs
-        .join(
-            (
-                boundaries
-                .reset_index(names=bd_fields.index)
-                .set_index(bd_fields.id, verify_integrity=True)
-                .get(bd_fields.index)
-            ),
-            how="left",
-            validate="1:1",
-        )
-        .reset_index(names=bd_fields.id)
-        .set_index(bd_fields.index, verify_integrity=True)
+    obs = ad.obs.join(
+        (
+            boundaries
+            .reset_index(names=bd_fields.index)
+            .set_index(bd_fields.id, verify_integrity=True)
+            .get(bd_fields.index)
+        ),
+        how="left",
+        validate="1:1",
     )
-    assert ~ad.obs.index.isna().any()
+    unmatched = obs[bd_fields.index].isna()
+    if unmatched.any():
+        warnings.warn(
+            f"{unmatched.sum()} of {len(obs)} cells have transcripts but no "
+            "matching boundary. These cells will be removed."
+        )
+        ad = ad[~unmatched.values].copy()
+        obs = obs[~unmatched.values]
+    ad.obs = obs.reset_index(names=bd_fields.id).set_index(bd_fields.index, verify_integrity=True)
 
     # Explicitly sort indices for reproducibility
     ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
