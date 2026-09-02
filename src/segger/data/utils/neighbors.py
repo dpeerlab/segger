@@ -203,7 +203,7 @@ def setup_prediction_graph(
     max_k: int,
     buffer_ratio: float,
     mode: Literal['nucleus', 'cell', 'uniform'] = 'cell',
-    max_transcripts: int | None = None,
+    quadtree_downsample_n_transcripts: int | None = None,
 ) -> torch.Tensor:
     """TODO: Add description.
     """
@@ -233,7 +233,7 @@ def setup_prediction_graph(
         polygons=polygons,
         predicate='contains',
         batches=100,
-        max_transcripts=max_transcripts,
+        quadtree_downsample_n_transcripts=quadtree_downsample_n_transcripts,
     )
 
     return torch.tensor(

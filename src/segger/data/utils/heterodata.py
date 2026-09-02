@@ -25,7 +25,7 @@ def setup_heterodata(
     prediction_graph_mode: Literal["nucleus", "cell", "uniform"],
     prediction_graph_max_k: int,
     prediction_graph_buffer_ratio: float,
-    prediction_graph_max_transcripts: int | None = 50_000_000,
+    quadtree_downsample_n_transcripts: int | None = 50_000_000,
     cells_embedding_key: str = 'X_pca',
     cells_clusters_column: str = 'phenograph_cluster',
     cells_encoding_column: str = 'cell_encoding',
@@ -159,7 +159,7 @@ def setup_heterodata(
         max_k=prediction_graph_max_k,
         buffer_ratio=prediction_graph_buffer_ratio,
         mode=prediction_graph_mode,
-        max_transcripts=prediction_graph_max_transcripts,
+        quadtree_downsample_n_transcripts=quadtree_downsample_n_transcripts,
     )
     logger.info(f"  tx-neighbors-bd edges: {data['tx', 'neighbors', 'bd'].edge_index.shape[1]:,}")
 

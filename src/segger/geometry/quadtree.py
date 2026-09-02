@@ -144,7 +144,7 @@ def get_quadtree_index(
     max_size: int,
     with_bounds: bool = True,
     max_retries: int = 5,
-    max_transcripts: int | None = None,
+    quadtree_downsample_n_transcripts: int | None = None,
 ) -> tuple[cudf.Series, cudf.DataFrame, dict]:
     """Build a cuSpatial quadtree from 2D point data.
 
@@ -159,7 +159,7 @@ def get_quadtree_index(
         DataFrame. Default is True.
     max_retries : int, optional
         Retries on invalid tree, each growing ``max_size`` by 5%. Default 6.
-    max_transcripts : int, optional
+    quadtree_downsample_n_transcripts : int, optional
         Downsample transcripts for quadtree construction to avoid numeric overflows
         (see segger issue #77). While this does not speed up the construction,
         it becomes more memory efficient. Set to None to disable downsampling.
@@ -184,15 +184,15 @@ def get_quadtree_index(
     # on very large point counts (see segger issue #77)
     n_points = len(points)
     retry_step = 10000
-    if max_transcripts is not None and n_points > max_transcripts:
-        fraction = max_transcripts / n_points
-        sample_idx = cp.random.randint(0, n_points, size=max_transcripts)
+    if quadtree_downsample_n_transcripts is not None and n_points > quadtree_downsample_n_transcripts:
+        fraction = quadtree_downsample_n_transcripts / n_points
+        sample_idx = cp.random.randint(0, n_points, size=quadtree_downsample_n_transcripts)
         points = points.iloc[sample_idx]
 
         # adjust max-size and growth parameter
         max_size = max(1, round(max_size * fraction))
         retry_step = max(1, round(retry_step * fraction))
-        logger.debug(f"Subsampling {max_transcripts / (1e6):.1f}M / {n_points / (1e6):.1f}M ({fraction:.1%}) points for quadtree ")
+        logger.debug(f"Subsampling {quadtree_downsample_n_transcripts / (1e6):.1f}M / {n_points / (1e6):.1f}M ({fraction:.1%}) points for quadtree ")
 
     logger.debug(f"Building quadtree on {len(points)} points with max_size={max_size}, max_depth={max_depth}")
 
