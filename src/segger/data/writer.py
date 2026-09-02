@@ -110,6 +110,10 @@ class ISTSegmentationWriter(BasePredictionWriter):
         tx_fields = TrainingTranscriptFields()
 
         tx = trainer.datamodule.tx
+        coordinate_columns = [tx_fields.x, tx_fields.y]
+        if tx_fields.z in tx.columns:
+            coordinate_columns.append(tx_fields.z)
+
         transcripts = (
             segmentation
             .filter(
@@ -118,8 +122,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             .join(
                 tx.select([
                     tx_fields.row_index,
-                    tx_fields.x,
-                    tx_fields.y,
+                    *coordinate_columns,
                     tx_fields.feature,
                 ]),
                 on=tx_fields.row_index,
@@ -132,8 +135,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 "segger_cell_id",
                 "segger_similarity",
                 "similarity_threshold",
-                tx_fields.x,
-                tx_fields.y,
+                *coordinate_columns,
             ])
         )
 
@@ -142,7 +144,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
             feature_column="segger_gene",
             cell_id_column="segger_cell_id",
             score_column="segger_similarity",
-            coordinate_columns=[tx_fields.x, tx_fields.y],
+            coordinate_columns=coordinate_columns,
         )
         adata.write_h5ad(self.output_directory / 'segger_anndata.h5ad')
 

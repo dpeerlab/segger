@@ -7,6 +7,8 @@ rounded with Chaikin smoothing. One Shapely polygon per cell.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
 from typing import Literal, Optional, Union
 
 import geopandas as gpd
@@ -184,6 +186,13 @@ def cell_boundary(
     return poly
 
 
+def _build_one_boundary(inputs: tuple) -> tuple:
+    """Run ``cell_boundary`` for one cell; returns (cell_id, n_transcripts, geometry)."""
+    cid, pts, method, smoothing, connectivity = inputs
+    geom = cell_boundary(pts, method=method, smoothing=smoothing, connectivity=connectivity)
+    return str(cid), len(pts), geom
+
+
 def generate_boundaries(
     transcripts: Union[pl.DataFrame, pd.DataFrame],
     cell_id: str = "cell_id",
@@ -203,14 +212,20 @@ def generate_boundaries(
         n_groups = grouped.ngroups
         groups = ((cid, g[[x, y]].to_numpy()) for cid, g in grouped)
 
-    ids, n_tx, geoms = [], [], []
-    for cid, pts in tqdm(groups, total=n_groups, desc="Building cell boundaries"):
-        ids.append(str(cid))
-        n_tx.append(len(pts))
-        geoms.append(cell_boundary(pts, method=method, smoothing=smoothing, connectivity=connectivity))
+    inputs = [(cid, pts, method, smoothing, connectivity) for cid, pts in groups]
 
-    # Output the SpatialData instance key as "cell_id" regardless of the input column name. Keep it as
-    # a column too: geoparquet drops a named index, and it must match the table instance key to join.
+    n_workers = max(len(os.sched_getaffinity(0)) - 1, 1)
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        results = list(
+            tqdm(
+                pool.map(_build_one_boundary, inputs, chunksize=10),
+                total=n_groups,
+                desc="Building cell boundaries",
+            )
+        )
+    ids, n_tx, geoms = map(list, zip(*results)) if results else ([], [], [])
+
+    # Output the SpatialData instance key as "cell_id" regardless of the input column name.
     gdf = gpd.GeoDataFrame(
         {"cell_id": ids, "n_transcripts": n_tx}, geometry=geoms, index=pd.Index(ids, name="cell_id")
     )
