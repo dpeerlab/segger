@@ -23,6 +23,7 @@ def _points_in_polygons_contains(
     polygons: cuspatial.GeoSeries,
     max_size: int | None = None,
     batches: int | None = None,
+    max_transcripts: int | None = None,
 ) -> cudf.DataFrame:
     """Finds which points are strictly contained within polygons.
 
@@ -56,7 +57,8 @@ def _points_in_polygons_contains(
     point_indices, quadtree, kwargs = get_quadtree_index(
         points,
         max_size,
-        with_bounds=False
+        with_bounds=False,
+        max_transcripts=max_transcripts,
     )
 
     # Perform spatial join in batches
@@ -105,6 +107,7 @@ def _points_in_polygons_intersects(
     max_unassigned_points: int = 100_000,
     boundary_buffer: float = 1e-9,
     batches: int | None = None,
+    max_transcripts: int | None = None,
 ) -> cudf.DataFrame:
     """Finds points that intersect polygons, including boundaries.
 
@@ -135,7 +138,9 @@ def _points_in_polygons_intersects(
         mapping each intersecting point to its polygon.
     """
     # GPU pass to find all points strictly contained by the polygons
-    contains = _points_in_polygons_contains(points, polygons, batches=batches)
+    contains = _points_in_polygons_contains(
+        points, polygons, batches=batches, max_transcripts=max_transcripts,
+    )
     
     # Isolate points not found, which are potential boundary cases
     idx_all = cudf.RangeIndex(len(points))
@@ -151,7 +156,9 @@ def _points_in_polygons_intersects(
             ply_ixn.buffer(boundary_buffer),
             backend='cuspatial',
         )
-        in_buffer = _points_in_polygons_contains(pts_ixn, ply_buf)
+        in_buffer = _points_in_polygons_contains(
+            pts_ixn, ply_buf, max_transcripts=max_transcripts,
+        )
         in_buffer = in_buffer['index_query'].drop_duplicates()
         pts_ixn = pts_ixn.iloc[in_buffer]
 
@@ -181,7 +188,8 @@ def points_in_polygons(
     predicate: Literal['contains', 'intersects'] = 'intersects',
     max_unasigned_points: int = 100_000,
     boundary_buffer: float = 1e-9,
-    batches: int | None = None
+    batches: int | None = None,
+    max_transcripts: int | None = None,
 ) -> cudf.DataFrame:
     """Finds which points fall inside which polygons using a given predicate.
 
@@ -231,7 +239,9 @@ def points_in_polygons(
 
     # Perform spatial join
     if predicate == 'contains':
-        return _points_in_polygons_contains(points, polygons, batches=batches)
+        return _points_in_polygons_contains(
+            points, polygons, batches=batches, max_transcripts=max_transcripts,
+        )
     else:  # predicate == 'intersects'
         return _points_in_polygons_intersects(
             points,
@@ -239,6 +249,7 @@ def points_in_polygons(
             max_unasigned_points,
             boundary_buffer,
             batches,
+            max_transcripts=max_transcripts,
         )
 
 def polygons_in_polygons(
