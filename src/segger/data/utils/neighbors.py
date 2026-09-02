@@ -191,6 +191,10 @@ def setup_segmentation_graph(
         tx
         .with_row_index("_tid")
         .filter(segmentation_mask)
+        # Cells with no matching boundary are dropped from adata upstream,
+        # leaving cell_encoding null for their transcripts even though
+        # segmentation_mask (compartment-only) still selects them.
+        .filter(pl.col(tx_fields.cell_encoding).is_not_null())
         .select(["_tid", tx_fields.cell_encoding])
         .to_torch()
         .T
