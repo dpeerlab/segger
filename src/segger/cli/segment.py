@@ -76,7 +76,32 @@ def segment(
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
-    
+
+    transcripts_cell_id: Annotated[str | None, Parameter(
+        help="Column in the raw transcripts file to use as cell assignments "
+             "instead of the platform default (e.g. a custom segmentation "
+             "column added to the transcripts parquet).",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    cells_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom cell boundaries file to use instead of the "
+             "platform default. Must be in the same format as the platform's "
+             "default boundaries file (e.g. vertex-list parquet for Xenium).",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    nucleus_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom nucleus boundaries file to use instead of "
+             "the platform default. Must be in the same format as the "
+             "platform's default boundaries file (e.g. vertex-list parquet for "
+             "Xenium).",
+        group=group_io,
+        required=False,
+    )] = None,
+
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -336,8 +361,15 @@ def segment(
     # Setup Lightning Data Module
     logger.debug(f"Setting up ISTDataModule | Input Directory: '{input_directory}'")
     from ..data import ISTDataModule
+    boundary_field_overrides = {}
+    if cells_boundaries_file:
+        boundary_field_overrides['cell_filename'] = cells_boundaries_file
+    if nucleus_boundaries_file:
+        boundary_field_overrides['nucleus_filename'] = nucleus_boundaries_file
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        transcript_field_overrides={'cell_id': transcripts_cell_id} if transcripts_cell_id else None,
+        boundary_field_overrides=boundary_field_overrides or None,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,

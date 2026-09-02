@@ -127,6 +127,14 @@ class ISTDataModule(LightningDataModule):
         Fraction of tiles used for training; the rest for validation.
     edges_per_batch : int, default=1_000_000
         Maximum number of edges per batch in the DataLoader.
+    transcript_field_overrides : dict or None, default=None
+        Overrides applied to the platform's TranscriptFields dataclass. Keys
+        must be valid field names (e.g. ``{'cell_id': 'my_col'}``). Typically
+        constructed by the CLI from named arguments.
+    boundary_field_overrides : dict or None, default=None
+        Overrides applied to the platform's BoundaryFields dataclass (e.g.
+        ``{'cell_filename': 'my_boundaries.parquet'}``). Typically constructed
+        by the CLI from named arguments.
     gene_corr_reference : sc.AnnData or None, default=None
         Optional reference AnnData object used to compute gene-gene correlation features.
     gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
@@ -156,6 +164,8 @@ class ISTDataModule(LightningDataModule):
     tiling_side_length: float = 250.  # TODO: Remove (benchmarking only)
     training_fraction: float = 0.75
     edges_per_batch: int = 1_000_000
+    transcript_field_overrides: dict | None = None
+    boundary_field_overrides: dict | None = None
     gene_corr_reference_path: Path | None = None
     gene_missing_strategy: Literal["error", "remove", "fill"] = "error"
     debug_dir: Path | None = None
@@ -184,7 +194,11 @@ class ISTDataModule(LightningDataModule):
 
         # Load standardized IST data
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
-        pp = get_preprocessor(self.input_directory)
+        pp = get_preprocessor(
+            self.input_directory,
+            transcript_field_overrides=self.transcript_field_overrides,
+            boundary_field_overrides=self.boundary_field_overrides,
+        )
         tx = self.tx = pp.transcripts
         bd = self.bd = pp.boundaries
 
