@@ -151,14 +151,14 @@ def setup_heterodata(
     logger.debug("Setting up transcript neighbors graph")
     data['tx', 'neighbors', 'tx'].edge_index = _sort_by_src(
         setup_transcripts_graph(transcripts, max_k=transcripts_graph_max_k, max_dist=transcripts_graph_max_dist)
-    )
+    ).long()
     logger.info(f"  tx-neighbors-tx edges: {data['tx', 'neighbors', 'tx'].edge_index.shape[1]:,}")
 
     # Reference segmentation graph
     logger.debug("Setting up segmentation graph")
     data['tx', 'belongs', 'bd'].edge_index = _sort_by_src(
         setup_segmentation_graph(transcripts, segmentation_mask=segmentation_mask)
-    )
+    ).long()
     logger.info(f"  tx-belongs-bd edges: {data['tx', 'belongs', 'bd'].edge_index.shape[1]:,}")
 
     # Transcript-cell graph for prediction
@@ -174,7 +174,7 @@ def setup_heterodata(
             buffer_ratio=prediction_graph_buffer_ratio,
             mode=prediction_graph_mode,
         )
-    )
+    ).long()
     logger.info(f"  tx-neighbors-bd edges: {data['tx', 'neighbors', 'bd'].edge_index.shape[1]:,}")
 
     return data
