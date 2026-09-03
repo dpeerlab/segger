@@ -88,7 +88,7 @@ def run_prediction_only(
     csvlogger = CSVLogger(path_outputs)
     writer = ISTSegmentationWriter(path_outputs, debug=True)
 
-    trainer = Trainer(logger=csvlogger, reload_dataloaders_every_n_epochs=1, callbacks=[writer],)
+    trainer = Trainer(logger=csvlogger, reload_dataloaders_every_n_epochs=1, callbacks=[writer], devices=1,)
     datamodule = ISTDataModule.load_from_checkpoint(path_checkpoint)
     model = LitISTEncoder.load_from_checkpoint(path_checkpoint)
 
