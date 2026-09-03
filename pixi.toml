@@ -21,17 +21,14 @@ extra-index-urls = [
     "https://pypi.nvidia.com",
     "https://download.pytorch.org/whl/cu121"
 ]
-find-links = [
-    { url = "https://data.pyg.org/whl/torch-2.5.0+cu121.html" }
-]
 
 [feature.cuda121.pypi-dependencies]
 torch = "==2.5.*"
 torchvision = "==0.20.*"
 lightning = "*"
 torch_geometric = "*"
-torch-scatter = "*"
-torch-sparse = "*"
+torch-scatter = { url = "https://github.com/dpeerlab/segger/releases/download/wheels-cu121-v1/torch_scatter-2.1.2%2Bpt25cu121-cp311-cp311-linux_x86_64.whl" }
+torch-sparse = { url = "https://github.com/dpeerlab/segger/releases/download/wheels-cu121-v1/torch_sparse-0.6.18%2Bpt25cu121-cp311-cp311-linux_x86_64.whl" }
 cuspatial-cu12 = "==24.10.*"
 cudf-cu12 = "==24.10.*"
 cuml-cu12 = "==24.10.*"
