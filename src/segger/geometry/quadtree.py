@@ -40,7 +40,10 @@ def get_quadtree_kwargs(
     max_depth = 1
     while extent // (1 << max_depth) > 0:
         max_depth += 1
-    scale = extent // (1 << max_depth - 1)
+    max_depth = min(max_depth, 15)
+
+    # Match cuSpatial's own min-scale formula so it never silently clamps this up.
+    scale = extent / ((1 << max_depth) + 2)
 
     # Return as dictionary
     return dict(
@@ -49,7 +52,7 @@ def get_quadtree_kwargs(
         y_min=y_min,
         y_max=y_max,
         scale=scale,
-        max_depth=min(max_depth, 15),
+        max_depth=max_depth,
     )
 
 
@@ -100,6 +103,8 @@ def get_quadrant_bounds(
     x_max: float,
     y_min: float,
     y_max: float,
+    scale: float,
+    max_depth: int,
 ):
     """
     Add spatial bounds to each leaf in a cuSpatial quadtree.
@@ -115,6 +120,12 @@ def get_quadrant_bounds(
         Full extent of the quadtree in x-direction.
     y_min, y_max : float
         Full extent of the quadtree in y-direction.
+    scale : float
+        The `scale` actually used by cuSpatial to build `quadtree` (i.e. the
+        leaf cell width). Must match, or leaf boundaries will be computed for
+        a different cell size than the tree cuSpatial built.
+    max_depth : int
+        The `max_depth` actually used by cuSpatial to build `quadtree`.
 
     Returns
     -------
@@ -122,13 +133,10 @@ def get_quadrant_bounds(
         Input DataFrame with added bounding box columns: 'x_min', 'x_max',
         'y_min', and 'y_max'.
     """
-    width =  x_max - x_min
-    height = y_max - y_min
     levels = quadtree['level'].astype(float) + 1
     coords = cp.array(keys_to_coordinates(quadtree['key'].to_numpy()))
-    quadrant_max = np.ceil(np.log2(max(width, height)))
-    quadrant_dim = 2 ** (quadrant_max - levels)
-    
+    quadrant_dim = scale * 2 ** (max_depth - levels)
+
     quadtree['x_min'] = x_min + coords[0] * quadrant_dim
     quadtree['x_max'] = quadtree['x_min'] + quadrant_dim
     quadtree['y_min'] = y_min + coords[1] * quadrant_dim
@@ -215,6 +223,8 @@ def get_quadtree_index(
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
+            scale=scale,
+            max_depth=max_depth,
         )
 
     return indices, quadtree, kwargs
