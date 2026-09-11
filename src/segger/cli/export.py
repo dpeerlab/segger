@@ -173,11 +173,16 @@ def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_i
         "converged": "segger_converged",
         "filtered": "segger_filtered",
     }
+
+    # rename
     tx = tx.rename(map_columns).select(row_index, *map_columns.values()).to_pandas()
 
     # sdata_tx has no row_index column; construct it
     sdata_tx = sdata_tx.assign(**{row_index: 1})
     sdata_tx[row_index] = sdata_tx[row_index].cumsum() - 1
+
+    # delete existing (overwrite is not exactly silent - export would stop if boundaries or table already exists)
+    sdata_tx = sdata_tx.drop(columns=[col for col in map_columns.values() if col in sdata_tx.columns])
 
     # merge (tx is small enough to broadcast onto every partition; no shuffle needed)
     sdata_tx = sdata_tx.merge(tx, on=row_index, how="left")
