@@ -153,14 +153,20 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
     return tx
 
 # -- xeniumranger import-segmentation support
-def _build_xenium_transcript_csv(assigned: "pl.DataFrame") -> "pl.DataFrame":
-    """Required Xenium transcript columns: transcript_id,cell,is_noise"""
-    tx = assigned.with_columns(
+def _build_xenium_transcript_csv(tx: "pl.DataFrame") -> "pl.DataFrame":
+    """Required Xenium transcript columns: transcript_id,cell,is_noise
+
+    Takes `tx` (not `assigned`) since `filtered` is only kept there — `tx` already went
+    through the legacy join in `load_transcripts` if this segmentation predates it.
+    """
+    return tx.select(
         pl.col("row_index").alias("transcript_id"),
         pl.col("segger_cell_id").alias("cell"),
-        (pl.col("filtered").not_()).alias("is_noise")
+        pl.col("feature_name"),
+        pl.col("x"),
+        pl.col("y"),
+        (pl.col("filtered").not_()).alias("is_noise"),
     )
-    return tx
 
 
 # -- Spatial Data Support
@@ -367,7 +373,7 @@ def export(
         )
 
     if "xeniumranger" in selected:
-        xenium_tx = _build_xenium_transcript_csv(assigned)
+        xenium_tx = _build_xenium_transcript_csv(tx)
         transcript_assignment_path = output_directory / "xenium_transcript_assignment.csv"
         xenium_tx.write_csv(transcript_assignment_path)
         print(f"Wrote {xenium_tx.height} transcripts for xeniumranger: {transcript_assignment_path}")
