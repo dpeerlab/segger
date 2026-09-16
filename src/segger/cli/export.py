@@ -41,7 +41,7 @@ _Source = Annotated[
         group=_group_io,
         validator=validators.Path(exists=True, dir_okay=True),
         help="Source transcripts directory. Needed for segger v0.2.0 (before x/y/feature_name were included in outputs), "
-        "and for 'xeniumranger' (to join back transcript_id/qv/overlaps_nucleus from the raw Xenium transcripts).",
+        "and for 'xeniumranger' for more verbose outputs.",
     ),
 ]
 _Out = Annotated[
@@ -153,31 +153,14 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
     return tx
 
 # -- xeniumranger import-segmentation support
-def _build_xenium_transcript_csv(assigned: "pl.DataFrame", source_path: Path, std: StandardTranscriptFields) -> "pl.DataFrame":
-    """Raw Xenium transcript columns (transcript_id/qv/overlaps_nucleus) joined onto segger's assigned transcripts, cell_id reassigned to segger's calls."""
-    from ..io.fields import XeniumTranscriptFields
-
-    raw = XeniumTranscriptFields()
-    raw_tx = (
-        # matches the row-index assignment XeniumPreprocessor.transcripts uses, so std.row_index lines up
-        pl.scan_parquet(source_path / raw.filename, parallel="row_groups")
-        .with_row_index(name=std.row_index)
-        .select(std.row_index, "transcript_id", raw.compartment, raw.quality)
-        .collect()
+def _build_xenium_transcript_csv(assigned: "pl.DataFrame") -> "pl.DataFrame":
+    """Required Xenium transcript columns: transcript_id,cell,is_noise"""
+    tx = assigned.with_columns(
+        pl.col("row_index").alias("transcript_id"),
+        pl.col("segger_cell_id").alias("cell"),
+        (pl.col("filtered").not_()).alias("is_noise")
     )
-    tx = assigned.filter(pl.col("segger_cell_id").is_not_null()).join(raw_tx, on=std.row_index, how="left")
-    if "z" not in tx.columns:
-        tx = tx.with_columns(pl.lit(None).alias("z"))
-    return tx.select(
-        "transcript_id",
-        pl.col("segger_cell_id").alias(raw.cell_id),
-        raw.compartment,
-        "feature_name",
-        pl.col("x").alias(raw.x),
-        pl.col("y").alias(raw.y),
-        pl.col("z").alias("z_location"),
-        raw.quality,
-    )
+    return tx
 
 
 # -- Spatial Data Support
@@ -384,8 +367,7 @@ def export(
         )
 
     if "xeniumranger" in selected:
-        std = StandardTranscriptFields()
-        xenium_tx = _build_xenium_transcript_csv(assigned, source_path, std)
+        xenium_tx = _build_xenium_transcript_csv(assigned)
         transcript_assignment_path = output_directory / "xenium_transcript_assignment.csv"
         xenium_tx.write_csv(transcript_assignment_path)
         print(f"Wrote {xenium_tx.height} transcripts for xeniumranger: {transcript_assignment_path}")
@@ -396,6 +378,10 @@ def export(
 
         print(
             "\nRun this to import the segmentation into a Xenium bundle:\n"
-            f"  xeniumranger import-segmentation --id={output_directory.name} --xenium-bundle={source_path} "
-            f"--transcript-assignment={transcript_assignment_path} --viz-polygons={viz_polygons_path} --units=microns"
+            f"\txeniumranger import-segmentation \\\n"
+            f"\t\t--id={output_directory.name} \\\n"
+            f"\t\t--xenium-bundle={source_path} \\\n"
+            f"\t\t--transcript-assignment={transcript_assignment_path} \\\n"
+            f"\t\t--viz-polygons={viz_polygons_path} \\\n"
+            f"\t\t--units=microns"
         )
