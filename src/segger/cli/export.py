@@ -408,9 +408,10 @@ def export(
         print(f"Wrote {len(gdf)} cell boundaries for xeniumranger: {viz_polygons_path}")
 
         print(
-            "\nRun this to import the segmentation into a Xenium bundle:\n"
-            f"\txeniumranger import-segmentation \\\n"
-            f"\t\t--id={output_directory.name} \\\n"
+            "\nRun this to import the segmentation into a Xenium bundle "
+            f"(writes its output under {output_directory}/xeniumranger_import):\n"
+            f"\tcd {output_directory} && xeniumranger import-segmentation \\\n"
+            f"\t\t--id=xeniumranger_import \\\n"
             f"\t\t--xenium-bundle={source_path} \\\n"
             f"\t\t--transcript-assignment={transcript_assignment_path} \\\n"
             f"\t\t--viz-polygons={viz_polygons_path} \\\n"
