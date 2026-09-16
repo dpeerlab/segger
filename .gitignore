@@ -210,3 +210,7 @@ __marimo__/
 rmm_log.txt
 /nvidia/
 nvidia/
+
+# xeniumranger run output (created if `xeniumranger import-segmentation` is run from here)
+_invocation_*.mro
+/xenium_export/
