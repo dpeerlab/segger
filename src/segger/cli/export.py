@@ -53,7 +53,13 @@ _Sdata = Annotated[
 
 _IncludeAll = Annotated[
     bool,
-    Parameter(group=_group_opts, help="Keep every transcript in the segmentation output, not just the ones segger's 'filtered' flag marked as kept."),
+    Parameter(
+        group=_group_opts,
+        help="Override each element's default transcript filtering. Unset (default): 'anndata' and 'boundaries' "
+        "use only filtered transcripts, 'transcripts' and 'spatialdata' use all of them. Pass this flag to force "
+        "every element to include all transcripts, or --no-include-all-transcripts to restrict every element to "
+        "filtered ones.",
+    ),
 ]
 _SdataTranscriptsName = Annotated[
     str,
@@ -90,7 +96,6 @@ _MinCounts = Annotated[
 # -- LOAD TRANSCRIPTS --
 def load_transcripts(
     segmentation_path: Path,
-    include_all_transcripts: bool,
     source_path: Path = None,
 ):
     # read transcripts
@@ -106,18 +111,16 @@ def load_transcripts(
     if std.z in tx.columns:
         coord_cols.append(pl.col(std.z).alias("z"))
 
-    # filter
-    kept = tx.filter(pl.col("filtered")) if not include_all_transcripts else tx
-
     # select
-    assigned = kept.select(
+    tx = tx.select(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
         pl.col(std.feature).alias("feature_name"),
+        pl.col("filtered"),
         *coord_cols,
     )
 
-    return assigned, tx
+    return tx
 
 
 def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.DataFrame":
@@ -272,7 +275,7 @@ def export(
     chaikin_iterations: Annotated[
         int, Parameter(group=_group_opts, help="Chaikin corner-cutting iterations to round boundaries (0 disables).")
     ] = 0,
-    include_all_transcripts: _IncludeAll = True,
+    include_all_transcripts: _IncludeAll = None,
     sdata_transcripts_name: _SdataTranscriptsName = "transcripts",
     sdata_cell_boundaries_name: _SdataCellBoundariesName = "cell_boundaries_segger",
     sdata_table_name: _SdataTableName = "table_segger",
@@ -296,7 +299,15 @@ def export(
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
     # load tx
-    assigned, tx = load_transcripts(segmentation_path, include_all_transcripts, source_path)
+    tx = load_transcripts(segmentation_path, source_path)
+    tx_filtered = tx.filter(pl.col("filtered"))
+
+    # None (default): tx stays unfiltered, tx_filtered stays filtered; explicit True/False overrides both
+    if include_all_transcripts is False:
+        tx = tx.filter(pl.col("filtered"))
+    if include_all_transcripts:
+        tx_filtered = tx
+
     if output_directory is not None:
         output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -304,13 +315,13 @@ def export(
     gdf = None
     if "boundaries" in selected or "spatialdata" in selected:
         from ..export import generate_boundaries
-        gdf = generate_boundaries(assigned, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
+        gdf = generate_boundaries(tx_filtered, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
 
     adata = None
     if "anndata" in selected or "spatialdata" in selected:
         from ..export import build_anndata
         adata = build_anndata(
-            assigned,
+            tx_filtered,
             cell_id="segger_cell_id",
             z="z",
             area=gdf.geometry.area if gdf is not None else None,
@@ -323,8 +334,8 @@ def export(
 
     # save outputs
     if "transcripts" in selected:
-        assigned.write_parquet(output_directory / "transcripts.parquet")
-        print(f"Wrote {assigned.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
+        tx.write_parquet(output_directory / "transcripts.parquet")
+        print(f"Wrote {tx.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
 
     if "boundaries" in selected:
         gdf.to_parquet(output_directory / "cell_boundaries.parquet")
