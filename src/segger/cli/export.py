@@ -10,6 +10,12 @@ Example usage:
     segger export spatialdata \
       -s $PATH_OUTPUT/segger_segmentation.parquet \
       --sdata $PATH_INPUT/sdata.zarr
+
+    # save transcript-assignment CSV + boundaries GeoJSON for `xeniumranger import-segmentation`
+    segger export xeniumranger \
+      -s $PATH_OUTPUT/segger_segmentation.parquet \
+      -i $PATH_INPUT/xenium_bundle \
+      -o $PATH_OUTPUT/xenium_export
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from ..io import StandardTranscriptFields
 _group_io = Group(name="I/O", sort_key=0)
 _group_opts = Group(name="Options", sort_key=1)
 
-_Element = Literal["anndata", "transcripts", "boundaries", "spatialdata"]
+_Element = Literal["anndata", "transcripts", "boundaries", "spatialdata", "xeniumranger"]
 _DEFAULT_ELEMENTS = ("anndata", "boundaries")
 
 _Seg = Annotated[Path, Parameter(alias="-s", group=_group_io, validator=validators.Path(exists=True, dir_okay=False))]
@@ -34,7 +40,8 @@ _Source = Annotated[
         alias="-i",
         group=_group_io,
         validator=validators.Path(exists=True, dir_okay=True),
-        help="Source transcripts directory. Only needed for segger v0.2.0 (before x/y/feature_name were included in outputs).",
+        help="Source transcripts directory. Needed for segger v0.2.0 (before x/y/feature_name were included in outputs), "
+        "and for 'xeniumranger' for more verbose outputs.",
     ),
 ]
 _Out = Annotated[
@@ -147,6 +154,23 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
         )
     
     return tx
+
+# -- xeniumranger import-segmentation support
+def _build_xenium_transcript_csv(tx: "pl.DataFrame") -> "pl.DataFrame":
+    """Required Xenium transcript columns: transcript_id,cell,is_noise
+
+    Takes `tx` (not `assigned`) since `filtered` is only kept there — `tx` already went
+    through the legacy join in `load_transcripts` if this segmentation predates it.
+    """
+    return tx.select(
+        pl.col("row_index").alias("transcript_id"),
+        pl.col("segger_cell_id").alias("cell"),
+        pl.col("feature_name"),
+        pl.col("x"),
+        pl.col("y"),
+        (pl.col("filtered").not_()).alias("is_noise"),
+    )
+
 
 # -- Spatial Data Support
 def _check_sdata_elements(
@@ -298,6 +322,9 @@ def export(
     if set(selected) - {"spatialdata"} and output_directory is None:
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
+    if "xeniumranger" in selected and source_path is None:
+        raise ValueError("-i/--source-path is required for 'xeniumranger': it's used to join back transcript_id/qv/overlaps_nucleus from the raw Xenium transcripts.")
+
     # load tx
     tx = load_transcripts(segmentation_path, source_path)
     tx_filtered = tx.filter(pl.col("filtered"))
@@ -313,7 +340,7 @@ def export(
 
     # compute outputs
     gdf = None
-    if "boundaries" in selected or "spatialdata" in selected:
+    if "boundaries" in selected or "spatialdata" in selected or "xeniumranger" in selected:
         from ..export import generate_boundaries
         gdf = generate_boundaries(tx_filtered, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
 
@@ -354,4 +381,24 @@ def export(
             transcripts_element=sdata_transcripts_name,
             cell_boundaries_element=sdata_cell_boundaries_name,
             table_element=sdata_table_name,
+        )
+
+    if "xeniumranger" in selected:
+        xenium_tx = _build_xenium_transcript_csv(tx)
+        transcript_assignment_path = output_directory / "xenium_transcript_assignment.csv"
+        xenium_tx.write_csv(transcript_assignment_path)
+        print(f"Wrote {xenium_tx.height} transcripts for xeniumranger: {transcript_assignment_path}")
+
+        viz_polygons_path = output_directory / "xenium_cell_boundaries.geojson"
+        gdf.reset_index(drop=True).to_file(viz_polygons_path, driver="GeoJSON")
+        print(f"Wrote {len(gdf)} cell boundaries for xeniumranger: {viz_polygons_path}")
+
+        print(
+            "\nRun this to import the segmentation into a Xenium bundle:\n"
+            f"\txeniumranger import-segmentation \\\n"
+            f"\t\t--id={output_directory.name} \\\n"
+            f"\t\t--xenium-bundle={source_path} \\\n"
+            f"\t\t--transcript-assignment={transcript_assignment_path} \\\n"
+            f"\t\t--viz-polygons={viz_polygons_path} \\\n"
+            f"\t\t--units=microns"
         )
