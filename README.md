@@ -13,13 +13,25 @@ Full documentation - installation, quickstart, outputs, API reference, etc.:
 
 ## Installation
 
-pixi with Python 3.11 (conda and Python 3.13 support coming soon):
+**segger** requires CUDA 13 and Python 3.13. `cuspa` is built from source, so a CUDA compiler (`nvcc`) must be on `PATH`.
+
+Clone the repo, then use `conda` or `pixi` — both install `cuda-nvcc` for you:
+```bash
+git clone https://github.com/dpeerlab/segger.git && cd segger
+```
 
 ```bash
+# conda
+conda env create -n segger -f environment.yml
+
+# pixi
 curl -fsSL https://pixi.sh/install.sh | sh
-git clone https://github.com/dpeerlab/segger.git
-cd segger
-pixi install -e cuda121
+pixi install
+```
+
+Alternatively, if you already have a CUDA 13 `nvcc` on `PATH`, install directly from GitHub without cloning:
+```bash
+pip install --extra-index-url https://pypi.nvidia.com --extra-index-url https://download.pytorch.org/whl/cu130 git+https://github.com/dpeerlab/segger.git
 ```
 
 ## Usage
