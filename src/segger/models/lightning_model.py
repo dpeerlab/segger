@@ -1,7 +1,6 @@
 from torch.nn import Embedding, BCEWithLogitsLoss, TripletMarginLoss
 from torch_geometric.data import Batch
 from lightning import LightningModule
-from torch_scatter import scatter_max
 from torch.nn import functional as F
 from typing import Any
 import polars as pl
@@ -277,11 +276,19 @@ class LitISTEncoder(LightningModule):
             embeddings['tx'][src],
             embeddings['bd'][dst],
         )
-        max_sim, max_idx = scatter_max(
-            sim,
-            src,
-            dim_size=batch['tx'].num_nodes,
+        # per-node max and argmax over incident edges (torch_scatter
+        # convention: nodes without edges get sim 0 and argmax n_edges)
+        n_nodes = batch['tx'].num_nodes
+        n_edges = sim.shape[0]
+        max_sim = sim.new_full((n_nodes,), float('-inf'))
+        max_sim.scatter_reduce_(0, src, sim, reduce='amax', include_self=False)
+        edge_pos = torch.arange(n_edges, device=sim.device)
+        hit = sim == max_sim[src]
+        max_idx = edge_pos.new_full((n_nodes,), n_edges)
+        max_idx.scatter_reduce_(
+            0, src[hit], edge_pos[hit], reduce='amin', include_self=False
         )
+        max_sim = torch.where(max_sim.isinf(), 0.0, max_sim)
         # Filter by similarity
         valid = max_idx < dst.shape[0]
         if min_similarity is not None:
