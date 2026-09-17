@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.3.0] - 2026-09-15
+
+### Added
+- `segger export spatialdata`: appends segger's per-transcript columns to an existing
+  SpatialData store's `transcripts` element in place, and adds `cell_boundaries_segger`
+  (shapes) and `table_segger` (table) elements. Element names are configurable with
+  `--sdata-transcripts-name`, `--sdata-cell-boundaries-name`, and `--sdata-table-name`.
+- `-i/--source-path` is now optional on `segger export`, falling back to joining source
+  transcripts for legacy (pre-v0.2.0) segmentation outputs.
+- `--min-counts` filter on `segger export`, enforced at `>= 3` for the `spatialdata` element
+  since boundaries need at least 3 points.
+- An optional `z` coordinate threaded through export and the training writer.
+- Cell-boundary generation now runs in parallel across CPUs.
+- Sphinx documentation on ReadTheDocs: installation, quickstart, outputs, API reference,
+  and a common-issues page.
+
+### Changed
+- `segger segment` pins the Lightning Trainer to a single device by default, avoiding the
+  crash multi-GPU SLURM allocations used to trigger.
+- `export.py` relies directly on the `filtered` column instead of re-deriving it.
+
+### Fixed
+- Quadtree leaf boundaries now match cuSpatial's actual clamped scale.
+- Spatialdata export: pre-existing segger columns are dropped before merging transcripts,
+  and base-element transformations are propagated correctly.
+- In-place spatialdata overwrite, and `row_index` is dropped from the written transcripts.
+- Parallel boundary generation: fixed list unpacking and worker count.
+- Spatialdata export elements are now written in place, avoiding a dask-expr crash.
+
+Thanks to @enric-bazz for the initial SpatialData reader and writer code; to @EliHei2
+for the export CLI, the boundary constructor, and the AnnData table export; to
+@mossishahi for the initial AnnData export and boundary writers; to @MeyerBender for
+critical feedback on the implementation design; and to @quentinblampey and
+@alihamraoui for feedback on SOPA and dependency tracking.
+
+[0.3.0]: https://github.com/dpeerlab/segger/releases/tag/v0.3.0
+
 ## [0.2.0] - 2026-08-21
 
 First tagged release. Marks the current `main` state of the segger pipeline.
