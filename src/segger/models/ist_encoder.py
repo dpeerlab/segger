@@ -59,10 +59,16 @@ class Positional2dEmbedder(Module):
             pos: torch.Tensor,
             batch: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if pos.numel() == 0:
+            return pos.new_zeros((pos.shape[0], self.dim * 2))
+
         if batch is None:
             pos = pos - pos.min(dim=0).values
             pos = pos / pos.max(dim=0).values
         else:
+            if batch.numel() == 0:
+                return pos.new_zeros((pos.shape[0], self.dim * 2))
+            batch = batch.to(torch.long)
             # normalize per batch
             mins = torch.zeros((batch.max()+1, 2), device=pos.device)
             maxs = torch.zeros((batch.max()+1, 2), device=pos.device)
