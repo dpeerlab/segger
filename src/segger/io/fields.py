@@ -72,6 +72,7 @@ class MerscopeBoundaryFields:
 @dataclass
 class CosMxTranscriptFields:
     filename: str = '*_tx_file.csv'
+    fallback_filename: str = 'transcripts.parquet'
     x: str = 'x_global_px'
     y: str = 'y_global_px'
     feature: str = 'target'
