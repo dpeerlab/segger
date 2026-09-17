@@ -221,7 +221,7 @@ def setup_prediction_graph(
         return edge_index
     
     # Shape-based graph
-    points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
+    points = tx[[tx_fields.x, tx_fields.y]].to_torch()
     boundary_type = (bd_fields.cell_value if mode == "cell"
                      else bd_fields.nucleus_value)
     polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
@@ -231,7 +231,6 @@ def setup_prediction_graph(
         points=points,
         polygons=polygons,
         predicate='contains',
-        batches=100,
     )
 
     return torch.tensor(
