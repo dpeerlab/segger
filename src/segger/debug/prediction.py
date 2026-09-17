@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-def _patch_load_from_cache():
+def _patch_load_from_cache() -> None:
     """Monkey-patch ISTDataModule.load to restore from `debug_dir` cache.
 
     The original `load()` always re-runs setup_anndata + setup_heterodata + tiling
@@ -25,7 +25,7 @@ def _patch_load_from_cache():
     logger = logging.getLogger(__name__)
     original_load = ISTDataModule.load
 
-    def cached_load(self):
+    def cached_load(self) -> None:
         d = Path(self.debug_dir) if self.debug_dir is not None else None
         cached = {
             "data":  d / "data.pt"           if d else None,
@@ -66,9 +66,9 @@ def _patch_load_from_cache():
 
 
 def run_prediction_only(
-    path_checkpoint,
-    path_outputs,
-):
+    path_checkpoint: Path,
+    path_outputs: Path,
+) -> None:
     from segger.data import ISTDataModule
     from segger.data import ISTSegmentationWriter
     from segger.models import LitISTEncoder

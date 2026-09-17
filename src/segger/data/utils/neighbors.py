@@ -1,6 +1,6 @@
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from typing import Any, Literal
+from typing import Literal
 import geopandas as gpd
 import polars as pl
 import numpy as np
@@ -53,7 +53,7 @@ def phenograph_rapids(
 
 def knn_to_edge_index(
     neighbor_table: torch.Tensor,
-    padding_value = None,
+    padding_value: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Convert a dense neighbor table (with padding) into COO edge index.
@@ -94,7 +94,7 @@ def knn_to_edge_index(
 
 def edge_index_to_knn(
     edge_index: torch.Tensor,
-    padding_value: Any = None,
+    padding_value: int | None = None,
 ) -> torch.Tensor:
     """TODO: Add description.
     """
@@ -182,7 +182,7 @@ def setup_transcripts_graph(
 
 def setup_segmentation_graph(
     tx: pl.DataFrame,
-    segmentation_mask: pl.Expr | pl.Series = None,
+    segmentation_mask: pl.Expr | pl.Series,
 ) -> torch.Tensor:
     """TODO: Add description.
     """

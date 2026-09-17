@@ -2,14 +2,15 @@
 Run only segmentation.
 """
 
+from pathlib import Path
 import pickle
 import anndata as ad
 
 def run_segmentation_only(
-    path_adata,
-    path_predictions,
-    path_outputs,
-):
+    path_adata: Path,
+    path_predictions: Path,
+    path_outputs: Path,
+) -> None:
     """Run segmentation only."""
 
     # imports

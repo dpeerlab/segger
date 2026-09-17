@@ -83,7 +83,7 @@ class LitISTEncoder(LightningModule):
         ])
         self._freeze_gene_embedding = not update_gene_embedding
 
-    def setup(self, stage):
+    def setup(self, stage: str) -> None:
         # LitISTEncoder needs supp. data from ISTDataModule to train
         if not isinstance(self.trainer.datamodule, ISTDataModule):
             raise TypeError(
