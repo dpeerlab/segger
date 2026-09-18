@@ -42,15 +42,23 @@ def quadtree_leaf_bounds(
     """
     from fastquadtree import QuadTree
 
+    # extent from all points so every point lands inside the root box
+    x_min, y_min = (positions.amin(0).double() - margin_bounds).tolist()
+    x_max, y_max = (positions.amax(0).double() + margin_bounds).tolist()
+
+    n = len(positions)
+
+    # sample on-device - less data to transfer
+    if n > max_points:
+        generator = torch.Generator(device=positions.device).manual_seed(seed)
+        index = torch.randint(
+            n, (max_points,), device=positions.device, generator=generator
+        )
+        positions = positions[index]
+        max_size = max(1, round(max_size * max_points / n))
+    
     # fastquadtree is CPU-only.
     positions = positions.cpu().numpy().astype(np.float64)
-    n = len(positions)
-    if n > max_points:
-        rng = np.random.default_rng(seed)
-        positions = positions[rng.integers(0, n, max_points)]
-        max_size = max(1, round(max_size * max_points / n))
-    x_min, y_min = positions.min(axis=0) - margin_bounds
-    x_max, y_max = positions.max(axis=0) + margin_bounds
 
     logger.debug(
         f"Building quadtree on {len(positions)}/{n} points with "
@@ -60,8 +68,7 @@ def quadtree_leaf_bounds(
     tree.insert_many_np(positions)
     nodes = np.asarray(tree.get_all_node_boundaries(), dtype=np.float64)
 
-    # A subdivided node's SW child inherits its (x_min, y_min) corner exactly,
-    # so a node is a leaf iff it is the smallest node with its corner.
+    # a node is a leaf iff it is the smallest node with its corner.
     nodes = nodes[np.argsort(nodes[:, 2] - nodes[:, 0], kind='stable')]
     _, first = np.unique(nodes[:, :2], axis=0, return_index=True)
     leaves = nodes[first]
