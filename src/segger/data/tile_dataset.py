@@ -290,7 +290,6 @@ class TilePredictDataset(Dataset):
             raise IndexError(
                 f"Requested {idx}, but tiling only contains {len(self)} tiles."
             )
-        geometry = self.tiling.tiles[idx]
         return self._subset_new(idx)
 
     def _get_tiles_to_nodes_edges(self, node_type: str, margin: float) -> torch.Tensor:

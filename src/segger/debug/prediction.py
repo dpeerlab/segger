@@ -49,7 +49,7 @@ def _patch_load_from_cache() -> None:
         self.data = torch.load(cached["data"], weights_only=False)
         with open(cached["tiles"], "rb") as f:
             tiles = pickle.load(f)
-        # Predict only accesses `self.tiling.tiles[idx]`; a SimpleNamespace shell suffices.
+        # Predict only needs `len(self.tiling.tiles)`; a SimpleNamespace shell suffices.
         self.tiling = SimpleNamespace(tiles=tiles)
 
         # Model-side embeddings/similarities — rebuilt from adata
