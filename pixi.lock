@@ -3362,8 +3362,8 @@ packages:
   requires_python: '>=3.8'
 - pypi: ./
   name: segger
-  version: 0.3.0
-  sha256: c62f9d2758f6abccc51cc0f87f0514a40b821904acfb2b12dae77c707276cf5a
+  version: 0.4.0
+  sha256: c64f849234fc99daca700c70cd9431269d55ec28fcc06d125c7f7db6704689fa
   requires_dist:
   - anndata
   - cyclopts
@@ -3388,11 +3388,11 @@ packages:
   - lightning
   - torch-geometric
   - cuspa @ git+https://github.com/NVIDIA/cuspa
-  - cudf-cu13
-  - cuml-cu13
-  - cugraph-cu13
+  - cudf-cu13>=26
+  - cuml-cu13>=26
+  - cugraph-cu13>=26
   - cupy-cuda13x
-  - rmm-cu13
+  - rmm-cu13>=26
   - spatialdata ; extra == 'spatialdata'
   requires_python: '>=3.13,<3.14'
 - pypi: https://files.pythonhosted.org/packages/9b/41/b5af3c12d874fcbdb45abd67500aff8030de0d350a5d6163da45378609c4/session_info2-0.4.2-py3-none-any.whl
