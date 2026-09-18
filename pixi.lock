@@ -3362,8 +3362,8 @@ packages:
   requires_python: '>=3.8'
 - pypi: ./
   name: segger
-  version: 0.2.0
-  sha256: 0e4a421534eaaadf68e807a26a7a6fbcdb9fd1d1af0013c86e443c752151df90
+  version: 0.3.0
+  sha256: c62f9d2758f6abccc51cc0f87f0514a40b821904acfb2b12dae77c707276cf5a
   requires_dist:
   - anndata
   - cyclopts
