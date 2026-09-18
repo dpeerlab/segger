@@ -4,7 +4,10 @@ from pathlib import Path
 
 import dask
 
-dask.config.set({"dataframe.query-planning": False})  # spatialdata doesn't yet support dask-expr; must be set before cudf pulls in dask.dataframe
+if int(dask.__version__.split(".")[0]) < 2025:
+    # old spatialdata doesn't support dask-expr; must be set before cudf pulls
+    # in dask.dataframe. Newer dask dropped the legacy implementation.
+    dask.config.set({"dataframe.query-planning": False})
 
 import cupy as cp
 import torch
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def configure_memory(force: bool = False) -> None:
-    """Point CuPy/cuDF/cuSpatial and PyTorch at a single shared RMM pool.
+    """Point CuPy/cuDF/cuspa and PyTorch at a single shared RMM pool.
 
     Must run before any CUDA tensor is created. Run by default from the CLI.
     Importing segger as a library should not change already set allocators.
@@ -33,10 +36,12 @@ def configure_memory(force: bool = False) -> None:
     if not force and cp.cuda.get_allocator() is rmm_cupy_allocator:
         logger.info("Allocators not configured: RMM pool already active.")
         return
+    # Note: cuspa's CUDA kernels currently reject managed-memory pointers.
     rmm.reinitialize(pool_allocator=True, managed_memory=True)
     cp.cuda.set_allocator(rmm_cupy_allocator)
     torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
     enable_statistics()
+
 
 def free_mem_str() -> str:
     stats = get_statistics()
