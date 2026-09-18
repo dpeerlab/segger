@@ -36,11 +36,12 @@ dependencies = [
     "lightning",
     "torch_geometric",
     "cuspa @ git+https://github.com/NVIDIA/cuspa",
-    "cudf-cu13",
-    "cuml-cu13",
-    "cugraph-cu13",
+    # add floors to avoid resolving to placeholder wheels
+    "cudf-cu13>=26",
+    "cuml-cu13>=26",
+    "cugraph-cu13>=26",
     "cupy-cuda13x",
-    "rmm-cu13",
+    "rmm-cu13>=26",
 ]
 
 [project.optional-dependencies]
