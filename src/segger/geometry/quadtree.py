@@ -1,14 +1,11 @@
 import logging
 
-import geopandas as gpd
 import numpy as np
-import shapely
 import torch
 
 logger = logging.getLogger(__name__)
 
-# Subsample construction beyond this many points; leaf capacity is rescaled
-# so leaves still hold ~max_size points of the full set.
+# downsample to max points for performance. results usually identical to full size.
 MAX_QUADTREE_POINTS = 50_000_000
 
 
@@ -74,9 +71,3 @@ def quadtree_leaf_bounds(
     leaves = nodes[first]
     logger.debug(f"Quadtree built: {len(leaves)} leaves")
     return leaves
-
-
-def bounds_to_geoseries(bounds: np.ndarray) -> gpd.GeoSeries:
-    """Convert (K, 4) box bounds to a GeoSeries of box polygons."""
-    bounds = np.asarray(bounds, dtype=np.float64)
-    return gpd.GeoSeries(shapely.box(*bounds.T))

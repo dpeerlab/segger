@@ -6,6 +6,7 @@ import cupy as cp
 import cuspa
 import geopandas as gpd
 import numpy as np
+import shapely
 import torch
 
 PolygonArg = cuspa.Polygons | gpd.GeoSeries
@@ -24,6 +25,12 @@ def polygons_to_cuspa(polygons: PolygonArg) -> cuspa.Polygons:
     if isinstance(polygons, cuspa.Polygons):
         return polygons
     return cuspa.io.from_geopandas(polygons, dtype=np.float64)
+
+
+def bounds_to_geoseries(bounds: np.ndarray) -> gpd.GeoSeries:
+    """Convert (K, 4) box bounds to a GeoSeries of box polygons."""
+    bounds = np.asarray(bounds, dtype=np.float64)
+    return gpd.GeoSeries(shapely.box(*bounds.T))
 
 
 def bounds_to_cuspa(bounds: np.ndarray) -> cuspa.Polygons:
