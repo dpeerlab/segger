@@ -10,12 +10,12 @@ Clone the repository
 
 .. code-block:: bash
 
-   git clone https://github.com/dpeerlab/segger.git
+   git clone --branch v0.4.0 https://github.com/dpeerlab/segger.git
    cd segger
 
-Cloning checks out ``main``, which may include unreleased changes. To install a released
-version instead, add ``--branch <tag>``; see the
-`releases page <https://github.com/dpeerlab/segger/releases>`_ for the available versions.
+``--branch v0.4.0`` pins the clone to the latest release. Omit it to get ``main``, which may
+include unreleased changes, or name an older tag from the
+`releases page <https://github.com/dpeerlab/segger/releases>`_.
 
 Install with conda
 ------------------
