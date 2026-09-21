@@ -33,7 +33,7 @@ class TileFitDataset(PartitionDataset):
         The margin distance used to create the boolean mask.
     geometry_key : str, optional
         The attribute key for accessing node geometry data, by default
-        'geometry'.
+        'pos'.
     drop_geometry : bool, optional
         If True, removes the geometry attribute from the data after
         partitioning, by default True.
@@ -43,7 +43,7 @@ class TileFitDataset(PartitionDataset):
         data: Data | HeteroData,
         tiling: Tiling,
         margin: float,
-        geometry_key: str = 'geometry',
+        geometry_key: str = 'pos',
         clone: bool = True,
         drop_geometry: bool = True,
     ):

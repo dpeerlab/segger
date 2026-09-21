@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.0] - 2026-09-21
+
+### Changed
+- `setup_anndata` keeps one copy of the count matrix instead of four. `adata.raw` and
+  the `counts` layer are gone, `X` holds the raw counts, and the normalised matrix is
+  now a local that `setup_anndata` frees once it has built the embeddings.
+- Transcript and boundary nodes carry `pos` only. The `geometry` attribute aliased it,
+  and `HeteroData.clone()` turns an alias into a second tensor, so tiling was cloning
+  and permuting the coordinates twice.
+- `ISTDataModule` no longer holds on to the boundary `GeoDataFrame` after graph setup.
+
+### Fixed
+- `gene_missing_strategy="remove"` drops the genes missing from `gene_corr_reference`
+  before normalising, rather than normalising, re-subsetting, and normalising again.
+- The raw-count check on `gene_corr_reference` was inverted, rejecting raw counts and
+  accepting normalised ones.
+- The `genes_min_counts` check on `gene_corr_reference` covers only the genes taken
+  from it, instead of failing on any low-count gene anywhere in the reference, and no
+  longer writes `n_counts` into the caller's object.
+
+[0.5.0]: https://github.com/dpeerlab/segger/releases/tag/v0.5.0
+
 ## [0.4.0] - 2026-09-18
 
 ### Changed
