@@ -20,8 +20,7 @@ class TileFitDataset(PartitionDataset):
 
     This class extends `PartitionDataset` to create partitions by assigning
     each node to a tile based on its spatial coordinates. It can also add a
-    mask for nodes within a certain margin of tile boundaries and optionally
-    remove the geometry data after partitioning.
+    mask for nodes within a certain margin of tile boundaries.
 
     Parameters
     ----------
@@ -33,10 +32,7 @@ class TileFitDataset(PartitionDataset):
         The margin distance used to create the boolean mask.
     geometry_key : str, optional
         The attribute key for accessing node geometry data, by default
-        'pos'.
-    drop_geometry : bool, optional
-        If True, removes the geometry attribute from the data after
-        partitioning, by default True.
+        'pos'. Kept on the graph: the model reads it as 'batch.pos_dict'.
     """
     def __init__(
         self,
@@ -45,7 +41,6 @@ class TileFitDataset(PartitionDataset):
         margin: float,
         geometry_key: str = 'pos',
         clone: bool = True,
-        drop_geometry: bool = True,
     ):
         """Initializes and tiles the dataset"""
         self.geometry_key = geometry_key
@@ -60,8 +55,6 @@ class TileFitDataset(PartitionDataset):
         # Note: self.data and self.partition are set inside super.__init__()
         super().__init__(data=data, partition=partition, clone=clone)
         self.data = self._mask_data(self.data)
-        if drop_geometry:
-            self.data = self._drop_geometry(self.data)
 
     def _validate_geometry(
         self,
@@ -155,15 +148,6 @@ class TileFitDataset(PartitionDataset):
                 f"(margin={self.margin}) → quadtree"
             )
             data['mask'] = self.tiling.mask(geom, self.margin)
-        return data
-
-    def _drop_geometry(self, data: Data | HeteroData) -> Data | HeteroData:
-        """Removes the geometry attribute from all node stores."""
-        if isinstance(data, HeteroData):
-            for node_type in data.node_types:
-                del data[node_type][self.geometry_key]
-        else:  # isinstance(data, Data)
-            del data[self.geometry_key]
         return data
 
 
