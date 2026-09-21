@@ -227,11 +227,10 @@ def setup_prediction_graph(
     polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
     buffer_dists = np.sqrt(polygons.area / np.pi) * buffer_ratio
     polygons = polygons.buffer(buffer_dists).reset_index(drop=True)
-    result = points_in_polygons(
+    edge_index = points_in_polygons(
         points=points,
         polygons=polygons,
         predicate='contains',
     )
 
-    return torch.tensor(
-        result[['index_query', 'index_match']].values.T).to(torch.int).cpu()
+    return edge_index.to(torch.int).cpu()
