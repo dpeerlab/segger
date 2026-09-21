@@ -51,3 +51,17 @@ To pick a specific GPU, set:
 .. code-block:: bash
 
    export CUDA_VISIBLE_DEVICES=0
+
+Installing rapids-singlecell in the same environment
+-----------------------------------------------------
+
+If `pip install rapids-singlecell-cu13` does not work out of the box, you can try to explicitely
+define the CUDA toolkit like this
+
+.. code-block:: bash
+
+   conda install -c conda-forge "cuda-version=13.4"
+   pip install "rapids-singlecell-cu13[rapids]"
+
+If this doesn't work for you, please open an issue at
+`dpeerlab/segger/issues <https://github.com/dpeerlab/segger/issues>`_.

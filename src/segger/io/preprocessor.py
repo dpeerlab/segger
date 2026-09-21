@@ -2,7 +2,7 @@ from pandas.errors import DtypeWarning
 from functools import cached_property
 from abc import ABC, abstractmethod
 from anndata import AnnData
-from typing import Literal
+from typing import Callable, Literal
 from pathlib import Path
 import geopandas as gpd
 import polars as pl
@@ -37,10 +37,10 @@ logger = logging.getLogger(__name__)
 # Register of available ISTPreprocessor subclasses keyed by platform name.
 PREPROCESSORS = {}
 
-def register_preprocessor(name):
+def register_preprocessor(name: str) -> "Callable[[type[ISTPreprocessor]], type[ISTPreprocessor]]":
     """
     Decorator to register a preprocessor class under a given platform name.
-    
+
     Parameters
     ----------
     name : str
@@ -51,7 +51,7 @@ def register_preprocessor(name):
     decorator : Callable
         Class decorator that adds the class to the PREPROCESSORS registry.
     """
-    def decorator(cls):
+    def decorator(cls: "type[ISTPreprocessor]") -> "type[ISTPreprocessor]":
         PREPROCESSORS[name] = cls
         return cls
     return decorator
@@ -334,7 +334,7 @@ class CosMXPreprocessor(ISTPreprocessor):
         })
         return bd
     
-    def _get_anndata(self, transcripts, label):
+    def _get_anndata(self, transcripts: gpd.GeoDataFrame, label: str) -> AnnData:
         return utils.transcripts_to_anndata(
             transcripts=transcripts,
             cell_label=label,

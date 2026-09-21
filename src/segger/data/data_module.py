@@ -1,4 +1,5 @@
 import logging
+from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import BaseTransform
 from torch_geometric.utils import negative_sampling
@@ -46,7 +47,7 @@ class NegativeSampling(BaseTransform):
         self.neg_index = neg_index
         self.sampling_ratio = sampling_ratio
 
-    def forward(self, data):
+    def forward(self, data: HeteroData) -> HeteroData:
         # Return early if no positive edges
         pos_idx = data[self.edge_type][self.pos_index]
         if pos_idx.size(1) == 0:
@@ -334,7 +335,7 @@ class ISTDataModule(LightningDataModule):
 
         return setup
 
-    def teardown(self, stage):
+    def teardown(self, stage: str) -> None:
         """TODO: Description
         """
         # Clean up data objects no longer needed

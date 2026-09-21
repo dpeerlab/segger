@@ -2,7 +2,7 @@ Running in a notebook
 ======================
 
 The ``segger`` CLI calls :func:`segger.configure_memory` on startup, which points CuPy, cuDF,
-cuSpatial, and PyTorch at a single shared RMM pool. Importing ``segger`` as a library does **not**
+cuspa, and PyTorch at a single shared RMM pool. Importing ``segger`` as a library does **not**
 do this automatically, so call it yourself before creating any CUDA tensor:
 
 .. code-block:: python
