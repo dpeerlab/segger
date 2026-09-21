@@ -7,6 +7,8 @@ from functools import cached_property
 from typing import Literal
 import torch
 
+from ..csr import index_to_ptr
+
 
 @dataclass
 class Partition:
@@ -382,26 +384,10 @@ class PartitionDataset(torch.utils.data.Dataset):
         labels: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Calculates the permutation and pointers for a set of node labels."""
-        # Get permutation to sort nodes by partition
-        permutation = torch.argsort(labels)
-
-        # Pointers to splits between partitions
-        try:
-            sizes = torch.bincount(
-                labels[permutation],
-                minlength=self._num_partitions,
-            )
-        # catch: RuntimeError: bincount only supports 1-d non-negative integral inputs
-        except RuntimeError as e:
-            labels_sub = labels[permutation][:10]
-            raise RuntimeError(
-                f"N Labels: {len(labels)}, Sample labels: {labels_sub}, Min label: {labels_sub.min()}, Max label: {labels_sub.max()}. Original error message: {str(e)}"
-            ) from e
-        indptr = torch.cat((
-            torch.tensor([0], device=labels.device),
-            torch.cumsum(sizes, dim=0)
-        ))
-        return permutation, indptr, sizes
+        indptr, permutation = index_to_ptr(
+            labels, n_buckets=self._num_partitions
+        )
+        return permutation.long(), indptr, indptr.diff()
     
     def _permute_edges(
         self,
@@ -477,7 +463,10 @@ class PartitionDataset(torch.utils.data.Dataset):
         # Get permutation to sort edges by src partition
         src_edge_labels = src_labels[src_perm][edge_store.edge_index[0]]
         dst_edge_labels = dst_labels[dst_perm][edge_store.edge_index[1]]
-        permutation = torch.argsort(src_edge_labels)
+        _, permutation = index_to_ptr(
+            src_edge_labels, n_buckets=self._num_partitions
+        )
+        permutation = permutation.long()
 
         # Get mask over inter-partition edges
         src_edge_labels = src_edge_labels[permutation]
@@ -495,17 +484,15 @@ class PartitionDataset(torch.utils.data.Dataset):
                     dim=0,
                 )
         
-        # Get partition properties
-        sizes = torch.bincount(
+        # Get partition properties: labels are sorted by the permutation
+        # above and the mask preserves that order
+        indptr, _ = index_to_ptr(
             src_edge_labels[mask],
-            minlength=self._num_partitions,
+            is_sorted=True,
+            n_buckets=self._num_partitions,
         )
-        indptr = torch.cat((
-            torch.tensor([0], device=src_edge_labels.device),
-            torch.cumsum(sizes, dim=0),
-        ))
 
-        return indptr, sizes
+        return indptr, indptr.diff()
 
     def __len__(self) -> int:
         """Description."""
