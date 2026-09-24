@@ -3,22 +3,22 @@
 ## [0.5.0] - 2026-09-21
 
 ### Changed
-- `setup_anndata` keeps one copy of the count matrix instead of four. `adata.raw` and
-  the `counts` layer are gone, `X` holds the raw counts, and the normalised matrix is
-  now a local that `setup_anndata` frees once it has built the embeddings.
-- Transcript and boundary nodes carry `pos` only. The `geometry` attribute aliased it,
-  and `HeteroData.clone()` turns an alias into a second tensor, so tiling was cloning
-  and permuting the coordinates twice.
+- Prediction tiling now uses neighboring tiles to derive margined tiles, instead of
+  materialising the entire graph. This reduces memory usage.
+- Added `segger.data.csr` with `index_to_ptr` and `query_ptr`. Also, add an interface `index2ptr`
+  to overcome the int32 limitation. This is now implemented and used across the project
+- Use updated `searchsorted` logic to overcome `map_index`'s int32 limitation. Because
+  data is sorted, this is faster than `torch.isin`
+- Reduce elements stored in `setup_anndata`, remove unused data copies
+- Drop `geometry` in favor of one `pos` interface, further reducing memory
 - `ISTDataModule` no longer holds on to the boundary `GeoDataFrame` after graph setup.
 
 ### Fixed
+- `points_in_polygons` returns a `(2, K)` tensor instead of a `cudf.DataFrame` (int32 limitation)
 - `gene_missing_strategy="remove"` drops the genes missing from `gene_corr_reference`
   before normalising, rather than normalising, re-subsetting, and normalising again.
 - The raw-count check on `gene_corr_reference` was inverted, rejecting raw counts and
   accepting normalised ones.
-- The `genes_min_counts` check on `gene_corr_reference` covers only the genes taken
-  from it, instead of failing on any low-count gene anywhere in the reference, and no
-  longer writes `n_counts` into the caller's object.
 
 [0.5.0]: https://github.com/dpeerlab/segger/releases/tag/v0.5.0
 
