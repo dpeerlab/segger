@@ -201,7 +201,13 @@ class TilePredictDataset(Dataset):
 
         # Precompute CSRs for fast per-tile subsetting (one-time cost).
         if self._is_hetero:
-            logger.debug("Building tile/edge pointers for fast subsetting...")
+            n_nodes = sum(self.data[nt]['pos'].shape[0]
+                          for nt in self.data.node_types)
+            logger.debug(
+                f"Building tile/edge pointers for fast subsetting: "
+                f"{n_nodes:,} nodes, {len(self.tiling.tiles):,} tiles, "
+                f"margin {self.margin} µm..."
+            )
             self._tile_ptr = self._build_tile_ptr()
             # Tile sizes on the host: reading them off the CSR would sync
             # once per item.
@@ -213,6 +219,7 @@ class TilePredictDataset(Dataset):
             self._neighbor_ptr = self._build_neighbor_ptr()
             self._margin_bounds = self._build_margin_bounds()
             self._edges_ptr = self._build_edge_ptr()
+            logger.debug("Tile/edge pointers built.")
 
     @property
     def _device(self) -> torch.device:

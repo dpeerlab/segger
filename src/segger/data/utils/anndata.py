@@ -6,11 +6,15 @@ import pandas as pd
 import scanpy as sc
 import numpy as np
 import sklearn
+import logging
 import torch
 import warnings
 
 from ...io.fields import TrainingTranscriptFields, TrainingBoundaryFields
 from segger.geometry.morphology import get_polygon_props
+
+logger = logging.getLogger(__name__)
+
 
 # cupyx/cuml/phenograph_rapids are imported inside setup_anndata so anndata_from_transcripts
 # stays importable without a GPU (e.g. for segger export on a CPU-only machine).
@@ -245,6 +249,10 @@ def setup_anndata(
         counts = ad[ad.obs['filtered']].layers['norm']
     
     #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
+    logger.debug(
+        f"Gene embeddings: densifying {counts.shape[0]:,} x "
+        f"{counts.shape[1]:,} counts, correlating and running PCA..."
+    )
     C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
     model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
@@ -252,6 +260,10 @@ def setup_anndata(
     del C, model
 
     # Build PCs on filtered cells and project all cells
+    logger.debug(
+        f"Cell PCA: fitting {int(ad.obs['filtered'].sum()):,} of "
+        f"{ad.n_obs:,} cells, projecting all..."
+    )
     counts_sparse_gpu = cupyx.scipy.sparse.csr_matrix(ad.layers['norm'])
     model = cuml.PCA(n_components=cells_embedding_size)
     model.fit(counts_sparse_gpu[ad.obs['filtered'].values])
@@ -260,6 +272,10 @@ def setup_anndata(
     del ad.layers['norm']  # only needed for the embeddings above
 
     # Compute clusters on filtered cells
+    logger.debug(
+        f"Phenograph on {int(ad.obs['filtered'].sum()):,} cells "
+        f"(k={cells_clusters_n_neighbors})..."
+    )
     cell_clusters = phenograph_rapids(
         ad[ad.obs['filtered']].obsm['X_pca'],
         n_neighbors=cells_clusters_n_neighbors,
@@ -277,6 +293,9 @@ def setup_anndata(
     ).numpy()
 
     # Compute clusters on genes from embedding
+    logger.debug(
+        f"Phenograph on {ad.n_vars:,} genes (k={genes_clusters_n_neighbors})..."
+    )
     ad.var['phenograph_cluster'] = phenograph_rapids(
         ad.varm['X_corr'],
         n_neighbors=genes_clusters_n_neighbors,
