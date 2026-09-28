@@ -52,7 +52,7 @@ _Sdata = Annotated[
 ]
 
 _IncludeAll = Annotated[
-    bool,
+    Optional[bool],
     Parameter(
         group=_group_opts,
         help="Override each element's default transcript filtering. Unset (default): 'anndata' and 'boundaries' "
@@ -116,6 +116,9 @@ def load_transcripts(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
         pl.col(std.feature).alias("feature_name"),
+        pl.col("segger_similarity"),
+        pl.col("similarity_threshold"),
+        pl.col("converged"),
         pl.col("filtered"),
         *coord_cols,
     )
