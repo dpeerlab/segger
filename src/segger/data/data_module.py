@@ -187,7 +187,7 @@ class ISTDataModule(LightningDataModule):
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
         pp = get_preprocessor(self.input_directory)
         tx = self.tx = pp.transcripts
-        bd = self.bd = pp.boundaries
+        bd = pp.boundaries
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":

@@ -190,25 +190,20 @@ def setup_anndata(
         sc.pp.normalize_total(adata, target_sum=target_sum, layer="norm")
         return adata
 
-    # Add raw counts
-    ad.raw = ad.copy()
-    ad.layers['counts'] = ad.raw.X.copy()
-
-    # Filter genes and normalise
+    # Select genes passing the count threshold
     ad.var['n_counts'] = ad.X.sum(0).A.flatten()
-    ad = ad[:,  ad.var['n_counts'].ge(genes_min_counts)]
-    ad = _normalise(ad)
+    gene_mask = ad.var['n_counts'].ge(genes_min_counts)
 
-    # Prepare reference
+    # Reconcile genes with the reference before filtering and normalising
     if gene_corr_reference is not None:
 
         # assert that reference contains raw counts
         is_int_dtype = np.issubdtype(gene_corr_reference.X.dtype, np.integer)
         is_int_value = np.all(gene_corr_reference.X.data.astype(int)[:1000] == gene_corr_reference.X.data[:1000])
-        assert is_int_dtype or not is_int_value, "adata_reference.X should contain raw counts, but appears to be normalized. Please provide raw counts for gene_corr_reference.X."      
+        assert is_int_dtype or is_int_value, "adata_reference.X should contain raw counts, but appears to be normalized. Please provide raw counts for gene_corr_reference.X."
 
         # assert that all genes in the data are in the reference too.
-        genes_not_in_reference = list(set(ad.var.index) - set(gene_corr_reference.var.index))
+        genes_not_in_reference = list(set(ad.var.index[gene_mask]) - set(gene_corr_reference.var.index))
         if len(genes_not_in_reference) > 0:
             msg = f"WARNING: {len(genes_not_in_reference)} genes are in the data, but not in the provided gene correlation reference."
             for gene in genes_not_in_reference[:5]: # print up to 5 missing genes
@@ -221,21 +216,26 @@ def setup_anndata(
                 raise ValueError(msg)
             elif gene_missing_strategy == "remove":
                 warnings.warn(msg + "\nThese genes will be removed from the data.")
-                ad = ad[:, ~ad.var.index.isin(genes_not_in_reference)]
-                ad = _normalise(ad) # re-normalise after gene removal
+                gene_mask &= ~ad.var.index.isin(genes_not_in_reference)
             elif gene_missing_strategy == "fill":
                 # TODO: Fill missing gene correlations with data-based estimates after line 247(?)
                 raise NotImplementedError("gene_missing_strategy='fill' is not implemented yet.")
             else:
-                raise ValueError(f"Unknown gene_missing_strategy: {gene_missing_strategy}. Choose from 'error', 'warn', 'ignore', or 'fill'.")
-    
-        # assert that genes in reference pass count thresholds
-        gene_corr_reference.var['n_counts'] = gene_corr_reference.X.sum(0).A.flatten()
-        failing_genes = gene_corr_reference.var[gene_corr_reference.var['n_counts'] < genes_min_counts]
-        assert len(failing_genes) == 0, (f"{len(failing_genes)} genes in the gene_corr_reference fail the genes_min_counts threshold, including: {', '.join(failing_genes.index[:5])} and {len(failing_genes) - 5} more.")
+                raise ValueError(f"Unknown gene_missing_strategy: {gene_missing_strategy}. Choose from 'error', 'remove', or 'fill'.")
+
+    # Filter genes and normalise
+    ad = _normalise(ad[:, gene_mask])
+
+    # Prepare reference
+    if gene_corr_reference is not None:
 
         # subset and put reference genes in same order as sample genes
         ref = gene_corr_reference[:, ad.var.index].copy()
+
+        # assert that genes taken from the reference pass count thresholds
+        ref.var['n_counts'] = ref.X.sum(0).A.flatten()
+        failing_genes = ref.var[ref.var['n_counts'] < genes_min_counts]
+        assert len(failing_genes) == 0, (f"{len(failing_genes)} genes in the gene_corr_reference fail the genes_min_counts threshold, including: {', '.join(failing_genes.index[:5])}.")
 
         # normalise
         ref = _normalise(ref)
@@ -257,6 +257,7 @@ def setup_anndata(
     model.fit(counts_sparse_gpu[ad.obs['filtered'].values])
     ad.obsm['X_pca'] = model.transform(counts_sparse_gpu).get()
     del counts_sparse_gpu, model
+    del ad.layers['norm']  # only needed for the embeddings above
 
     # Compute clusters on filtered cells
     cell_clusters = phenograph_rapids(

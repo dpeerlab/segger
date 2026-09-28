@@ -39,10 +39,9 @@ def _patch_load_from_cache() -> None:
         logger.info(f"Restoring cached datamodule state from {d}")
         tx_fields = StandardTranscriptFields()
 
-        # Raw transcripts/boundaries — only used by writer.write_anndata; cheap to re-read.
+        # Raw transcripts — only used by writer.write_anndata; cheap to re-read.
         pp = get_preprocessor(self.input_directory)
         self.tx = pp.transcripts
-        self.bd = pp.boundaries
 
         # Cached artifacts
         self.ad   = sc.read_h5ad(cached["adata"])
