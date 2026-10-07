@@ -187,7 +187,7 @@ class ISTDataModule(LightningDataModule):
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
         pp = get_preprocessor(self.input_directory)
         tx = self.tx = pp.transcripts
-        bd = self.bd = pp.boundaries
+        bd = pp.boundaries
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":
@@ -322,7 +322,6 @@ class ISTDataModule(LightningDataModule):
 
         # Tile dataset (outer margin) for prediction
         if stage == "predict":
-            self.data = self.data.cuda()
             self.predict_dataset = TilePredictDataset(
                 data=self.data,
                 tiling=self.tiling,
@@ -346,7 +345,6 @@ class ISTDataModule(LightningDataModule):
         if stage == "predict":
             # Note: 'self.predict_dataset.data' is not cloned; don't del
             del self.predict_dataset
-            self.data = self.data.cpu()
 
     def train_dataloader(self):
         """TODO: Description
@@ -362,6 +360,7 @@ class ISTDataModule(LightningDataModule):
             self.fit_dataset,
             batch_sampler=sampler,
             num_workers=self.num_workers,
+            pin_memory=True,
         )
     
     def val_dataloader(self):
@@ -378,6 +377,7 @@ class ISTDataModule(LightningDataModule):
             self.fit_dataset,
             batch_sampler=sampler,
             num_workers=self.num_workers,
+            pin_memory=True,
         )
 
     def predict_dataloader(self):
@@ -390,10 +390,9 @@ class ISTDataModule(LightningDataModule):
             shuffle=False,
             skip_too_big=False,
         )
-        # TODO: Add num_workers, this could be a bottleneck
-        # TODO: Consider pinning memory: https://docs.pytorch.org/docs/stable/data.html#memory-pinning
         return DataLoader(
             self.predict_dataset,
             batch_sampler=sampler,
-            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
         )
