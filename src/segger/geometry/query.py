@@ -12,6 +12,8 @@ PolygonArg = cuspa.Polygons | gpd.GeoSeries
 
 logger = logging.getLogger(__name__)
 
+_POINTS_CHUNK = 100_000_000
+
 
 def points_to_cupy(points: torch.Tensor) -> cp.ndarray:
     """Move a point tensor of shape (N, 2) to a C-contiguous float64 CuPy
@@ -130,5 +132,14 @@ def points_in_polygons(
     )
     points = points_to_cupy(points)
     polygons = polygons_to_cuspa(polygons)
-    pairs = cuspa.tl.overlap_pairs(points, polygons, predicate=predicate)
+
+    # cuspa supports only int32 joins. chunk in case there are more points
+    chunks = []
+    for start in range(0, max(len(points), 1), _POINTS_CHUNK):
+        pairs = cuspa.tl.overlap_pairs(
+            points[start:start + _POINTS_CHUNK], polygons, predicate=predicate)
+        pairs[:, 0] += start
+        chunks.append(pairs)
+    pairs = chunks[0] if len(chunks) == 1 else cp.concatenate(chunks)
+    del chunks
     return torch.as_tensor(pairs, device="cuda").T
