@@ -56,10 +56,16 @@ class XeniumBoundaryFields:
 @dataclass
 class MerscopeTranscriptFields:
     filename: str = 'detected_transcripts.csv'
+    fallback_filename: str = 'transcripts.parquet'
     x: str = 'global_x'
     y: str = 'global_y'
     feature: str = 'gene'
     cell_id: str = 'cell_id'
+    cell_boundary_id: str = 'cell_boundaries_id'
+    nucleus_boundary_id: str = 'nucleus_boundaries_id'
+    filter_substrings = [
+        'BLANK_*',
+    ]
 
 @dataclass
 class MerscopeBoundaryFields:

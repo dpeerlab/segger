@@ -4,10 +4,20 @@ from numpy.typing import ArrayLike
 from shapely import box
 import geopandas as gpd
 import numpy as np
+import cupy as cp
 import torch
-import cudf
+import warnings
+import logging
 
-from ..geometry import *
+logger = logging.getLogger(__name__)
+
+from ..geometry import (
+    assign_points_to_polygons,
+    bounds_to_cuspa,
+    bounds_to_geoseries,
+    quadtree_leaf_bounds,
+)
+from ..geometry.quadtree import MAX_QUADTREE_POINTS
 
 
 class Tiling(ABC):
@@ -41,24 +51,48 @@ class Tiling(ABC):
         """
         assert self.tiles.geom_type.eq('Polygon').all()
     
+    def _tile_bounds(self, margin: float = 0.0) -> np.ndarray:
+        """Tile bounds as (K, 4) boxes, shrunk inward by `margin`.
+
+        Tiles are axis-aligned boxes in all current tilings. A margin that
+        would shrink a tile to nothing is halved until every tile survives.
+        """
+        bounds = self.tiles.bounds.to_numpy().astype(np.float64)
+        eff_margin = margin
+        while eff_margin > 0:
+            shrunk = bounds + [eff_margin, eff_margin, -eff_margin, -eff_margin]
+            lost = (shrunk[:, 2:] <= shrunk[:, :2]).any(axis=1)
+            if not lost.any():
+                return shrunk
+            eff_margin = eff_margin / 2 if eff_margin > 1e-6 else 0.0
+            warnings.warn(
+                f"Margin ({margin}) is too large, causing {int(lost.sum())} "
+                f"tile(s) to disappear; retrying with a reduced margin "
+                f"({eff_margin}) so their geometries are not dropped from "
+                f"the query."
+            )
+        return bounds
+
+    def _tile_polygons(self, margin: float = 0.0):
+        """Tiles as cuspa polygons, shrunk inward by `margin`; built once
+        per margin and cached."""
+        cache = self.__dict__.setdefault('_cuspa_tiles', {})
+        if margin not in cache:
+            cache[margin] = bounds_to_cuspa(self._tile_bounds(margin))
+        return cache[margin]
+
     def _query_tiles(
         self,
         geometry: torch.Tensor,
         inclusive: bool = True,
         margin: float = 0.0,
-    ) -> cudf.DataFrame:
-        """Finds which tile contains each geometry, with optional margins.
-
-        This is the core private method for all spatial queries. It handles
-        input validation, optional negative buffering (margins), and
-        dispatches to the correct spatial join function based on the
-        input geometry's shape.
+    ) -> torch.Tensor:
+        """Finds which tile contains each point, with an optional margin.
 
         Parameters
         ----------
         geometry : torch.Tensor
-            A tensor of points (shape: N, 2) or polygons (shape: N, V, 2)
-            to query against the tiles.
+            Point coordinates, shape (N, 2).
         inclusive : bool, optional
             If True, uses an 'intersects' predicate which includes boundaries.
             If False, uses a 'contains' predicate for strict interior
@@ -71,9 +105,8 @@ class Tiling(ABC):
         Returns
         -------
         torch.Tensor
-            A 1D tensor of shape (N,) where each element is the integer
-            index of the first matching tile. Unmatched geometries are
-            assigned a label of -1.
+            A 1D tensor of shape (N,) with the index of the matching tile,
+            or -1 if unmatched.
 
         Raises
         ------
@@ -81,117 +114,56 @@ class Tiling(ABC):
             If geometry shape is invalid, margin is negative, or margin is
             so large that tiles disappear.
         """
-        # Check inputs
-        if geometry.dim() not in [2, 3] or geometry.shape[-1] != 2:
+        if geometry.dim() != 2 or geometry.shape[-1] != 2:
             raise ValueError(
-                f"Input 'geometry' must be a tensor of points of shape (N, 2) "
-                f"or polygons of shape (N, V, 2), but got {geometry.shape}."
+                f"Input 'geometry' must be a tensor of points of shape (N, 2), "
+                f"but got {geometry.shape}."
             )
         if margin < 0:
             raise ValueError(
                 f"The margin must be non-negative, but got {margin}."
             )
-        # Buffer tiles
-        tiles = self.tiles
-        if margin > 0:
-            buffered = tiles.buffer(
-                -margin,
-                cap_style='square',
-                join_style='mitre',
-                mitre_limit=margin / 2,
-            )
-            # Fallback: an over-aggressive margin shrinks small tiles to nothing,
-            # which would drop their geometries from the query entirely (leaving
-            # many transcripts unassigned). Rather than lose them, progressively
-            # halve the margin until every tile survives the negative buffer.
-            import warnings
-            eff_margin = margin
-            while eff_margin > 0 and bool(buffered.is_empty.any()):
-                n_lost = int(buffered.is_empty.sum())
-                eff_margin = eff_margin / 2 if eff_margin > 1e-6 else 0.0
-                warnings.warn(
-                    f"Margin ({margin}) is too large, causing {n_lost} tile(s) to "
-                    f"disappear; retrying with a reduced margin ({eff_margin}) so "
-                    f"their geometries are not dropped from the query."
-                )
-                buffered = (
-                    tiles.buffer(
-                        -eff_margin,
-                        cap_style='square',
-                        join_style='mitre',
-                        mitre_limit=max(eff_margin / 2, 1e-9),
-                    )
-                    if eff_margin > 0
-                    else tiles
-                )
-            tiles = buffered
-
-        # Spatial query
         predicate = 'intersects' if inclusive else 'contains'
-        if geometry.dim() == 2: # points
-            result = points_in_polygons(geometry, tiles, predicate)
-        else: # polygons
-            result = polygons_in_polygons(geometry, tiles, predicate)
-        result = result.drop_duplicates('index_query')
-
-        # Format to tensor of indices (-1 where no match found)
-        kwargs = dict(device=geometry.device, dtype=torch.int64)
-        labels = torch.full((len(geometry),), -1, **kwargs)
-        return labels.scatter_(
-            dim=0,
-            index=torch.tensor(result['index_query'], **kwargs),
-            src=  torch.tensor(result['index_match'], **kwargs),
+        labels = assign_points_to_polygons(
+            geometry,
+            self._tile_polygons(margin),
+            predicate,
+            check_full=(inclusive and margin == 0),
+        )
+        return torch.as_tensor(
+            cp.asnumpy(labels), dtype=torch.int64, device=geometry.device
         )
 
-    def label(
-        self,
-        geometry: torch.Tensor,
-    ) -> torch.Tensor:
-        """Assigns a tile index to each input geometry.
-
-        For each input geometry, this method finds the index of the tile that
-        contains it. Geometries on the boundary of a tile are not considered
-        a match.
+    def label(self, geometry: torch.Tensor) -> torch.Tensor:
+        """Assigns a tile index to each point; -1 if unmatched.
 
         Parameters
         ----------
         geometry : torch.Tensor
-            A tensor of points (shape: N, 2) or polygons (shape: N, V, 2)
-            to label.
+            Point coordinates, shape (N, 2).
 
         Returns
         -------
         torch.Tensor
-            A 1D tensor of tile indices corresponding to each input geometry.
-            Unmatched geometries are labeled -1.
+            A 1D tensor of tile indices, one per point.
         """
         return self._query_tiles(geometry, inclusive=True)
 
-    def mask(
-        self,
-        geometry: torch.Tensor,
-        margin: float,
-    ) -> torch.Tensor:
-        """Creates a boolean mask for geometries within a tile's margin.
-
-        This method identifies which input geometries fall strictly inside
-        the tiles after they have been shrunk by the specified `margin`.
+    def mask(self, geometry: torch.Tensor, margin: float) -> torch.Tensor:
+        """Marks points that fall inside the tiles after shrinking by `margin`.
 
         Parameters
         ----------
         geometry : torch.Tensor
-            A tensor of points (shape: N, 2) or polygons (shape: N, V, 2)
-            to mask.
+            Point coordinates, shape (N, 2).
         margin : float
             The non-negative distance to shrink the tiles inward.
 
         Returns
         -------
         torch.Tensor
-            A 1D boolean tensor where `True` indicates a geometry is
-            inside a buffered tile.
+            A 1D boolean tensor, True where the point is inside a shrunk tile.
         """
-        # Spatial query
         labels = self._query_tiles(geometry, inclusive=False, margin=margin)
         return labels != -1
 
@@ -209,20 +181,31 @@ class QuadTreeTiling(Tiling):
         the quadtree.
     max_tile_size : int
         The maximum number of points allowed in any single quadtree tile.
+    max_quadtree_points : int, optional
+        Subsample positions to at most this many points for quadtree
+        construction; `max_tile_size` is rescaled accordingly.
     """
     def __init__(
         self,
         positions: torch.Tensor,
         max_tile_size: int,
+        max_quadtree_points: int = MAX_QUADTREE_POINTS,
     ):
-        # Calculate QuadTree on points and set as tiles
-        points = points_to_geoseries(positions, backend='cuspatial')
-        _, quadtree, _ = get_quadtree_index(
-            points,
+        bounds = quadtree_leaf_bounds(
+            positions,
             max_tile_size,
-            with_bounds=True,
+            max_points=max_quadtree_points,
         )
-        self._tiles = quadtree_to_geoseries(quadtree, backend='geopandas')
+        # fastquadtree can produce leaves with zero points; drop them.
+        labels = assign_points_to_polygons(
+            positions.cpu(), bounds_to_cuspa(bounds), 'intersects'
+        )
+        counts = cp.asnumpy(cp.bincount(labels[labels >= 0], minlength=len(bounds)))
+        if (counts == 0).any():
+            logger.warning(f"Dropping {int((counts == 0).sum())} empty quadtree leaf tile(s)")
+            bounds = bounds[counts > 0]
+        self._tiles = bounds_to_geoseries(bounds)
+        self._tile_polygons()
 
     @property
     def tiles(self) -> gpd.GeoSeries:

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.0] - 2026-09-18
+
+### Changed
+- cuSpatial is replaced by `cuspa` for point-in-polygon joins and by `fastquadtree`
+  for quadtree tiling.
+- CUDA 13 / Python 3.13 is the only supported install path; the cuda121 environment
+  is gone.
+- `torch_scatter.scatter_max` is replaced by native `torch.scatter_reduce`.
+- Quadtree construction subsamples on the source device, so only the sampled points
+  are transferred to host memory, and the root extent is taken from all points.
+- Type hints are explicit throughout the codebase.
+- Installation docs rewritten for the CUDA 13 path; CUDA 12 users are pointed at the
+  `v0.3.0` release.
+
+### Fixed
+- RAPIDS dependencies carry a `>=26` floor; without it `uv` could resolve them to
+  NVIDIA's empty `0.0.0a0` placeholder wheels and the install would silently lack `cudf`.
+
+Thanks to Severin Dicks (@Intron7) for developing `cuspa`, packaging an early build for
+segger, and working closely with us to resolve issues and test the integration.
+
+[0.4.0]: https://github.com/dpeerlab/segger/releases/tag/v0.4.0
+
 ## [0.3.0] - 2026-09-15
 
 ### Added

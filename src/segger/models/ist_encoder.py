@@ -1,5 +1,5 @@
 from torch_geometric.nn import GATv2Conv, Linear, HeteroDictLinear, HeteroConv
-from typing import Dict, Tuple, List, Union, Optional
+from typing import Callable, Dict, Tuple, List, Union, Optional
 from torch import Tensor
 from torch.nn import (
     Sequential,
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # --- Test positional encoding ---
 
-def sinusoidal_embedding(x, dim, max_period=1000):
+def sinusoidal_embedding(x: Tensor, dim: int, max_period: int = 1000) -> Tensor:
     half = dim // 2
     freqs = torch.exp(
         -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
@@ -143,7 +143,9 @@ class SkipGAT(Module):
             with_kwargs=True,
         )
 
-    def _make_hook(self, edge_type: Tuple[str, str, str]):
+    def _make_hook(
+        self, edge_type: Tuple[str, str, str]
+    ) -> Callable[[Module, tuple, dict, tuple], None]:
         """
         Internal hook function that captures attention weights from the
         forward pass of each GATv2Conv submodule.
@@ -153,7 +155,9 @@ class SkipGAT(Module):
         edge_type : tuple of str
             The edge type associated with this GATv2Conv.
         """
-        def _store_attn_weights(module, inputs, kwargs, outputs) -> None:
+        def _store_attn_weights(
+            module: Module, inputs: tuple, kwargs: dict, outputs: tuple
+        ) -> None:
             self._attn_weights[edge_type] = outputs[1][1]
         return _store_attn_weights
 

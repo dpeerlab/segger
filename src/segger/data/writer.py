@@ -5,6 +5,7 @@ from lightning.pytorch.callbacks import BasePredictionWriter
 from skimage.filters import threshold_yen
 from .utils.threshold import threshold_li_custom
 from lightning.pytorch import Trainer, LightningModule
+from torch_geometric.data import HeteroData
 from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
@@ -153,7 +154,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         cls,
         obs: pl.DataFrame,
         predictions: Sequence[list],
-        logger: logging.Logger = None,
+        logger: logging.Logger | None = None,
     ) -> pl.DataFrame:
         """TODO: Description
 
@@ -288,7 +289,15 @@ class ISTSegmentationWriter(BasePredictionWriter):
 
     
     # Debugging callbacks
-    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+    def on_predict_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: Any,
+        batch: HeteroData,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
         mask = batch['tx']['predict_mask']
         self.n_tx_predicted += mask.sum().item()
         if not self.debug:
@@ -299,13 +308,13 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 f"Finished prediction batch '{batch_idx}'. # TX so far {self.n_tx_predicted / 1e6:.1f}M"
             )
     
-    def on_fit_start(self, trainer, pl_module):
+    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if not self.debug:
             return
         logger.debug(f"Saving adata to {self.path_debug / 'adata_debug.h5ad'}")
         trainer.datamodule.ad.write_h5ad(self.path_debug / "adata_debug.h5ad")
 
-    def on_fit_end(self, trainer, pl_module):
+    def on_fit_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if not self.debug:
             return
         if self.debug:
