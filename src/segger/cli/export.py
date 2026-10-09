@@ -14,12 +14,15 @@ Example usage:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Literal, Optional
 from cyclopts import Parameter, Group, validators
 
 import polars as pl
 from ..io import StandardTranscriptFields
+
+logger = logging.getLogger(__name__)
 
 _group_io = Group(name="I/O", sort_key=0)
 _group_opts = Group(name="Options", sort_key=1)
@@ -105,6 +108,11 @@ def load_transcripts(
     std = StandardTranscriptFields()
     if not {std.x, std.y, std.feature, "filtered"} <= set(tx.columns):
         tx = _legacy_join(tx, source_path=source_path, std=std)
+
+    # older outputs have no "converged" column; treat all features as converged
+    if "converged" not in tx.columns:
+        logger.warning("Segmentation has no 'converged' column (older output); assuming converged=True for all transcripts.")
+        tx = tx.with_columns(pl.lit(True).alias("converged"))
 
     # subset
     coord_cols = [pl.col(std.x).alias("x"), pl.col(std.y).alias("y")]
