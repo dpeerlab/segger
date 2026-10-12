@@ -446,7 +446,11 @@ class PartitionDataset(torch.utils.data.Dataset):
             device=dst_perm.device,
         )
         # Write rows into one preallocated tensor instead of stacking two temporaries
-        edge_index = torch.empty_like(edge_store.edge_index)
+        edge_index = torch.empty(
+            edge_store.edge_index.shape,
+            dtype=inv_src_perm.dtype,  # index_select needs out to match the source dtype
+            device=edge_store.edge_index.device,
+        )
         torch.index_select(
             inv_src_perm, 0, edge_store.edge_index[0], out=edge_index[0])
         torch.index_select(
