@@ -5,6 +5,7 @@ from torch_geometric.data import Data, HeteroData
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Literal
+import copy
 import torch
 
 from ..csr import index_to_ptr
@@ -200,7 +201,7 @@ class PartitionDataset(torch.utils.data.Dataset):
 
         if self._is_sparse:
             self._validate_sparse(data, partition)
-            self.data = data.clone() if clone else data
+            self.data = copy.copy(data) if clone else data
             self.partition = partition
             self._num_partitions = len(self.partition)
 
@@ -208,7 +209,8 @@ class PartitionDataset(torch.utils.data.Dataset):
             self._validate_dense(data, partition)
             self.partition = (
                 HeteroPartition() if self._is_hetero else Partition())
-            self.data = data.clone() if clone else data
+            # Shallow copy suffices: attributes are rebound, never written in place
+            self.data = copy.copy(data) if clone else data
             # Calculate global no. partitions upfront
             if self._is_hetero:
                 self._num_partitions = -1
@@ -443,10 +445,13 @@ class PartitionDataset(torch.utils.data.Dataset):
             dst_perm.numel(),
             device=dst_perm.device,
         )
-        edge_store.edge_index = torch.stack([
-            inv_src_perm[edge_store.edge_index[0]],
-            inv_dst_perm[edge_store.edge_index[1]],
-        ])
+        # Write rows into one preallocated tensor instead of stacking two temporaries
+        edge_index = torch.empty_like(edge_store.edge_index)
+        torch.index_select(
+            inv_src_perm, 0, edge_store.edge_index[0], out=edge_index[0])
+        torch.index_select(
+            inv_dst_perm, 0, edge_store.edge_index[1], out=edge_index[1])
+        edge_store.edge_index = edge_index
 
     def _permute_edge_store(
         self,
@@ -473,21 +478,26 @@ class PartitionDataset(torch.utils.data.Dataset):
         dst_edge_labels = dst_edge_labels[permutation]
         mask = src_edge_labels == dst_edge_labels
 
+        # Apply the mask once up front and free edge-sized temporaries early
+        src_edge_labels = src_edge_labels[mask]
+        permutation = permutation[mask]
+        del dst_edge_labels, mask
+
         # Update edge store with permutation, including edge index
         for attr in edge_store.edge_attrs():
             if attr == 'edge_index':
-                edge_store[attr] = edge_store[attr][:, permutation][:, mask]
+                edge_store[attr] = edge_store[attr][:, permutation]
             else:
                 edge_store[attr] = self._index_select(
                     edge_store[attr],
-                    permutation[mask],
+                    permutation,
                     dim=0,
                 )
-        
+
         # Get partition properties: labels are sorted by the permutation
         # above and the mask preserves that order
         indptr, _ = index_to_ptr(
-            src_edge_labels[mask],
+            src_edge_labels,
             is_sorted=True,
             n_buckets=self._num_partitions,
         )
