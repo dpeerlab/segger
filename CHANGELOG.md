@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.1] - 2026-10-14
+
+Bugfixes and reader updates for the CUDA 12 install, released before the 0.4.0 move to
+CUDA 13.
+
+### Added
+- `MerscopePreprocessor` reads Vizgen MERSCOPE datasets: `detected_transcripts.csv` or
+  `transcripts.parquet`, cell/nucleus assignments, and cell/nucleus boundary parquets (#60).
+- `CosMXPreprocessor` reads real NanoString CosMX exports: CSV or parquet transcripts,
+  columns resolved by candidate names, and cell/nucleus polygons from masks (#63).
+- `segger segment` options `--transcripts-cell-id`, `--cells-boundaries-file` and
+  `--nucleus-boundaries-file` for a custom cell-assignment column and boundary files (#98).
+- `--segmentation-mode {nucleus,cell}` on `segger segment`. Use `cell` for platforms
+  without nuclei, e.g. MERSCOPE (#98).
+- `imagecodecs` dependency for LZW-compressed TIFFs (#99).
+
+### Fixed
+- Spatialdata export, which broke in 0.3.0 (#95).
+- Export treats a missing `converged` column as True, so outputs from older versions still
+  export (#95).
+- `segger segment` drops cells without a matching boundary, and their transcripts, with a
+  warning instead of failing an assert (#99).
+- MultiPolygons and polygons with holes are reduced to the largest part's exterior ring
+  before conversion (#99).
+- `edge_index` is cast to int64 for all edge types, so uint32 indices from cudf/cuspatial
+  no longer break partitioning (#99).
+
+Thanks to @EliHei2 for the MERSCOPE and CosMX readers.
+
+[0.3.1]: https://github.com/dpeerlab/segger/releases/tag/v0.3.1
+
 ## [0.3.0] - 2026-09-15
 
 ### Added
