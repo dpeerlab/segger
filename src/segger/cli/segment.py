@@ -78,26 +78,25 @@ def segment(
     )] = registry.get_default("output_directory"),
 
     transcripts_cell_id: Annotated[str | None, Parameter(
-        help="Column in the raw transcripts file to use as cell assignments "
-             "instead of the platform default (e.g. a custom segmentation "
-             "column added to the transcripts parquet).",
+        help="Column in the transcripts file with cell assignments (e.g. a "
+             "custom segmentation column). Defaults to the platform default.",
         group=group_io,
         required=False,
     )] = None,
 
     cells_boundaries_file: Annotated[str | None, Parameter(
-        help="Filename of a custom cell boundaries file to use instead of the "
-             "platform default. Must be in the same format as the platform's "
-             "default boundaries file (e.g. vertex-list parquet for Xenium).",
+        help="Filename of a custom cell boundaries file to use. The file must "
+             "contain a list of x/y vertices for each cell (e.g. Xenium's "
+             "cell_boundaries.parquet file). Defaults to the platform default.",
         group=group_io,
         required=False,
     )] = None,
 
     nucleus_boundaries_file: Annotated[str | None, Parameter(
-        help="Filename of a custom nucleus boundaries file to use instead of "
-             "the platform default. Must be in the same format as the "
-             "platform's default boundaries file (e.g. vertex-list parquet for "
-             "Xenium).",
+        help="Filename of a custom nucleus boundaries file to use. The file "
+             "must contain a list of x/y vertices for each nucleus (e.g. "
+             "Xenium's nucleus_boundaries.parquet file). Defaults to the "
+             "platform default.",
         group=group_io,
         required=False,
     )] = None,
@@ -178,8 +177,8 @@ def segment(
 
     # Segmentation (Reference) Graph
     segmentation_mode: Annotated[Literal["nucleus", "cell"], Parameter(
-        help="Reference segmentation used for training edges. Use 'cell' "
-             "for platforms without a nucleus assignment (e.g. MERSCOPE).",
+        help="Segmentation used for training edges. Use 'cell' for "
+             "platforms without nuclei (e.g. MERSCOPE).",
         group=group_prediction,
     )] = "nucleus",
 

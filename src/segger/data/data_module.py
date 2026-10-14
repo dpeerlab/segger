@@ -129,12 +129,10 @@ class ISTDataModule(LightningDataModule):
         Maximum number of edges per batch in the DataLoader.
     transcript_field_overrides : dict or None, default=None
         Overrides applied to the platform's TranscriptFields dataclass. Keys
-        must be valid field names (e.g. ``{'cell_id': 'my_col'}``). Typically
-        constructed by the CLI from named arguments.
+        must be valid field names (e.g. ``{'cell_id': 'my_col'}``).
     boundary_field_overrides : dict or None, default=None
-        Overrides applied to the platform's BoundaryFields dataclass (e.g.
-        ``{'cell_filename': 'my_boundaries.parquet'}``). Typically constructed
-        by the CLI from named arguments.
+        Overrides applied to the platform's BoundaryFields dataclass. Keys
+        must be valid field names (e.g. ``{'cell_filename': 'my_file.parquet'}``).
     gene_corr_reference : sc.AnnData or None, default=None
         Optional reference AnnData object used to compute gene-gene correlation features.
     gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
