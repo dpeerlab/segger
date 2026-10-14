@@ -207,12 +207,20 @@ def _(data: torch.Tensor):
         ring_offsets = cp.array(data.offsets().cuda())
         return vertices, ring_offsets
 
+def _largest_exterior_ring(geom):
+    # ring_offsets below assume one ring per polygon, so drop extra parts/holes
+    if geom.geom_type == 'MultiPolygon':
+        geom = max(geom.geoms, key=lambda part: part.area)
+    return shapely.Polygon(geom.exterior)
+
 @polygons_to_parts.register
 def _(data: gpd.GeoSeries):
-    if data.geometry.empty or data.geom_type.ne('Polygon').any():
+    polygonal = ['Polygon', 'MultiPolygon']
+    if data.geometry.empty or not data.geom_type.isin(polygonal).all():
         raise ValueError(
             f"Input must be a non-empty geopandas.GeoSeries of polygons."
         )
+    data = gpd.GeoSeries(data.map(_largest_exterior_ring), index=data.index)
     coords = data.get_coordinates()
     vertices = coords[['x', 'y']].to_numpy()
     _, idx = np.unique(coords.index.to_numpy(), return_index=True)
