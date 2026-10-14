@@ -176,6 +176,13 @@ def segment(
     )] = registry.get_default("transcripts_graph_max_dist"),
 
 
+    # Segmentation (Reference) Graph
+    segmentation_mode: Annotated[Literal["nucleus", "cell"], Parameter(
+        help="Reference segmentation used for training edges. Use 'cell' "
+             "for platforms without a nucleus assignment (e.g. MERSCOPE).",
+        group=group_prediction,
+    )] = "nucleus",
+
     # Segmentation (Prediction) Graph
     prediction_mode: Annotated[
         Literal["nucleus", "cell", "uniform"],
@@ -379,6 +386,7 @@ def segment(
         genes_clusters_resolution=genes_clusters_resolution,
         transcripts_graph_max_k=transcripts_max_k,
         transcripts_graph_max_dist=transcripts_max_dist,
+        segmentation_graph_mode=segmentation_mode,
         prediction_graph_mode=prediction_mode,
         prediction_graph_max_k=prediction_max_k,
         prediction_graph_buffer_ratio=prediction_graph_buffer_ratio,
