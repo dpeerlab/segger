@@ -80,19 +80,19 @@ def contours_to_polygons(
     return gpd.GeoDataFrame(geometry=polygons, index=ids[indices])
 
 
-def resort_coordinates(poly):
+def resort_coordinates(poly: shapely.Polygon) -> shapely.Polygon:
     """
-    Sort a list of (x, y) coordinates in counter-clockwise order.
+    Sort a polygon's exterior coordinates in counter-clockwise order.
 
     Parameters
     ----------
-    coords : list of tuple
-        List of (x, y) coordinates.
+    poly : shapely.Polygon
+        Polygon whose exterior ring is to be resorted.
 
     Returns
     -------
-    list of tuple
-        Counter-clockwise sorted coordinates, closed (first == last).
+    shapely.Polygon
+        Polygon with counter-clockwise sorted exterior coordinates.
     """
     coords = np.asarray(poly.exterior.xy).T
     cx, cy = coords.mean(axis=0)
@@ -102,10 +102,10 @@ def resort_coordinates(poly):
     return shapely.Polygon(sorted_coords)
 
 
-def fix_self_intersection(poly):
+def fix_self_intersection(poly: shapely.Polygon) -> shapely.Polygon:
     """
     Attempts to fix self-intersecting polygons using buffer(0).
-    Returns the fixed Polygon, or None if fixing failed or result is not a Polygon.
+    Raises if fixing failed or the result is not a Polygon.
     """
     if poly.is_valid:
         return poly
@@ -124,7 +124,7 @@ def fix_self_intersection(poly):
     raise Exception("Running the Zero-Distance Buffer failed to handle the error")
         
 
-def fix_invalid_geometry(gdf: gpd.GeoDataFrame):
+def fix_invalid_geometry(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     Fix invalid geometries by first resorting coordinates, 
     and then attempting to fix self-intersections via buffer(0) 

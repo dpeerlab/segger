@@ -1,7 +1,6 @@
 from torch.nn import Embedding, BCEWithLogitsLoss, TripletMarginLoss
 from torch_geometric.data import Batch
 from lightning import LightningModule
-from torch_scatter import scatter_max
 from torch.nn import functional as F
 from typing import Any
 import polars as pl
@@ -15,6 +14,7 @@ from .triplet_loss import TripletLoss, MetricLoss
 from ..io.fields import StandardTranscriptFields
 from ..data.data_module import ISTDataModule
 from .ist_encoder import ISTEncoder
+from .torch_scatter_plugin import scatter_max
 
 class LitISTEncoder(LightningModule):
     """TODO: Description.
@@ -83,7 +83,7 @@ class LitISTEncoder(LightningModule):
         ])
         self._freeze_gene_embedding = not update_gene_embedding
 
-    def setup(self, stage):
+    def setup(self, stage: str) -> None:
         # LitISTEncoder needs supp. data from ISTDataModule to train
         if not isinstance(self.trainer.datamodule, ISTDataModule):
             raise TypeError(
@@ -277,11 +277,8 @@ class LitISTEncoder(LightningModule):
             embeddings['tx'][src],
             embeddings['bd'][dst],
         )
-        max_sim, max_idx = scatter_max(
-            sim,
-            src,
-            dim_size=batch['tx'].num_nodes,
-        )
+        # per-node max and argmax over incident edges
+        max_sim, max_idx = scatter_max(sim, src, dim_size=batch['tx'].num_nodes)
         # Filter by similarity
         valid = max_idx < dst.shape[0]
         if min_similarity is not None:

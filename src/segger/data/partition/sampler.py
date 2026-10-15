@@ -309,7 +309,7 @@ class PartitionSampler(torch.utils.data.Sampler):
         dataset: PartitionDataset,
         max_num: int,
         mode: Literal["node", "edge"] = "edge",
-        subset: list[int] = None,
+        subset: list[int] | None = None,
         shuffle: bool = False,
         skip_too_big: bool = False,
     ):

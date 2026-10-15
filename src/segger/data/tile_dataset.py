@@ -15,7 +15,9 @@ from .tiling import Tiling
 logger = logging.getLogger(__name__)
 
 
-def query_ptr(csr, query) -> torch.Tensor:
+def query_ptr(
+    csr: tuple[torch.Tensor, torch.Tensor], query: int | torch.Tensor
+) -> torch.Tensor:
     """Gather values for bucket(s) `query` from a `(ptr, values)` CSR.
 
     `query` may be a scalar (one bucket) or a 1-D tensor (concatenated in
@@ -288,7 +290,6 @@ class TilePredictDataset(Dataset):
             raise IndexError(
                 f"Requested {idx}, but tiling only contains {len(self)} tiles."
             )
-        geometry = self.tiling.tiles[idx]
         return self._subset_new(idx)
 
     def _get_tiles_to_nodes_edges(self, node_type: str, margin: float) -> torch.Tensor:
@@ -339,7 +340,7 @@ class TilePredictDataset(Dataset):
         perm = torch.argsort(tile_ids, stable=True)
         return torch.stack([tile_ids[perm], node_ids[perm]], 0)
 
-    def _subset_new(self, idx) -> Data | HeteroData:
+    def _subset_new(self, idx: int) -> Data | HeteroData:
         """Subset the Heterograph to nodes and edges within tile `idx`.
 
         Uses CSRs precomputed in `__init__` (`_tile_ptr_outer`, `_tile_ptr_inner`, `_edges_ptr`).

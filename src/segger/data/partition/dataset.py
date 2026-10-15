@@ -4,7 +4,7 @@ from torch_geometric.transforms import BaseTransform
 from torch_geometric.data import Data, HeteroData
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, Literal
+from typing import Literal
 import torch
 
 
@@ -30,11 +30,11 @@ class Partition:
         The permutation that was applied to the original nodes to sort them
         by partition.
     """
-    node_indptr:        torch.Tensor = None
-    edge_indptr:        torch.Tensor = None
-    node_sizes:         torch.Tensor = None
-    edge_sizes:         torch.Tensor = None
-    node_permutation:   torch.Tensor = None
+    node_indptr:        torch.Tensor | None = None
+    edge_indptr:        torch.Tensor | None = None
+    node_sizes:         torch.Tensor | None = None
+    edge_sizes:         torch.Tensor | None = None
+    node_permutation:   torch.Tensor | None = None
 
     def _validate_num_partitions(self) -> bool:
         """Confirms all node and edge elements have same numbers of partitions.
@@ -97,11 +97,11 @@ class HeteroPartition:
     node_permutation : dict
         Maps node type to the permutation tensor that was applied to its nodes.
     """
-    node_indptr:        dict = field(default_factory=dict)
-    edge_indptr:        dict = field(default_factory=dict)
-    node_sizes:         dict = field(default_factory=dict)
-    edge_sizes:         dict = field(default_factory=dict)
-    node_permutation:   dict = field(default_factory=dict)
+    node_indptr:        dict[str, torch.Tensor] = field(default_factory=dict)
+    edge_indptr:        dict[tuple[str, str, str], torch.Tensor] = field(default_factory=dict)
+    node_sizes:         dict[str, torch.Tensor] = field(default_factory=dict)
+    edge_sizes:         dict[tuple[str, str, str], torch.Tensor] = field(default_factory=dict)
+    node_permutation:   dict[str, torch.Tensor] = field(default_factory=dict)
 
     def _validate_keys(self) -> bool:
         """Confirms all node and edge elements have same sets of keys."""
@@ -156,6 +156,8 @@ class HeteroPartition:
         return 0
 
 
+PartitionInput = torch.Tensor | dict[str, torch.Tensor] | Partition | HeteroPartition
+
 
 class PartitionDataset(torch.utils.data.Dataset):
     """Represents a PyG dataset partitioned into disconnected subgraphs.
@@ -168,7 +170,7 @@ class PartitionDataset(torch.utils.data.Dataset):
     ----------
     data : Data or HeteroData
         The input graph to partition.
-    partition : Any
+    partition : PartitionInput
         The partition definition.
         - For dense layout, this is a `torch.Tensor` (for homogeneous
           graphs) or a `dict[str, torch.Tensor]` (for heterogeneous
@@ -186,9 +188,9 @@ class PartitionDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         data: Data | HeteroData,
-        partition: Any,
+        partition: PartitionInput,
         clone: bool = True,
-        transform: BaseTransform = None,
+        transform: BaseTransform | None = None,
     ):
         """Initializes and partitions the dataset."""
         self._is_hetero = isinstance(data, HeteroData)
@@ -223,7 +225,7 @@ class PartitionDataset(torch.utils.data.Dataset):
         # Allow for graph transforms when retrieving items
         self.transform = transform
 
-    def _validate_sparse(self, data: Data | HeteroData, partition: Any):
+    def _validate_sparse(self, data: Data | HeteroData, partition: PartitionInput) -> None:
         """
         Validates that a sparse partition object is consistent with the graph.
         """
@@ -280,7 +282,7 @@ class PartitionDataset(torch.utils.data.Dataset):
                         f"`torch.Tensor`, not `{type(store).__name__}`."
                     )
 
-    def _validate_dense(self, data: Data | HeteroData, partition: Any):
+    def _validate_dense(self, data: Data | HeteroData, partition: PartitionInput) -> None:
         """
         Validates that a dense partition input is consistent with the graph.
         """
@@ -582,8 +584,8 @@ class PartitionDataset(torch.utils.data.Dataset):
         self,
         key: str,
         attr: torch.Tensor,
-        node_type: str = None,
-    ):
+        node_type: str | None = None,
+    ) -> None:
         """Adds and permutes a new node attribute to self.data.
 
         The provided attribute tensor must correspond to the nodes in the 

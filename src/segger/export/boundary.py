@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ProcessPoolExecutor
-from typing import Literal, Optional, Union
+from typing import Callable, Literal, Optional, Union
 
 import geopandas as gpd
 import numpy as np
@@ -17,11 +17,12 @@ import pandas as pd
 import polars as pl
 from scipy.spatial import Delaunay, cKDTree
 from shapely.geometry import LineString, MultiPoint, Polygon
+from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize
 from tqdm import tqdm
 
 
-def _as_polygon(geom) -> Optional[Polygon]:
+def _as_polygon(geom: BaseGeometry) -> Optional[Polygon]:
     """Normalize a Shapely geometry to a single non-empty Polygon (largest part), else None."""
     if geom is None or geom.is_empty:
         return None
@@ -98,7 +99,7 @@ class _CellOutline:
         self.degree[b] -= 1
         return True
 
-    def _prune(self, predicate) -> None:
+    def _prune(self, predicate: Callable[[dict, int], bool]) -> None:
         """Iteratively drop boundary edges (one incident triangle) matching ``predicate``.
 
         Never drops an edge that is the last one touching either of its endpoints, so every

@@ -182,7 +182,7 @@ def setup_anndata(
     ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
 
     # Normalise data
-    def _normalise(adata):
+    def _normalise(adata: sc.AnnData) -> sc.AnnData:
         adata.obs.loc[:, "n_counts"] = adata.X.sum(1).A.flatten()
         adata.obs.loc[:, "filtered"] = adata.obs["n_counts"].ge(cells_min_counts)
         adata.layers["norm"] = adata.X.copy()
@@ -247,13 +247,13 @@ def setup_anndata(
     #create gene gene correlation matrix, and run pca on that to create the gene embeddings 
     C = np.corrcoef(np.asarray(counts.todense()).T)
     C = np.nan_to_num(C, 0, posinf=True, neginf=True)
-    model = sklearn.decomposition.PCA(n_components=cells_embedding_size, random_state=0)
+    model = sklearn.decomposition.PCA(n_components=cells_embedding_size)
     ad.varm['X_corr'] = model.fit_transform(C)
     del C, model
 
     # Build PCs on filtered cells and project all cells
     counts_sparse_gpu = cupyx.scipy.sparse.csr_matrix(ad.layers['norm'])
-    model = cuml.PCA(n_components=cells_embedding_size, random_state=0)
+    model = cuml.PCA(n_components=cells_embedding_size)
     model.fit(counts_sparse_gpu[ad.obs['filtered'].values])
     ad.obsm['X_pca'] = model.transform(counts_sparse_gpu).get()
     del counts_sparse_gpu, model

@@ -4,7 +4,7 @@ import sys
 
 
 class MemFilter(logging.Filter):
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             from segger import free_mem_str
             record.mem = f" | {free_mem_str()}"
@@ -13,7 +13,9 @@ class MemFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: str = "WARNING", log_file: str = None, debug: bool = False):
+def setup_logging(
+    level: str = "WARNING", log_file: str | None = None, debug: bool = False
+) -> None:
     fmt = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d%(mem)s - %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
