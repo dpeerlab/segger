@@ -191,6 +191,8 @@ def setup_segmentation_graph(
         tx
         .with_row_index("_tid")
         .filter(segmentation_mask)
+        # Dropped-boundary cells leave cell_encoding null despite passing segmentation_mask.
+        .filter(pl.col(tx_fields.cell_encoding).is_not_null())
         .select(["_tid", tx_fields.cell_encoding])
         .to_torch()
         .T
