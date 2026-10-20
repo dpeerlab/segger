@@ -12,8 +12,8 @@ CUDA 13.
   columns resolved by candidate names, and cell/nucleus polygons from masks (#63).
 - `segger segment` options `--transcripts-cell-id`, `--cells-boundaries-file` and
   `--nucleus-boundaries-file` for a custom cell-assignment column and boundary files (#98).
-- `--segmentation-mode {nucleus,cell}` on `segger segment`. Use `cell` for platforms
-  without nuclei, e.g. MERSCOPE (#98).
+- `--segmentation-mode {nucleus,cell}` on `segger segment` selects the
+  segmentation used for training edges (#98).
 - `imagecodecs` dependency for LZW-compressed TIFFs (#99).
 
 ### Fixed

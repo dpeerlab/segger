@@ -177,8 +177,8 @@ def segment(
 
     # Segmentation (Reference) Graph
     segmentation_mode: Annotated[Literal["nucleus", "cell"], Parameter(
-        help="Segmentation used for training edges. Use 'cell' for "
-             "platforms without nuclei (e.g. MERSCOPE).",
+        help="Segmentation used as the reference for training edges: "
+             "'nucleus' or 'cell'.",
         group=group_prediction,
     )] = "nucleus",
 
