@@ -4,10 +4,14 @@ from numpy.typing import ArrayLike
 from shapely import box
 import geopandas as gpd
 import numpy as np
+import logging
 import torch
 import cudf
 
 from ..geometry import *
+from ..geometry.quadtree import MAX_QUADTREE_POINTS
+
+logger = logging.getLogger(__name__)
 
 
 class Tiling(ABC):
@@ -209,20 +213,36 @@ class QuadTreeTiling(Tiling):
         the quadtree.
     max_tile_size : int
         The maximum number of points allowed in any single quadtree tile.
+    max_quadtree_points : int, optional
+        Subsample positions to at most this many points for quadtree
+        construction; `max_tile_size` is rescaled accordingly.
     """
     def __init__(
         self,
         positions: torch.Tensor,
         max_tile_size: int,
+        max_quadtree_points: int = MAX_QUADTREE_POINTS,
     ):
         # Calculate QuadTree on points and set as tiles
-        points = points_to_geoseries(positions, backend='cuspatial')
-        _, quadtree, _ = get_quadtree_index(
-            points,
+        bounds = quadtree_leaf_bounds(
+            positions,
             max_tile_size,
-            with_bounds=True,
+            max_points=max_quadtree_points,
         )
-        self._tiles = quadtree_to_geoseries(quadtree, backend='geopandas')
+        self._tiles = bounds_to_geoseries(bounds)
+
+        # A split makes four children at once, so leaves can hold no points.
+        labels = self.label(positions)
+        counts = torch.bincount(
+            labels[labels >= 0],
+            minlength=len(bounds),
+        ).cpu().numpy()
+        if (counts == 0).any():
+            logger.warning(
+                f"Dropping {int((counts == 0).sum())} of {len(bounds)} "
+                f"quadtree leaf tile(s) that hold no points."
+            )
+            self._tiles = bounds_to_geoseries(bounds[counts > 0])
 
     @property
     def tiles(self) -> gpd.GeoSeries:

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.2] - 2026-10-20
+
+Replaces the cuSpatial quadtree behind tiling with fastquadtree on downsampled points.
+
+### Added
+- `fastquadtree` dependency for quadtree tiling.
+
+### Changed
+- Quadtree tiling now uses `fastquadtree` on CPU instead of
+  `cuspatial.quadtree_on_points`, built on a random subsample of at most 50M
+  positions (#77, #83).
+- `max_tile_size` is rescaled to match the subsample.
+- Tiles are squares and never split below 1 µm.
+- Empty quadtree leaves are dropped.
+- Tiling no longer hits cuSpatial's invalid-quadtree retry loop (#40).
+- cuSpatial's quadtree survives only as `points_in_polygons`' point index.
+- That index moved from `geometry/quadtree.py` to `geometry/query.py`.
+
+[0.3.2]: https://github.com/dpeerlab/segger/releases/tag/v0.3.2
+
 ## [0.3.1] - 2026-10-14
 
 Bugfixes and reader updates for the CUDA 12 install, released before the 0.4.0 move to

@@ -10,12 +10,143 @@ from .conversion import (
     polygons_to_geoseries,
     points_to_geoseries,
 )
-from .quadtree import (
-    get_quadtree_index,
-    get_quadtree_kwargs,
-)
 
 logger = logging.getLogger(__name__)
+
+
+# --- cuSpatial point index ---
+# `quadtree_point_in_polygon` only accepts points indexed by a cuSpatial quadtree.
+
+def _get_quadtree_kwargs(
+    points: cuspatial.GeoSeries,
+    margin_bounds: float = 50,
+) -> dict[str, float]:
+    """Calculate keyword arguments for `cuspatial.quadtree_on_points`.
+
+    Parameters
+    ----------
+    points : cuspatial.GeoSeries
+        The points to be indexed by the quadtree.
+
+    Returns
+    -------
+    dict[str, float]
+        A dictionary of keyword arguments including x_min, x_max, y_min,
+        y_max, scale, and max_depth.
+    """
+    # Interleaved view, without copying data.
+    xy = cp.asarray(points.points.xy).reshape(-1, 2)  # zero-copy view
+    x_min = float(xy[:, 0].min()) - margin_bounds
+    x_max = float(xy[:, 0].max()) + margin_bounds
+    y_min = float(xy[:, 1].min()) - margin_bounds
+    y_max = float(xy[:, 1].max()) + margin_bounds
+
+    extent = max(x_max - x_min, y_max - y_min)
+    max_depth = 1
+    while extent // (1 << max_depth) > 0:
+        max_depth += 1
+    max_depth = min(max_depth, 15)
+
+    # cuSpatial's own min-scale formula, so it never clamps this up silently.
+    scale = extent / ((1 << max_depth) + 2)
+
+    return dict(
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        scale=scale,
+        max_depth=max_depth,
+    )
+
+
+def _is_quadtree_valid(
+    quadtree: cudf.DataFrame,
+    n_points: int,
+) -> tuple[bool, dict[str, int]]:
+    """Checks that the leaves index every input point exactly once.
+
+    cuSpatial sometimes builds overlapping leaves that double-count points,
+    which silently drops the rest from every join downstream (#40).
+    """
+    leaves = quadtree[~quadtree['is_internal_node']]
+    points_tree = leaves["length"].sum()
+    return (points_tree == n_points), {
+        "points_in_tree": points_tree,
+        "n_points": n_points,
+    }
+
+
+def _get_quadtree_index(
+    points: cuspatial.GeoSeries,
+    max_size: int,
+) -> tuple[cudf.Series, cudf.DataFrame, dict]:
+    """Build a cuSpatial quadtree over 2D point data for a spatial join.
+
+    Parameters
+    ----------
+    points : cuspatial.GeoSeries
+        The x and y coordinates of points to index.
+    max_size : int
+        Maximum number of points allowed in a single quadtree leaf.
+
+    Returns
+    -------
+    order : cudf.Series
+        Series mapping input points to their spatially sorted order.
+    quadtree : cudf.DataFrame
+        DataFrame of quadtree nodes.
+    kwargs : dict
+        The extent, scale and max_depth the quadtree was built with, as
+        `cuspatial.join_quadtree_and_bounding_boxes` needs the same values.
+    """
+    kwargs = _get_quadtree_kwargs(points)
+    max_size_input = max_size
+
+    logger.debug(
+        f"Building quadtree on {len(points)} points with max_size={max_size}, "
+        f"max_depth={kwargs['max_depth']}"
+    )
+
+    # Fall back to shallower trees until cuSpatial builds a valid one.
+    retry_sizes = [
+        max_size_input, 1000, 2000, 5000, 10000, 20000, 50000, 100000,
+        250000, 500000,
+    ]
+
+    found_valid_tree = False
+    for ms in retry_sizes:
+        indices, quadtree = cuspatial.quadtree_on_points(
+            points,
+            max_size=ms,
+            **kwargs,
+        )
+        valid, info = _is_quadtree_valid(quadtree, len(points))
+        if valid:
+            found_valid_tree = True
+            if ms != max_size_input:
+                msg_quadtree = (
+                    f"Had to override input max-size: "
+                    f"Input: {max_size_input / 1000:.1f}k, Used: {ms / 1000:.1f}k"
+                )
+                logger.warning(msg_quadtree)
+            break
+        logger.warning(
+            f"Invalid quadtree with max_size={ms} "
+            f"({info['points_in_tree']}/{info['n_points']} points indexed)."
+        )
+
+    if not found_valid_tree:
+        raise RuntimeError(
+            f"cuSpatial invalid quadtree after sizes {retry_sizes} "
+            f"(see segger issue #40)."
+        )
+
+    logger.debug(
+        f"Quadtree built: {int((~quadtree['is_internal_node']).sum())} leaves"
+    )
+
+    return indices, quadtree, kwargs
 
 
 def _points_in_polygons_contains(
@@ -52,10 +183,8 @@ def _points_in_polygons_contains(
     """
     # Setup inputs for spatial join
     if max_size is None:
-        # Heuristic: larger point clouds need a larger max_size (shallower tree).
-        # A small max_size on very large/concentrated inputs makes cuSpatial's
-        # int32-sized construction buffers overflow, producing invalid quadtrees
-        # (see segger issue #40). Empirically 624M points need >=50k.
+        # A small max_size on a large, dense cloud overflows cuSpatial's
+        # int32 construction buffers, giving an invalid quadtree (#40).
         n = len(points)
         if n > 5e8:
             max_size = 100000
@@ -66,11 +195,7 @@ def _points_in_polygons_contains(
         else:
             max_size = 1000
     
-    point_indices, quadtree, kwargs = get_quadtree_index(
-        points,
-        max_size,
-        with_bounds=False
-    )
+    point_indices, quadtree, kwargs = _get_quadtree_index(points, max_size)
 
     # Perform spatial join in batches
     batch_idx = np.linspace(0, len(polygons), (batches or 1) + 1, dtype=int)

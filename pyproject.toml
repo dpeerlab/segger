@@ -1,6 +1,6 @@
 [project]
 name = "segger"
-version = "0.3.1"
+version = "0.3.2"
 description = "Segmentation of spatial transcriptomics data"
 authors = [
     {name = "Elyas Heidari", email = "elyas.heidari@dkfz-heidelberg.de"},
@@ -14,6 +14,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anndata",
     "cyclopts",
+    "fastquadtree",
     "geopandas",
     "imagecodecs",
     "numba",

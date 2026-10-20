@@ -311,6 +311,27 @@ def polygons_to_geoseries(
             polygons.index = cudf.Index(data.index)
     return polygons
 
+def bounds_to_geoseries(bounds: np.ndarray) -> gpd.GeoSeries:
+    """Converts an array of axis-aligned boxes to a GeoSeries of polygons.
+
+    Parameters
+    ----------
+    bounds : np.ndarray
+        Box bounds of shape (K, 4) as (x_min, y_min, x_max, y_max), matching
+        the layout of `geopandas.GeoSeries.bounds`.
+
+    Returns
+    -------
+    gpd.GeoSeries
+        A GeoSeries of K box Polygons.
+    """
+    bounds = np.asarray(bounds, dtype=np.float64)
+    if bounds.ndim != 2 or bounds.shape[1] != 4:
+        raise ValueError(
+            f"Input 'bounds' must have shape (K, 4), but got {bounds.shape}."
+        )
+    return gpd.GeoSeries(shapely.box(*bounds.T))
+
 def polygons_to_nested_tensor(
     data: any,
     device: str | None = None,
