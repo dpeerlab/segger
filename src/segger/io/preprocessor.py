@@ -1,6 +1,7 @@
 from pandas.errors import DtypeWarning
 from functools import cached_property
 from abc import ABC, abstractmethod
+from dataclasses import replace as dc_replace
 from anndata import AnnData
 from typing import Literal
 from pathlib import Path
@@ -148,22 +149,62 @@ class ISTPreprocessor(ABC):
     transcript and boundary GeoDataFrames for the given platform.
     """
 
-    def __init__(self, data_dir: Path):
+    def __init__(
+        self,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
         """
         Parameters
         ----------
         data_dir : Path
             Path to the raw data directory for the spatial platform.
+        transcript_field_overrides : dict or None
+            Overrides applied to the platform's TranscriptFields dataclass.
+            Keys must be valid field names (e.g. ``{'cell_id': 'my_col'}``).
+        boundary_field_overrides : dict or None
+            Overrides applied to the platform's BoundaryFields dataclass.
+            Keys must be valid field names (e.g.
+            ``{'cell_filename': 'my_file.parquet'}``).
         """
         data_dir = Path(data_dir)
-        type(self)._validate_directory(data_dir)
+        type(self)._validate_directory(
+            data_dir,
+            transcript_field_overrides=transcript_field_overrides,
+            boundary_field_overrides=boundary_field_overrides,
+        )
         self.data_dir = data_dir
+        self.tx_fields, self.bd_fields = self._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
 
-    @staticmethod
-    @abstractmethod
-    def _validate_directory(data_dir: Path):
+    @classmethod
+    def _resolve_fields(
+        cls,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ) -> tuple:
         """
-        Check that all required files/directories are present in `data_dir`.
+        Return the platform's transcript and boundary fields with overrides applied.
+        """
+        return (
+            dc_replace(cls.tx_fields, **(transcript_field_overrides or {})),
+            dc_replace(cls.bd_fields, **(boundary_field_overrides or {})),
+        )
+
+    @classmethod
+    @abstractmethod
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
+        """
+        Check that all required files/directories are present in `data_dir`,
+        respecting any transcript/boundary field overrides (e.g. custom
+        filenames).
         """
         ...
 
@@ -315,9 +356,12 @@ class CosMXPreprocessor(ISTPreprocessor):
     """
     Preprocessor for NanoString CosMX datasets.
     """
+
+    tx_fields = CosMxTranscriptFields()
+    bd_fields = CosMxBoundaryFields()
+
     @staticmethod
-    def _assignment_candidates() -> list[str]:
-        raw = CosMxTranscriptFields()
+    def _assignment_candidates(raw: CosMxTranscriptFields) -> list[str]:
         return [
             raw.cell_id,
             "cell_id",
@@ -329,8 +373,7 @@ class CosMXPreprocessor(ISTPreprocessor):
         ]
 
     @staticmethod
-    def _has_mask_inputs(data_dir: Path) -> bool:
-        bd_fields = CosMxBoundaryFields()
+    def _has_mask_inputs(data_dir: Path, bd_fields: CosMxBoundaryFields) -> bool:
         return (
             len(list(data_dir.glob(bd_fields.compartment_labels_dirname))) == 1
             and len(list(data_dir.glob(bd_fields.cell_labels_dirname))) == 1
@@ -338,23 +381,29 @@ class CosMXPreprocessor(ISTPreprocessor):
         )
 
     @staticmethod
-    def _has_native_schema(columns: list[str] | set[str]) -> bool:
-        raw = CosMxTranscriptFields()
+    def _has_native_schema(columns: list[str] | set[str], raw: CosMxTranscriptFields) -> bool:
         return {raw.x, raw.y, raw.feature}.issubset(set(columns))
 
-    @staticmethod
-    def _validate_directory(data_dir: Path):
+    @classmethod
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
 
-        tx_fields = CosMxTranscriptFields()
-        tx_path = CosMXPreprocessor._resolve_transcripts_path(data_dir)
+        tx_fields, bd_fields = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
+        tx_path = cls._resolve_transcripts_path(data_dir, tx_fields)
         tx_columns = _lazyframe_column_names(
-            CosMXPreprocessor._scan_transcripts_file(tx_path)
+            cls._scan_transcripts_file(tx_path)
         )
 
         # Keep auto-inference strict: only match CosMX when native markers exist.
         has_native_file = len(list(data_dir.glob(tx_fields.filename))) == 1
-        has_native_schema = CosMXPreprocessor._has_native_schema(tx_columns)
-        has_native_masks = CosMXPreprocessor._has_mask_inputs(data_dir)
+        has_native_schema = cls._has_native_schema(tx_columns, tx_fields)
+        has_native_masks = cls._has_mask_inputs(data_dir, bd_fields)
         if not (has_native_file or has_native_schema or has_native_masks):
             raise IOError(
                 "Directory does not look like a CosMX output layout "
@@ -375,7 +424,7 @@ class CosMXPreprocessor(ISTPreprocessor):
         )
         assignment_col = _first_existing(
             tx_columns,
-            CosMXPreprocessor._assignment_candidates(),
+            cls._assignment_candidates(tx_fields),
         )
 
         if x_col is None or y_col is None or feature_col is None or assignment_col is None:
@@ -394,9 +443,7 @@ class CosMXPreprocessor(ISTPreprocessor):
             )
 
     @staticmethod
-    def _resolve_transcripts_path(data_dir: Path) -> Path:
-        tx_fields = CosMxTranscriptFields()
-
+    def _resolve_transcripts_path(data_dir: Path, tx_fields: CosMxTranscriptFields) -> Path:
         matches_by_pattern: dict[str, list[Path]] = {}
         for pattern in (tx_fields.filename, tx_fields.fallback_filename):
             matches = sorted(data_dir.glob(pattern))
@@ -429,17 +476,17 @@ class CosMXPreprocessor(ISTPreprocessor):
     @cached_property
     def transcripts(self) -> pl.DataFrame:
 
-        raw = CosMxTranscriptFields()
+        raw = self.tx_fields
         std = StandardTranscriptFields()
 
-        source_path = self._resolve_transcripts_path(self.data_dir)
+        source_path = self._resolve_transcripts_path(self.data_dir, raw)
         lf = self._scan_transcripts_file(source_path).with_row_index(name=std.row_index)
         columns = _lazyframe_column_names(lf)
 
         x_col = _first_existing(columns, [raw.x, "x", "x_location", "global_x"])
         y_col = _first_existing(columns, [raw.y, "y", "y_location", "global_y"])
         feature_col = _first_existing(columns, [raw.feature, "feature_name", "gene"])
-        assignment_col = _first_existing(columns, self._assignment_candidates())
+        assignment_col = _first_existing(columns, self._assignment_candidates(raw))
         compartment_col = _first_existing(columns, [raw.compartment, "cell_compartment", "compartment"])
 
         if x_col is None or y_col is None or feature_col is None or assignment_col is None:
@@ -530,11 +577,11 @@ class CosMXPreprocessor(ISTPreprocessor):
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        raw = CosMxBoundaryFields()
+        raw = self.bd_fields
         std = StandardBoundaryFields()
         std_tx = StandardTranscriptFields()
 
-        has_mask_inputs = self._has_mask_inputs(self.data_dir)
+        has_mask_inputs = self._has_mask_inputs(self.data_dir, raw)
 
         cells = _empty_boundaries()
         nuclei = _empty_boundaries()
@@ -632,7 +679,12 @@ class XeniumPreprocessor(ISTPreprocessor):
         return version
 
     @classmethod
-    def _validate_directory(cls, data_dir: Path):
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
 
         # Apply xenium software version 2 or higher (when cell id "Unassigned" was introduced. Previously -1)
         version = XeniumPreprocessor._get_analysis_sw_version(data_dir)
@@ -641,12 +693,15 @@ class XeniumPreprocessor(ISTPreprocessor):
                 f"Xenium analysis software version must be 2.0.0 or higher, "
                 f"but found version {'.'.join(version)}."
             )
-        
+
         # Check required files/directories
+        tx_fields, bd_fields = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
         for pat in [
-            cls.tx_fields.filename,
-            cls.bd_fields.cell_filename,
-            cls.bd_fields.nucleus_filename,
+            tx_fields.filename,
+            bd_fields.cell_filename,
+            bd_fields.nucleus_filename,
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
@@ -707,16 +762,15 @@ class XeniumPreprocessor(ISTPreprocessor):
             .collect()
         )
 
-    @classmethod
     def _get_boundaries(
-        cls,
+        self,
         filepath: Path,
         boundary_type: str
     ) -> gpd.GeoDataFrame:
         # TODO: Add documentation
 
         # Field names
-        raw = cls.bd_fields
+        raw = self.bd_fields
         std = StandardBoundaryFields()
 
         # Read in flat vertices and convert to geometries
@@ -734,6 +788,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
         # TODO: Add documentation
+        # Field names
         raw = self.bd_fields
         std = StandardBoundaryFields()
 
@@ -792,9 +847,15 @@ class MerscopePreprocessor(ISTPreprocessor):
     Preprocessor for Vizgen MERSCOPE datasets.
     """
 
+    tx_fields = MerscopeTranscriptFields()
+    bd_fields = MerscopeBoundaryFields()
+
     @staticmethod
     def _cell_assignment_candidates(raw: MerscopeTranscriptFields) -> list[str]:
+        # a user-set cell_id takes precedence over the boundary-id column
+        custom = [raw.cell_id] if raw.cell_id != MerscopeTranscriptFields.cell_id else []
         return [
+            *custom,
             raw.cell_boundary_id,
             raw.cell_id,
             "cell",
@@ -813,19 +874,26 @@ class MerscopePreprocessor(ISTPreprocessor):
         ]
 
     @staticmethod
-    def _resolve_assignment_columns(columns: list[str] | set[str]) -> tuple[str | None, str | None]:
-        raw = MerscopeTranscriptFields()
+    def _resolve_assignment_columns(
+        columns: list[str] | set[str], raw: MerscopeTranscriptFields
+    ) -> tuple[str | None, str | None]:
         cell_col = _first_existing(columns, MerscopePreprocessor._cell_assignment_candidates(raw))
         nucleus_col = _first_existing(columns, MerscopePreprocessor._nucleus_assignment_candidates(raw))
         return cell_col, nucleus_col
 
-    @staticmethod
-    def _validate_directory(data_dir: Path):
-        raw_tx = MerscopeTranscriptFields()
-        raw_bd = MerscopeBoundaryFields()
+    @classmethod
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
+        raw_tx, raw_bd = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
 
-        tx_path = MerscopePreprocessor._resolve_transcripts_path(data_dir)
-        tx_lf = MerscopePreprocessor._scan_transcripts_file(tx_path)
+        tx_path = cls._resolve_transcripts_path(data_dir, raw_tx)
+        tx_lf = cls._scan_transcripts_file(tx_path)
         tx_columns = _lazyframe_column_names(tx_lf)
 
         # Keep auto-inference strict: only match MERSCOPE when native markers exist.
@@ -863,14 +931,14 @@ class MerscopePreprocessor(ISTPreprocessor):
             )
 
         if len(cell_boundary_matches) == 0 and len(nucleus_boundary_matches) == 0:
-            cell_assignment_col, nucleus_assignment_col = MerscopePreprocessor._resolve_assignment_columns(
-                tx_columns
+            cell_assignment_col, nucleus_assignment_col = cls._resolve_assignment_columns(
+                tx_columns, raw_tx
             )
             if cell_assignment_col is None and nucleus_assignment_col is None:
                 assignment_candidates = sorted(
                     {
-                        *MerscopePreprocessor._cell_assignment_candidates(raw_tx),
-                        *MerscopePreprocessor._nucleus_assignment_candidates(raw_tx),
+                        *cls._cell_assignment_candidates(raw_tx),
+                        *cls._nucleus_assignment_candidates(raw_tx),
                     }
                 )
                 raise IOError(
@@ -908,8 +976,7 @@ class MerscopePreprocessor(ISTPreprocessor):
                 )
 
     @staticmethod
-    def _resolve_transcripts_path(data_dir: Path) -> Path:
-        raw_tx = MerscopeTranscriptFields()
+    def _resolve_transcripts_path(data_dir: Path, raw_tx: MerscopeTranscriptFields) -> Path:
         matches_by_pattern: dict[str, list[Path]] = {}
         for pattern in (raw_tx.filename, raw_tx.fallback_filename):
             matches_by_pattern[pattern] = sorted(data_dir.glob(pattern))
@@ -971,10 +1038,10 @@ class MerscopePreprocessor(ISTPreprocessor):
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
-        raw = MerscopeTranscriptFields()
+        raw = self.tx_fields
         std = StandardTranscriptFields()
 
-        source_path = self._resolve_transcripts_path(self.data_dir)
+        source_path = self._resolve_transcripts_path(self.data_dir, raw)
         lf = self._scan_transcripts_file(source_path)
         columns = _lazyframe_column_names(lf)
 
@@ -988,7 +1055,7 @@ class MerscopePreprocessor(ISTPreprocessor):
                 f"Need x/y/feature; available columns: {columns}"
             )
 
-        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(columns)
+        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(columns, raw)
 
         if cell_assignment_col is not None:
             cell_id_expr = self._clean_id_expr(cell_assignment_col)
@@ -1043,8 +1110,9 @@ class MerscopePreprocessor(ISTPreprocessor):
         return _empty_boundaries()
 
     @staticmethod
-    def _load_boundary_file(path: Path, boundary_type: str) -> gpd.GeoDataFrame:
-        raw = MerscopeBoundaryFields()
+    def _load_boundary_file(
+        path: Path, boundary_type: str, raw: MerscopeBoundaryFields
+    ) -> gpd.GeoDataFrame:
         std = StandardBoundaryFields()
 
         try:
@@ -1091,22 +1159,24 @@ class MerscopePreprocessor(ISTPreprocessor):
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        raw_bd = MerscopeBoundaryFields()
+        raw_bd = self.bd_fields
         std = StandardBoundaryFields()
 
         cell_boundary_matches = sorted(self.data_dir.glob(raw_bd.cell_filename))
         nucleus_boundary_matches = sorted(self.data_dir.glob(raw_bd.nucleus_filename))
-        tx_path = self._resolve_transcripts_path(self.data_dir)
+        tx_path = self._resolve_transcripts_path(self.data_dir, self.tx_fields)
         tx_columns = _lazyframe_column_names(self._scan_transcripts_file(tx_path))
-        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(tx_columns)
+        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(
+            tx_columns, self.tx_fields
+        )
 
         cells = (
-            self._load_boundary_file(cell_boundary_matches[0], std.cell_value)
+            self._load_boundary_file(cell_boundary_matches[0], std.cell_value, raw_bd)
             if len(cell_boundary_matches) == 1
             else self._empty_boundaries()
         )
         nuclei = (
-            self._load_boundary_file(nucleus_boundary_matches[0], std.nucleus_value)
+            self._load_boundary_file(nucleus_boundary_matches[0], std.nucleus_value, raw_bd)
             if len(nucleus_boundary_matches) == 1
             else self._empty_boundaries()
         )
@@ -1142,12 +1212,20 @@ class MerscopePreprocessor(ISTPreprocessor):
         return bd
 
 
-def _infer_platform(data_dir: Path) -> str:
+def _infer_platform(
+    data_dir: Path,
+    transcript_field_overrides: dict | None = None,
+    boundary_field_overrides: dict | None = None,
+) -> str:
     matches = []
     exceptions = []
     for platform, preprocessor in PREPROCESSORS.items():
         try:
-            preprocessor._validate_directory(data_dir)
+            preprocessor._validate_directory(
+                data_dir,
+                transcript_field_overrides=transcript_field_overrides,
+                boundary_field_overrides=boundary_field_overrides,
+            )
             matches.append(platform)
         except Exception as e:
             exceptions.append(e)
@@ -1167,15 +1245,25 @@ def _infer_platform(data_dir: Path) -> str:
 
 def get_preprocessor(
     data_dir: Path,
-    platform: str | None = None
+    platform: str | None = None,
+    transcript_field_overrides: dict | None = None,
+    boundary_field_overrides: dict | None = None,
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
-        platform = _infer_platform(data_dir) 
+        platform = _infer_platform(
+            data_dir,
+            transcript_field_overrides=transcript_field_overrides,
+            boundary_field_overrides=boundary_field_overrides,
+        )
     if platform not in PREPROCESSORS:
         raise ValueError(
             f"Unknown platform: '{platform}'. "
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir)
+    return cls(
+        data_dir,
+        transcript_field_overrides=transcript_field_overrides,
+        boundary_field_overrides=boundary_field_overrides,
+    )

@@ -76,7 +76,31 @@ def segment(
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
-    
+
+    transcripts_cell_id: Annotated[str | None, Parameter(
+        help="Column in the transcripts file with cell assignments (e.g. a "
+             "custom segmentation column). Defaults to the platform default.",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    cells_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom cell boundaries file to use. The file must "
+             "contain a list of x/y vertices for each cell (e.g. Xenium's "
+             "cell_boundaries.parquet file). Defaults to the platform default.",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    nucleus_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom nucleus boundaries file to use. The file "
+             "must contain a list of x/y vertices for each nucleus (e.g. "
+             "Xenium's nucleus_boundaries.parquet file). Defaults to the "
+             "platform default.",
+        group=group_io,
+        required=False,
+    )] = None,
+
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -150,6 +174,13 @@ def segment(
         group=group_transcripts_graph,
     )] = registry.get_default("transcripts_graph_max_dist"),
 
+
+    # Segmentation (Reference) Graph
+    segmentation_mode: Annotated[Literal["nucleus", "cell"], Parameter(
+        help="Segmentation used as the reference for training edges: "
+             "'nucleus' or 'cell'.",
+        group=group_prediction,
+    )] = "nucleus",
 
     # Segmentation (Prediction) Graph
     prediction_mode: Annotated[
@@ -336,8 +367,15 @@ def segment(
     # Setup Lightning Data Module
     logger.debug(f"Setting up ISTDataModule | Input Directory: '{input_directory}'")
     from ..data import ISTDataModule
+    boundary_field_overrides = {}
+    if cells_boundaries_file:
+        boundary_field_overrides['cell_filename'] = cells_boundaries_file
+    if nucleus_boundaries_file:
+        boundary_field_overrides['nucleus_filename'] = nucleus_boundaries_file
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        transcript_field_overrides={'cell_id': transcripts_cell_id} if transcripts_cell_id else None,
+        boundary_field_overrides=boundary_field_overrides or None,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,
@@ -347,6 +385,7 @@ def segment(
         genes_clusters_resolution=genes_clusters_resolution,
         transcripts_graph_max_k=transcripts_max_k,
         transcripts_graph_max_dist=transcripts_max_dist,
+        segmentation_graph_mode=segmentation_mode,
         prediction_graph_mode=prediction_mode,
         prediction_graph_max_k=prediction_max_k,
         prediction_graph_buffer_ratio=prediction_graph_buffer_ratio,
