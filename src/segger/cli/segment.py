@@ -60,6 +60,16 @@ group_loss = Group(
 
 app_segment = App(name="segment", help="Run cell segmentation on spatial transcriptomics data.")
 
+
+def _validate_output_directory(type_, value: Path):
+    """Allow a missing output directory as long as its parent exists."""
+    value = Path(value)
+    if value.exists() and not value.is_dir():
+        raise ValueError(f"Output path exists but is not a directory: {value}")
+    if not value.parent.is_dir():
+        raise ValueError(f"Parent of output directory does not exist: {value.parent}")
+
+
 @app_segment.command(name="segment")
 def segment(
     # I/O
@@ -74,7 +84,7 @@ def segment(
         "output_directory",
         alias="-o",
         group=group_io,
-        validator=validators.Path(exists=True, dir_okay=True),
+        validator=_validate_output_directory,
     )] = registry.get_default("output_directory"),
 
     transcripts_cell_id: Annotated[str | None, Parameter(
@@ -347,6 +357,9 @@ def segment(
     # Setup logger and debug directory
     setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"), debug=debug)
     logger = logging.getLogger(__name__)
+
+    # Validator guarantees the parent exists; only create the last level
+    Path(output_directory).mkdir(exist_ok=True)
 
     debug_dir = None
     if debug:

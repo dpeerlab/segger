@@ -16,6 +16,9 @@ CUDA 13.
   segmentation used for training edges (#98).
 - `imagecodecs` dependency for LZW-compressed TIFFs (#99).
 
+### Changed
+- `segger segment` creates the output directory if it's missing. Its parent must exist.
+
 ### Fixed
 - Spatialdata export, which broke in 0.3.0 (#95).
 - Export treats a missing `converged` column as True, so outputs from older versions still
