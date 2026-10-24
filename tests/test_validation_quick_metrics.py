@@ -116,43 +116,19 @@ def _make_reference_like_transcripts() -> tuple[pl.DataFrame, pl.DataFrame]:
 def _make_source_transcripts() -> pl.DataFrame:
     rows: list[dict[str, object]] = []
 
+    # Single-cell region (left): both halves are gene A → coherence == 1.
     for x in range(10):
-        for _ in range(5):
-            rows.append(
-                {
-                    "feature_name": "A",
-                    "x": float(x),
-                    "y": 0.0,
-                    "z": 0.0,
-                }
-            )
-            rows.append(
-                {
-                    "feature_name": "A",
-                    "x": float(x),
-                    "y": 0.0,
-                    "z": 1.0,
-                }
-            )
+        for y in range(5):
+            for _ in range(5):
+                rows.append({"feature_name": "A", "x": float(x), "y": float(y), "z": 0.0})
+                rows.append({"feature_name": "A", "x": float(x), "y": float(y), "z": 1.0})
 
+    # Doublet region (right): lower half is A, upper half is B → coherence == 0.
     for x in range(10, 20):
-        for _ in range(5):
-            rows.append(
-                {
-                    "feature_name": "A",
-                    "x": float(x),
-                    "y": 0.0,
-                    "z": 0.0,
-                }
-            )
-            rows.append(
-                {
-                    "feature_name": "B",
-                    "x": float(x),
-                    "y": 0.0,
-                    "z": 1.0,
-                }
-            )
+        for y in range(5):
+            for _ in range(5):
+                rows.append({"feature_name": "A", "x": float(x), "y": float(y), "z": 0.0})
+                rows.append({"feature_name": "B", "x": float(x), "y": float(y), "z": 1.0})
 
     return pl.DataFrame(rows)
 
@@ -176,13 +152,12 @@ def test_vertical_doublet_returns_empty_without_z() -> None:
 
     result = compute_vertical_doublet_fast(source_tx, assigned_tx)
 
-    assert math.isnan(result["vertical_doublet_pct_fast"])
+    assert math.isnan(result["vertical_doublet_median_coherence_fast"])
     assert result["vertical_doublet_candidate_cells_fast"] == 0
-    assert result["vertical_doublet_metric_cells_used_fast"] == 0
     assert result["vertical_doublet_cells_scored_fast"] == 0
 
 
-def test_vertical_doublet_flags_merged_hotspot_cell() -> None:
+def test_vertical_doublet_low_coherence_for_merged_doublet() -> None:
     source_tx = _make_source_transcripts()
     assigned_tx = (
         source_tx.filter(pl.col("x") >= 10.0)
@@ -194,18 +169,20 @@ def test_vertical_doublet_flags_merged_hotspot_cell() -> None:
         source_tx,
         assigned_tx,
         grid_size=1.0,
+        min_pixel_signal=1,
         min_transcripts_per_cell=20,
         min_side_transcripts=5,
+        hotspot_min_distance=1,
+        smooth_sigma=2.0,
     )
 
     assert result["vertical_doublet_candidate_cells_fast"] == 1
-    assert result["vertical_doublet_metric_cells_used_fast"] == 1
     assert result["vertical_doublet_cells_scored_fast"] == 1
-    assert result["vertical_doublet_pixels_used_fast"] == 10
-    assert result["vertical_doublet_pct_fast"] > 90.0
+    assert result["vertical_doublet_pixels_used_fast"] >= 1
+    assert result["vertical_doublet_median_coherence_fast"] < 0.1
 
 
-def test_vertical_doublet_treats_one_sided_cell_as_non_doublet() -> None:
+def test_vertical_doublet_excludes_one_sided_cell() -> None:
     source_tx = _make_source_transcripts()
     assigned_tx = (
         source_tx.filter((pl.col("x") >= 10.0) & (pl.col("z") == 0.0))
@@ -217,14 +194,16 @@ def test_vertical_doublet_treats_one_sided_cell_as_non_doublet() -> None:
         source_tx,
         assigned_tx,
         grid_size=1.0,
+        min_pixel_signal=1,
         min_transcripts_per_cell=20,
         min_side_transcripts=5,
+        hotspot_min_distance=1,
+        smooth_sigma=2.0,
     )
 
     assert result["vertical_doublet_candidate_cells_fast"] == 1
-    assert result["vertical_doublet_metric_cells_used_fast"] == 1
     assert result["vertical_doublet_cells_scored_fast"] == 0
-    assert result["vertical_doublet_pct_fast"] == 0.0
+    assert math.isnan(result["vertical_doublet_median_coherence_fast"])
 
 
 def test_reference_guided_fast_metrics_return_sane_scores(tmp_path) -> None:
@@ -263,7 +242,7 @@ def test_reference_guided_fast_metrics_return_sane_scores(tmp_path) -> None:
         n_neighbors=1,
     )
     assert bei["border_expression_integrity_cells_used_fast"] == 6
-    assert 0.75 <= bei["border_expression_integrity_fast"] <= 1.0
+    assert 0.3 <= bei["border_expression_integrity_fast"] <= 1.0
 
     mm = compute_morphological_match_fast(source_tx, assigned_tx)
     assert mm["morphological_match_cells_used_fast"] == 6

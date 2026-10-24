@@ -490,6 +490,7 @@ def _build_cell_gene_matrix(
             pl.col(y_column).mean().alias("cy"),
         )
         .filter(pl.col("n_total") >= int(min_transcripts_per_cell))
+        .sort(cell_id_column)
     )
     if cell_stats.height == 0:
         return None
@@ -499,7 +500,7 @@ def _build_cell_gene_matrix(
             cell_stats, max_cells, seed, cell_id_column=cell_id_column,
         )
 
-    cell_stats = cell_stats.sort(cell_id_column).with_row_index(name="_cid")
+    cell_stats = cell_stats.with_row_index(name="_cid")
     if cell_stats.height == 0:
         return None
 
@@ -2129,27 +2130,31 @@ def compute_border_expression_integrity_fast(
     feature_column: str = "feature_name",
     x_column: str = "x",
     y_column: str = "y",
-    erosion_fraction: float = 0.3,
-    min_transcripts_per_cell: int = 50,
+    erosion_fraction: float = 0.5,
+    min_transcripts_per_cell: int = 25,
     max_cells: int = 10000,
     n_neighbors: int = 10,
     seed: int = 0,
 ) -> dict[str, float]:
     """Border expression integrity score (higher is better).
 
-    Classifies each cell's transcripts into center vs border using a PCA
-    bounding ellipse (Mahalanobis distance), then compares the border
-    expression profile to the cell's center and to the averaged profile
-    of k nearest neighboring cells.
+    Splits each cell's transcripts at the median Euclidean distance to
+    the cell centroid (50/50 core vs border by default), then scores
+    the border profile via cosine similarity to the cell's own center
+    and to the averaged profile of the ``n_neighbors`` nearest cells.
 
-    - **Center:** transcripts in the inner ``(1 - erosion_fraction)``
-      quantile of Mahalanobis distance from the cell centroid.
-    - **Border:** remaining transcripts (outer elliptical ring).
+    - **Center:** transcripts within the inner ``(1 - erosion_fraction)``
+      quantile of Euclidean distance to the centroid (default 0.5 ⇒
+      median split).
+    - **Border:** the remaining outer ring.
     - **Neighbor:** averaged full expression of k nearest neighboring
       cells (by centroid distance).
 
-    A well-segmented cell has border expression resembling its center
-    (high sim_cb) and differing from the neighbor profile (low sim_bn).
+    Per-cell scalar: ``ratio = sim_bn / sim_cb`` (capped to 1 when
+    ``sim_cb <= 0.01``); ``score = 1 / (1 + max(0, ratio - 1))``.  A
+    well-segmented cell has border expression resembling its center
+    (high ``sim_cb``) and differing from the neighbor profile (low
+    ``sim_bn``), giving ``ratio <= 1`` and ``score = 1``.
     """
     out = {
         "border_expression_integrity_fast": float("nan"),
@@ -2172,20 +2177,15 @@ def compute_border_expression_integrity_fast(
     if df.height == 0:
         return out
 
-    # --- Per-cell stats with covariance (all Polars) ---
+    # --- Per-cell stats: centroid and count ---
     cell_stats = (
         df.group_by(cell_id_column)
         .agg(
             pl.len().alias("n_total"),
             pl.col(x_column).mean().alias("cx"),
             pl.col(y_column).mean().alias("cy"),
-            pl.col(x_column).var().alias("var_x"),
-            pl.col(y_column).var().alias("var_y"),
-            pl.col(x_column).std().alias("std_x"),
-            pl.col(y_column).std().alias("std_y"),
         )
         .filter(pl.col("n_total") >= int(min_transcripts_per_cell))
-        .filter((pl.col("var_x") > 1e-12) & (pl.col("var_y") > 1e-12))
     )
     if cell_stats.height == 0:
         return out
@@ -2196,40 +2196,25 @@ def compute_border_expression_integrity_fast(
             cell_stats, max_cells, seed, cell_id_column=cell_id_column,
         )
 
-    # Join transcripts with cell stats
+    # Join transcripts with cell centroids
     df = df.join(
-        cell_stats.select([cell_id_column, "n_total", "cx", "cy",
-                           "var_x", "var_y", "std_x", "std_y"]),
+        cell_stats.select([cell_id_column, "n_total", "cx", "cy"]),
         on=cell_id_column,
         how="inner",
     )
     if df.height == 0:
         return out
 
-    # Compute per-cell covariance xy via Polars (E[dx*dy])
-    df = df.with_columns(
-        ((pl.col(x_column) - pl.col("cx")) / pl.col("std_x")).alias("dx_norm"),
-        ((pl.col(y_column) - pl.col("cy")) / pl.col("std_y")).alias("dy_norm"),
-    )
-    # Correlation coefficient per cell
-    corr_df = (
-        df.group_by(cell_id_column)
-        .agg((pl.col("dx_norm") * pl.col("dy_norm")).mean().alias("rho"))
-    )
-    df = df.join(corr_df, on=cell_id_column, how="inner")
-
-    # Mahalanobis distance squared: d² = (1/(1-ρ²)) * (dx² - 2ρ·dx·dy + dy²)
-    # where dx, dy are standardized
+    # Squared Euclidean distance to centroid
     df = df.with_columns(
         (
-            (pl.col("dx_norm").pow(2)
-             - 2.0 * pl.col("rho") * pl.col("dx_norm") * pl.col("dy_norm")
-             + pl.col("dy_norm").pow(2))
-            / (1.0 - pl.col("rho").pow(2)).clip(lower_bound=1e-6)
+            (pl.col(x_column) - pl.col("cx")).pow(2)
+            + (pl.col(y_column) - pl.col("cy")).pow(2)
         ).alias("d_sq")
     )
 
-    # Per-cell quantile threshold: center = inner (1-erosion_fraction)
+    # Per-cell quantile threshold: center = inner (1 - erosion_fraction)
+    # Default erosion_fraction = 0.5 ⇒ split at the median distance.
     center_quantile = 1.0 - erosion_fraction
     thresholds = (
         df.group_by(cell_id_column)
@@ -2342,6 +2327,397 @@ def compute_border_expression_integrity_fast(
     out["border_expression_integrity_fast"] = float(np.average(v, weights=w))
     out["border_expression_integrity_ci95"] = float(_weighted_mean_ci95(v, w))
     out["border_expression_integrity_ratio_fast"] = float(np.average(r, weights=w))
+    return out
+
+
+def _neighbor_row_distribution(
+    centroids: np.ndarray,
+    types: np.ndarray,
+    n_types: int,
+    n_neighbors: int,
+    n_permutations: int = 0,
+    seed: int = 0,
+    pseudocount: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Per-host log2 fold-change of neighbor type composition vs permutation null.
+
+    For each cell, take its ``k`` nearest centroid neighbors (excluding
+    itself); aggregate by host type to obtain
+    ``M_obs[i, j]`` = #(host of type *i* with neighbor of type *j*) — an
+    asymmetric directed-edge count matrix.
+
+    With ``n_permutations > 0`` (recommended), shuffle the cell-type labels
+    keeping the spatial graph fixed, average the permuted counts to
+    ``E[M_perm]``, then return the **signed log2 fold-change** with a
+    Haldane pseudocount ``α``:
+
+        ``log_fc[i, j] = log2((M_obs[i, j] + α) / (E[M_perm[i, j]] + α))``
+
+    This is the standard compositional-enrichment statistic in 2023–2024
+    spatial-omics analyses (Bhuva 2024 *Nat Commun* scFeatures; CellCharter
+    Varrone 2024 *Nat Genet*; squidpy uses a Z-score variant).  Three
+    properties make it the right transform for "neighborhood preservation"
+    comparisons:
+
+    1. **Signed.**  Positive entries = real enrichment, negative = real
+       depletion.  No information is silently clipped to 0 (which kills
+       biologically meaningful avoidance signals like Tumor↔T-cell).
+    2. **Multiplicative scale.**  The within-type diagonal is large but
+       *bounded* on the log scale (typically +1 to +3); cross-type
+       enrichment/depletion is comparably visible (typically ±0.5 to ±2).
+       So the diagonal no longer drowns the off-diagonal — both inform the
+       per-row comparison at proper relative scale.
+    3. **Permutation-stabilized.**  The denominator is the empirical null
+       under the same spatial graph, so type-abundance and graph-degree
+       baselines are absorbed; what remains is the structural deviation.
+
+    With ``n_permutations <= 0`` (no stabilization), returns the raw
+    row-normalized conditional distribution ``P(neighbor=j | host=i)``.
+
+    Returns ``(out, valid)`` where ``valid[i] = True`` iff at least one
+    host of type *i* exists in the graph.
+    """
+    n = centroids.shape[0]
+    if n < 2:
+        return None
+    kk = min(int(n_neighbors) + 1, n)
+    if kk <= 1:
+        return None
+
+    tree = cKDTree(centroids)
+    _, idxs = tree.query(centroids, k=kk)
+    if idxs.ndim == 1:
+        idxs = idxs[:, None]
+    nbr = idxs[:, 1:] if idxs.shape[1] > 1 else idxs
+    if nbr.size == 0:
+        return None
+
+    T = int(n_types)
+    host_idx_global = np.repeat(np.arange(n), nbr.shape[1])
+    nbr_idx_global = nbr.ravel()
+    TT = T * T
+
+    def _count(type_arr: np.ndarray) -> np.ndarray:
+        cr = type_arr[host_idx_global]
+        cc = type_arr[nbr_idx_global]
+        flat = cr * T + cc
+        return np.bincount(flat, minlength=TT).astype(np.float64).reshape(T, T)
+
+    M_obs = _count(types)
+    valid = M_obs.sum(axis=1) > 0
+
+    if int(n_permutations) > 0:
+        rng = np.random.default_rng(seed)
+        mean_perm = np.zeros((T, T), dtype=np.float64)
+        types_buf = types.copy()
+        for _ in range(int(n_permutations)):
+            rng.shuffle(types_buf)
+            mean_perm += _count(types_buf)
+        mean_perm /= float(n_permutations)
+        alpha = float(pseudocount)
+        log_fc = np.log2((M_obs + alpha) / (mean_perm + alpha))
+        return log_fc, valid
+
+    row_sums = M_obs.sum(axis=1)
+    safe_sums = np.where(valid, row_sums, 1.0)
+    P = M_obs / safe_sums[:, None]
+    return P, valid
+
+
+def _neighborhood_enrichment_zscore(
+    centroids: np.ndarray,
+    types: np.ndarray,
+    n_types: int,
+    n_neighbors: int,
+    n_permutations: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Permutation-based neighborhood enrichment Z-score (squidpy ``nhood_enrichment``).
+
+    Implements the canonical recipe from Palla et al. 2022 (*Nat. Methods*,
+    "Squidpy: a scalable framework for spatial omics analysis"), which is the
+    reference implementation used in subsequent Nature-family spatial papers
+    (e.g. Janesick et al. 2023 *Nat. Commun.*, Garrido-Trigo et al. 2023
+    *Nat. Commun.*, Walsh et al. 2024 *Nature*):
+
+    1. Build a directed k-NN graph from cell centroids and **symmetrize**
+       (``A_sym = (A + Aᵀ) > 0``) so the graph is undirected and binary.
+    2. For each undirected edge ``(r, c)`` with ``r < c`` (each edge counted
+       once), increment ``M[c_r, c_c] += 1`` *and* ``M[c_c, c_r] += 1``.  The
+       resulting ``M`` is symmetric; diagonals count within-type edges twice,
+       off-diagonals count cross-type edges once per direction.
+    3. Permute cell-type labels ``n_permutations`` times keeping the graph
+       fixed; recompute ``M_perm`` per permutation.
+    4. ``Z[i, j] = (M_obs[i, j] − mean(M_perm[i, j])) / std(M_perm[i, j])``.
+
+    Returns ``(Z, M_obs)`` or ``None`` when fewer than 2 cells are usable or
+    the graph has no edges.
+    """
+    n = centroids.shape[0]
+    if n < 2:
+        return None
+    kk = min(int(n_neighbors) + 1, n)
+    if kk <= 1:
+        return None
+
+    tree = cKDTree(centroids)
+    _, idxs = tree.query(centroids, k=kk)
+    if idxs.ndim == 1:
+        idxs = idxs[:, None]
+    nbr = idxs[:, 1:] if idxs.shape[1] > 1 else idxs
+    if nbr.size == 0:
+        return None
+
+    rows = np.repeat(np.arange(n), nbr.shape[1])
+    cols = nbr.ravel()
+    A = sparse.coo_matrix(
+        (np.ones(len(rows), dtype=np.uint8), (rows, cols)),
+        shape=(n, n),
+    ).tocsr()
+    A_sym = A + A.T
+    if A_sym.nnz == 0:
+        return None
+    A_sym.data = np.ones_like(A_sym.data)
+    A_sym.setdiag(0)
+    A_sym.eliminate_zeros()
+    A_upper = sparse.triu(A_sym, k=1).tocoo()
+    if A_upper.nnz == 0:
+        return None
+    e_rows = A_upper.row.astype(np.int64, copy=False)
+    e_cols = A_upper.col.astype(np.int64, copy=False)
+
+    T = int(n_types)
+    TT = T * T
+
+    def _count(types_arr: np.ndarray) -> np.ndarray:
+        cr = types_arr[e_rows]
+        cc = types_arr[e_cols]
+        flat = np.concatenate([cr * T + cc, cc * T + cr])
+        return np.bincount(flat, minlength=TT).astype(np.float64)
+
+    M_obs = _count(types).reshape(T, T)
+
+    rng = np.random.default_rng(seed)
+    P = max(int(n_permutations), 1)
+    perm_counts = np.empty((P, TT), dtype=np.float64)
+    types_buf = types.copy()
+    for p in range(P):
+        rng.shuffle(types_buf)
+        perm_counts[p] = _count(types_buf)
+    mean_p = perm_counts.mean(axis=0).reshape(T, T)
+    std_p = perm_counts.std(axis=0, ddof=1).reshape(T, T)
+    std_safe = np.where(std_p > 1e-12, std_p, 1.0)
+    Z = (M_obs - mean_p) / std_safe
+    Z[std_p <= 1e-12] = 0.0
+    return Z, M_obs
+
+
+def compute_neighborhood_preservation_fast(
+    assigned_tx: pl.DataFrame,
+    *,
+    scrna_reference_path: Optional[Path],
+    scrna_celltype_column: str = "cell_type",
+    cell_id_column: str = "segger_cell_id",
+    reference_cell_id_column: str = "cell_id",
+    feature_column: str = "feature_name",
+    x_column: str = "x",
+    y_column: str = "y",
+    min_transcripts_per_cell: int = 25,
+    max_cells: int = 10000,
+    n_neighbors: int = 10,
+    n_permutations: int = 1000,
+    seed: int = 0,
+) -> dict[str, float | int]:
+    """Neighborhood preservation via per-host log2 FC vs permutation null.
+
+    Pipeline:
+
+    1. Build per-cell gene-count vectors with centroids for both the predicted
+       and reference cell segmentations (same min-tx, sort, tile subsample).
+    2. Assign each cell a type by cosine similarity to scRNA-seq per-celltype
+       profiles on the union gene vocabulary so both segmentations share the
+       same T-type space.
+    3. Build a directed k-NN graph on cell centroids; aggregate to the
+       asymmetric host→neighbor count matrix ``M_obs[i, j]``.
+    4. **Permutation-stabilize** with the standard compositional log-FC
+       statistic (Bhuva 2024 *Nat Commun*; CellCharter; squidpy uses a
+       Z-variant): shuffle cell-type labels ``n_permutations`` times keeping
+       the graph fixed, average to ``E[M_perm]``, then take the per-pair
+       signed log2 fold-change with a Haldane pseudocount ``α=0.5``:
+
+           ``log_fc[i, j] = log2((M_obs + α) / (E[M_perm] + α))``
+
+       Positive = enriched, negative = depleted, zero = at baseline.  The
+       within-type diagonal is large but bounded on the log scale (no
+       diagonal-dominance), and depletion signal is preserved.
+    5. For each host row *i* (no diagonal masking), compute cosine
+       similarity between the predicted and reference signed log-FC
+       vectors.  Score = **mean per-row cosine across valid rows**.
+
+    Score ∈ [-1, 1].  Self-comparison is exactly 1.0.  Asymmetric by design:
+    P(neighbors | host=i) and P(neighbors | host=j) are evaluated
+    independently and the score for host i is independent of host j.
+    """
+    out: dict[str, float | int] = {
+        "neighborhood_preservation_fast": float("nan"),
+        "neighborhood_preservation_score01_fast": float("nan"),
+        "neighborhood_preservation_n_types_fast": 0,
+        "neighborhood_preservation_n_rows_used_fast": 0,
+        "neighborhood_preservation_n_pred_cells_fast": 0,
+        "neighborhood_preservation_n_ref_cells_fast": 0,
+        "neighborhood_preservation_n_neighbors_fast": int(n_neighbors),
+        "neighborhood_preservation_n_perm_fast": int(n_permutations),
+    }
+    if scrna_reference_path is None:
+        return out
+    cols_pred = [cell_id_column, feature_column, x_column, y_column]
+    cols_ref = [reference_cell_id_column, feature_column, x_column, y_column]
+    if any(c not in assigned_tx.columns for c in cols_pred):
+        return out
+    if any(c not in assigned_tx.columns for c in cols_ref):
+        return out
+
+    pred_tx = (
+        assigned_tx.select(cols_pred)
+        .drop_nulls()
+        .with_columns(
+            pl.col(cell_id_column).cast(pl.Utf8),
+            pl.col(feature_column).cast(pl.Utf8),
+        )
+        .filter(valid_cell_id_expr(cell_id_column))
+    )
+    ref_tx = (
+        assigned_tx.select(cols_ref)
+        .drop_nulls()
+        .with_columns(
+            pl.col(reference_cell_id_column).cast(pl.Utf8),
+            pl.col(feature_column).cast(pl.Utf8),
+        )
+        .filter(valid_cell_id_expr(reference_cell_id_column))
+    )
+    if pred_tx.height == 0 or ref_tx.height == 0:
+        return out
+
+    pred_built = _build_cell_gene_matrix(
+        pred_tx,
+        cell_id_column=cell_id_column,
+        feature_column=feature_column,
+        x_column=x_column,
+        y_column=y_column,
+        min_transcripts_per_cell=min_transcripts_per_cell,
+        max_cells=max_cells,
+        seed=seed,
+    )
+    if pred_built is None:
+        return out
+    ref_built = _build_cell_gene_matrix(
+        ref_tx,
+        cell_id_column=reference_cell_id_column,
+        feature_column=feature_column,
+        x_column=x_column,
+        y_column=y_column,
+        min_transcripts_per_cell=min_transcripts_per_cell,
+        max_cells=max_cells,
+        seed=seed,
+    )
+    if ref_built is None:
+        return out
+
+    X_pred, cent_pred, _w_pred, genes_pred = pred_built
+    X_ref, cent_ref, _w_ref, genes_ref = ref_built
+    if X_pred.shape[0] < 2 or X_ref.shape[0] < 2:
+        return out
+
+    union_genes = sorted(set(genes_pred) | set(genes_ref))
+    ref_data = _load_reference_type_profiles(
+        Path(scrna_reference_path),
+        scrna_celltype_column=scrna_celltype_column,
+        seg_gene_names=union_genes,
+    )
+    if ref_data is None:
+        return out
+    seg_shared_idx, ref_profiles, type_names = ref_data
+    if seg_shared_idx.size == 0 or ref_profiles.size == 0:
+        return out
+
+    gene_to_union = {g: i for i, g in enumerate(union_genes)}
+
+    def _project(X: sparse.csr_matrix, genes: list[str]) -> sparse.csr_matrix:
+        col_map = np.asarray([gene_to_union[g] for g in genes], dtype=np.int64)
+        coo = X.tocoo()
+        new_cols = col_map[coo.col]
+        return sparse.coo_matrix(
+            (coo.data, (coo.row, new_cols)),
+            shape=(X.shape[0], len(union_genes)),
+        ).tocsr()[:, seg_shared_idx]
+
+    X_pred_aligned = _project(X_pred, genes_pred)
+    X_ref_aligned = _project(X_ref, genes_ref)
+    if X_pred_aligned.shape[1] == 0:
+        return out
+
+    ref_norm = np.linalg.norm(ref_profiles, axis=1)
+    ref_norm[~np.isfinite(ref_norm) | (ref_norm <= 0)] = 1.0
+
+    def _assign_types(X: sparse.csr_matrix) -> np.ndarray | None:
+        cell_norm = np.sqrt(np.asarray(X.multiply(X).sum(axis=1)).ravel())
+        keep = np.isfinite(cell_norm) & (cell_norm > 0)
+        if not np.any(keep):
+            return None
+        sim = np.asarray(X @ ref_profiles.T, dtype=np.float64)
+        if sparse.issparse(sim):
+            sim = sim.toarray()
+        cell_norm_safe = np.where(keep, cell_norm, 1.0)
+        sim = sim / cell_norm_safe[:, None] / ref_norm[None, :]
+        sim[~keep] = -np.inf
+        return np.argmax(sim, axis=1).astype(np.int64)
+
+    types_pred = _assign_types(X_pred_aligned)
+    types_ref = _assign_types(X_ref_aligned)
+    if types_pred is None or types_ref is None:
+        return out
+
+    T = int(type_names.shape[0])
+    if T < 2:
+        return out
+
+    pred_dist = _neighbor_row_distribution(
+        cent_pred, types_pred, T, n_neighbors,
+        n_permutations=n_permutations, seed=seed,
+    )
+    ref_dist = _neighbor_row_distribution(
+        cent_ref, types_ref, T, n_neighbors,
+        n_permutations=n_permutations, seed=seed,
+    )
+    if pred_dist is None or ref_dist is None:
+        return out
+
+    P_pred, valid_pred = pred_dist
+    P_ref, valid_ref = ref_dist
+    valid = valid_pred & valid_ref
+    if not np.any(valid):
+        return out
+
+    pred_norm = np.linalg.norm(P_pred, axis=1)
+    ref_norm = np.linalg.norm(P_ref, axis=1)
+    safe = valid & (pred_norm > 0) & (ref_norm > 0)
+    if not np.any(safe):
+        return out
+    cos_per_row = np.full(T, np.nan, dtype=np.float64)
+    cos_per_row[safe] = (
+        np.einsum("ij,ij->i", P_pred[safe], P_ref[safe])
+        / (pred_norm[safe] * ref_norm[safe])
+    )
+    cos_per_row[safe] = np.clip(cos_per_row[safe], -1.0, 1.0)
+    mean_cos = float(np.nanmean(cos_per_row[safe]))
+    score01 = float(0.5 * (1.0 + mean_cos))
+
+    out["neighborhood_preservation_fast"] = mean_cos
+    out["neighborhood_preservation_score01_fast"] = score01
+    out["neighborhood_preservation_n_types_fast"] = T
+    out["neighborhood_preservation_n_rows_used_fast"] = int(np.count_nonzero(safe))
+    out["neighborhood_preservation_n_pred_cells_fast"] = int(X_pred_aligned.shape[0])
+    out["neighborhood_preservation_n_ref_cells_fast"] = int(X_ref_aligned.shape[0])
     return out
 
 
@@ -3344,71 +3720,68 @@ def compute_expression_angular_uniformity_fast(
         .agg(pl.len().cast(pl.Float64).alias("cnt"))
     )
 
-    # ── Per-cell per-sector L2 norms ──
-    sector_norms = (
-        sector_gene.group_by([cell_id_column, "sector"])
-        .agg((pl.col("cnt") ** 2).sum().sqrt().alias("norm"))
+    # ── Per-gene chi-squared test of angular uniformity ──
+    sector_totals = (
+        joined.group_by([cell_id_column, "sector"])
+        .agg(pl.len().cast(pl.Float64).alias("sector_total"))
+    )
+    cell_totals = (
+        joined.group_by(cell_id_column)
+        .agg(pl.len().cast(pl.Float64).alias("cell_total"))
+    )
+    gene_totals = (
+        sector_gene.group_by([cell_id_column, feature_column])
+        .agg(pl.col("cnt").sum().alias("gene_total"))
     )
 
-    # ── Pairwise cosine similarities for all C(K,2) pairs ──
-    pairs = list(combinations(range(K), 2))
-    cos_dfs = []
-    for si, sj in pairs:
-        data_i = (
-            sector_gene.filter(pl.col("sector") == si)
-            .select([cell_id_column, feature_column, pl.col("cnt").alias("ci")])
+    chisq_df = (
+        sector_gene
+        .join(gene_totals, on=[cell_id_column, feature_column], how="inner")
+        .join(sector_totals, on=[cell_id_column, "sector"], how="inner")
+        .join(cell_totals, on=cell_id_column, how="inner")
+        .with_columns(
+            (pl.col("gene_total") * pl.col("sector_total") / pl.col("cell_total"))
+            .alias("expected")
         )
-        data_j = (
-            sector_gene.filter(pl.col("sector") == sj)
-            .select([cell_id_column, feature_column, pl.col("cnt").alias("cj")])
+        .with_columns(
+            (pl.col("cnt").pow(2) / pl.col("expected").clip(lower_bound=1e-9))
+            .alias("o_sq_over_e")
         )
-        dot = (
-            data_i.join(data_j, on=[cell_id_column, feature_column], how="inner")
-            .group_by(cell_id_column)
-            .agg((pl.col("ci") * pl.col("cj")).sum().alias("dot"))
-        )
-        norm_i = (
-            sector_norms.filter(pl.col("sector") == si)
-            .select([cell_id_column, pl.col("norm").alias("ni")])
-        )
-        norm_j = (
-            sector_norms.filter(pl.col("sector") == sj)
-            .select([cell_id_column, pl.col("norm").alias("nj")])
-        )
-        pair_cos = (
-            dot.join(norm_i, on=cell_id_column, how="inner")
-            .join(norm_j, on=cell_id_column, how="inner")
-            .with_columns(
-                (pl.col("dot") / (pl.col("ni") * pl.col("nj") + 1e-9))
-                .clip(lower_bound=0.0, upper_bound=1.0)
-                .alias(f"cos_{si}_{sj}")
-            )
-            .select([cell_id_column, f"cos_{si}_{sj}"])
-        )
-        cos_dfs.append(pair_cos)
-
-    # ── Join all pairwise similarities, compute per-cell mean ──
-    result_df = cos_dfs[0]
-    for cdf in cos_dfs[1:]:
-        result_df = result_df.join(cdf, on=cell_id_column, how="inner")
-
-    cos_cols = [f"cos_{si}_{sj}" for si, sj in pairs]
-    result_df = result_df.with_columns(
-        pl.mean_horizontal(*[pl.col(c) for c in cos_cols]).alias("mean_cos"),
     )
 
-    # Join n_total for weighting
-    result_df = result_df.join(
-        cell_stats.select([cell_id_column, "n_total"]),
-        on=cell_id_column,
-        how="inner",
+    gene_chisq = (
+        chisq_df.group_by([cell_id_column, feature_column])
+        .agg(
+            pl.col("o_sq_over_e").sum().alias("sum_o_sq_e"),
+            pl.col("gene_total").first().alias("gene_total"),
+        )
+        .with_columns(
+            (pl.col("sum_o_sq_e") - pl.col("gene_total")).alias("chisq_raw")
+        )
+    )
+
+    result_df = (
+        gene_chisq.group_by(cell_id_column)
+        .agg(
+            pl.col("chisq_raw").sum().alias("total_chisq"),
+            pl.len().alias("n_genes"),
+        )
+        .with_columns(
+            ((pl.col("n_genes") - 1).cast(pl.Float64) * float(max(K - 1, 1)))
+            .alias("df")
+        )
+        .with_columns(
+            (pl.col("df") / pl.col("total_chisq").clip(lower_bound=1e-9))
+            .clip(upper_bound=1.0)
+            .alias("eau_score")
+        )
     )
 
     if result_df.height == 0:
         return empty
 
-    weights = result_df.get_column("n_total").to_numpy().astype(np.float64, copy=False)
-    scores = result_df.get_column("mean_cos").to_numpy().astype(np.float64, copy=False)
+    weights = result_df.get_column("n_genes").to_numpy().astype(np.float64, copy=False)
+    scores = result_df.get_column("eau_score").to_numpy().astype(np.float64, copy=False)
     aes = float(np.average(scores, weights=weights))
     return {
         "expression_angular_uniformity_fast": aes,
@@ -3420,12 +3793,10 @@ def compute_expression_angular_uniformity_fast(
 def _empty_vertical_doublet_metrics() -> dict[str, float | int]:
     """Default empty return payload for vertical doublet metric."""
     return {
-        "vertical_doublet_pct_fast": float("nan"),
-        "vertical_doublet_global_pct_fast": float("nan"),
+        "vertical_doublet_median_coherence_fast": float("nan"),
         "vertical_doublet_cutoff_fast": float("nan"),
         "vertical_doublet_pixels_used_fast": 0,
         "vertical_doublet_candidate_cells_fast": 0,
-        "vertical_doublet_metric_cells_used_fast": 0,
         "vertical_doublet_cells_scored_fast": 0,
         "vertical_doublet_total_cells_fast": 0,
     }
@@ -3467,39 +3838,51 @@ def compute_vertical_doublet_fast(
     x_column: str = "x",
     y_column: str = "y",
     z_column: str = "z",
-    grid_size: float = 3.0,
-    min_pixel_signal: int = 3,
+    grid_size: float = 20.0,
+    min_pixel_signal: int = 300,
     min_transcripts_per_cell: int = 20,
-    min_side_transcripts: int = 5,
+    min_side_transcripts: int = 10,
     max_cells: int = 3000,
     seed: int = 0,
-    doublet_threshold: float = 0.6,
+    hotspot_method: str = "otsu",
+    hotspot_quantile: float = 0.10,
     hotspot_min_distance: int = 10,
-    hotspot_min_integrity: float = 0.5,
     smooth_sigma: float = 2.0,
 ) -> dict[str, float | int]:
-    """Vertical doublet metric using hotspot-restricted z-coherence (lower is better).
+    """Vertical-doublet metric reported as median per-cell z-coherence at hotspots.
 
-    Splits each pixel into exactly 2 z-halves (above/below per-pixel median z),
-    computes cosine similarity of gene expression between halves, then applies
-    Gaussian smoothing (similar to ovrlpy's message-passing approach) to reduce
-    pixel-level noise before using ``peak_local_max`` to find real hotspot
-    peaks (low-integrity regions with sufficient signal).  Only cells
-    overlapping those peaks are scored.
+    Higher values mean better z-integrity; lower values indicate vertically
+    stacked (doublet) cells.
+
+    Each xy pixel of side ``grid_size`` is split into two z-halves at the
+    per-pixel median z, and the cosine similarity of gene-count vectors
+    between halves is taken as the pixel integrity. Hotspot pixels are
+    those whose raw integrity falls below a data-driven threshold (Otsu's
+    method by default; quantile available as a fallback). Smoothing +
+    ``peak_local_max`` deduplicates blobs into peaks.
+
+    Cells that overlap any hotspot pixel and have at least
+    ``min_side_transcripts`` transcripts in BOTH the lower and upper
+    z-halves are scored as ``coherence_c = cos(n_lower_c, n_upper_c)``
+    over genes. The reported metric is the median coherence over scored
+    cells.
 
     Parameters
     ----------
+    hotspot_method : str
+        Threshold-selection method on the raw per-pixel integrity
+        distribution. ``"otsu"`` (default) picks Otsu's between-class
+        variance threshold; ``"quantile"`` falls back to the bottom
+        ``hotspot_quantile`` of the distribution.
+    hotspot_quantile : float
+        Bottom quantile used when ``hotspot_method="quantile"``. Default
+        0.10 (bottom 10 %).
     hotspot_min_distance : int
         Minimum pixel distance between hotspot peaks (passed to
-        ``peak_local_max``).  Default 10 (~30 µm at 3 µm grid).
-    hotspot_min_integrity : float
-        Pixels with integrity above this value are never considered hotspot
-        peaks.  ``peak_local_max`` threshold is ``1 - hotspot_min_integrity``.
+        ``peak_local_max``). Default 10.
     smooth_sigma : float
-        Gaussian smoothing sigma (in pixels) applied to the doublet score map
-        before peak detection.  Reduces noise from the fine pixel grid, similar
-        to ovrlpy's message-passing z-center smoothing.  Default 2.0 (~6 µm
-        at 3 µm grid).  Set to 0 to disable.
+        Gaussian smoothing sigma (in pixels) applied to the doublet score
+        map before peak detection. Default 2.0; set to 0 to disable.
     """
     from skimage.feature import peak_local_max
 
@@ -3644,9 +4027,27 @@ def compute_vertical_doublet_fast(
         doublet_map = np.where(valid, smoothed_num / smoothed_den, 0.0)
         doublet_map[~has_data] = 0.0
 
-    threshold_abs = 1.0 - hotspot_min_integrity
-    if threshold_abs <= 0:
-        threshold_abs = 0.01
+    # Data-driven hotspot threshold on the raw per-pixel integrity distribution.
+    if integ.size == 0:
+        return result
+    finite_integ = integ[np.isfinite(integ)]
+    if finite_integ.size == 0:
+        return result
+    method = hotspot_method.lower()
+    if method == "otsu":
+        try:
+            from skimage.filters import threshold_otsu
+            cutoff_int = float(threshold_otsu(finite_integ))
+        except Exception:
+            cutoff_int = float(np.quantile(finite_integ, hotspot_quantile))
+    elif method == "quantile":
+        cutoff_int = float(np.quantile(finite_integ, hotspot_quantile))
+    else:
+        raise ValueError(
+            f"hotspot_method must be 'otsu' or 'quantile', got {hotspot_method!r}"
+        )
+    threshold_abs = max(1e-6, 1.0 - cutoff_int)
+    result["vertical_doublet_cutoff_fast"] = cutoff_int
 
     try:
         peaks = peak_local_max(
@@ -3670,7 +4071,6 @@ def compute_vertical_doublet_fast(
     }).unique()
 
     result["vertical_doublet_pixels_used_fast"] = int(hotspot_pixels.height)
-    result["vertical_doublet_cutoff_fast"] = float(hotspot_min_integrity)
     if hotspot_pixels.height == 0:
         return result
 
@@ -3736,101 +4136,81 @@ def compute_vertical_doublet_fast(
         .alias("n_minor_side"),
     )
 
-    eligible_cells = (
+    # Cells are scored only when BOTH halves have enough transcripts.
+    scorable_cells = (
         cell_hotspots.join(cell_side_counts, on=cell_id_column, how="inner")
-        .filter(pl.col("n_total_tx") >= min_transcripts_per_cell)
+        .filter(
+            (pl.col("n_total_tx") >= min_transcripts_per_cell)
+            & (pl.col("n_lower") >= min_side_transcripts)
+            & (pl.col("n_upper") >= min_side_transcripts)
+        )
     )
-    result["vertical_doublet_metric_cells_used_fast"] = int(eligible_cells.height)
-    if eligible_cells.height == 0:
-        return result
-
-    scorable_cells = eligible_cells.filter(pl.col("n_minor_side") >= min_side_transcripts)
-    result["vertical_doublet_cells_scored_fast"] = int(scorable_cells.height)
-
-    scores = eligible_cells.select([cell_id_column, "hotspot_pixel_count"]).with_columns(
-        pl.lit(1.0).alias("coherence")
-    )
-
-    if scorable_cells.height > 0:
-        candidate_gene_half = (
-            candidate_tx_split.group_by([cell_id_column, "side", feature_column])
-            .agg(pl.len().alias("count"))
-            .join(scorable_cells.select([cell_id_column]), on=cell_id_column, how="inner")
-        )
-
-        lower_side = candidate_gene_half.filter(pl.col("side") == "lower").select(
-            [cell_id_column, feature_column, pl.col("count").alias("count_lower")]
-        )
-        upper_side = candidate_gene_half.filter(pl.col("side") == "upper").select(
-            [cell_id_column, feature_column, pl.col("count").alias("count_upper")]
-        )
-        dot = (
-            lower_side.join(
-                upper_side,
-                on=[cell_id_column, feature_column],
-                how="inner",
-            )
-            .group_by(cell_id_column)
-            .agg(
-                (pl.col("count_lower") * pl.col("count_upper"))
-                .sum()
-                .cast(pl.Float64)
-                .alias("dot")
-            )
-        )
-        lower_norm_cell = (
-            lower_side.group_by(cell_id_column)
-            .agg(((pl.col("count_lower") * pl.col("count_lower")).sum()).alias("norm_sq_lower"))
-            .with_columns(pl.col("norm_sq_lower").cast(pl.Float64))
-        )
-        upper_norm_cell = (
-            upper_side.group_by(cell_id_column)
-            .agg(((pl.col("count_upper") * pl.col("count_upper")).sum()).alias("norm_sq_upper"))
-            .with_columns(pl.col("norm_sq_upper").cast(pl.Float64))
-        )
-        scored = (
-            scorable_cells.select([cell_id_column])
-            .join(lower_norm_cell, on=cell_id_column, how="inner")
-            .join(upper_norm_cell, on=cell_id_column, how="inner")
-            .join(dot, on=cell_id_column, how="left")
-            .with_columns(pl.col("dot").fill_null(0.0))
-            .with_columns(
-                (
-                    pl.col("dot")
-                    / (
-                        (pl.col("norm_sq_lower").sqrt() * pl.col("norm_sq_upper").sqrt())
-                        + 1e-9
-                    )
-                )
-                .clip(lower_bound=0.0, upper_bound=1.0)
-                .alias("coherence")
-            )
-            .select([cell_id_column, "coherence"])
-        )
-        scores = (
-            scores.join(scored, on=cell_id_column, how="left", suffix="_new")
-            .with_columns(pl.col("coherence_new").fill_null(pl.col("coherence")).alias("coherence"))
-            .drop("coherence_new")
-        )
-
-    weights = scores.get_column("hotspot_pixel_count").to_numpy().astype(np.float64, copy=False)
-    coherence = scores.get_column("coherence").to_numpy().astype(np.float64, copy=False)
-    flags = (coherence < doublet_threshold).astype(np.float64)
-    result["vertical_doublet_pct_fast"] = float(100.0 * np.average(flags, weights=weights))
-    result["vertical_doublet_pct_ci95"] = float(100.0 * _weighted_bernoulli_ci95(flags, weights))
-
-    # Global percentage: doublet cells as fraction of ALL assigned cells (not just
-    # hotspot-restricted ones).  This is more interpretable for cross-method
-    # comparison since the hotspot-restricted pct has a biased denominator.
-    n_doublet_cells = int(np.sum(flags > 0))
-    total_assigned_cells = int(
+    result["vertical_doublet_total_cells_fast"] = int(
         assigned.select(cell_id_column).unique().height
     )
-    result["vertical_doublet_total_cells_fast"] = total_assigned_cells
-    if total_assigned_cells > 0:
-        result["vertical_doublet_global_pct_fast"] = float(
-            100.0 * n_doublet_cells / total_assigned_cells
+    result["vertical_doublet_cells_scored_fast"] = int(scorable_cells.height)
+    if scorable_cells.height == 0:
+        return result
+
+    candidate_gene_half = (
+        candidate_tx_split.group_by([cell_id_column, "side", feature_column])
+        .agg(pl.len().alias("count"))
+        .join(scorable_cells.select([cell_id_column]), on=cell_id_column, how="inner")
+    )
+
+    lower_side = candidate_gene_half.filter(pl.col("side") == "lower").select(
+        [cell_id_column, feature_column, pl.col("count").alias("count_lower")]
+    )
+    upper_side = candidate_gene_half.filter(pl.col("side") == "upper").select(
+        [cell_id_column, feature_column, pl.col("count").alias("count_upper")]
+    )
+    dot = (
+        lower_side.join(
+            upper_side,
+            on=[cell_id_column, feature_column],
+            how="inner",
         )
+        .group_by(cell_id_column)
+        .agg(
+            (pl.col("count_lower") * pl.col("count_upper"))
+            .sum()
+            .cast(pl.Float64)
+            .alias("dot")
+        )
+    )
+    lower_norm_cell = (
+        lower_side.group_by(cell_id_column)
+        .agg(((pl.col("count_lower") * pl.col("count_lower")).sum()).alias("norm_sq_lower"))
+        .with_columns(pl.col("norm_sq_lower").cast(pl.Float64))
+    )
+    upper_norm_cell = (
+        upper_side.group_by(cell_id_column)
+        .agg(((pl.col("count_upper") * pl.col("count_upper")).sum()).alias("norm_sq_upper"))
+        .with_columns(pl.col("norm_sq_upper").cast(pl.Float64))
+    )
+    scored = (
+        scorable_cells.select([cell_id_column])
+        .join(lower_norm_cell, on=cell_id_column, how="inner")
+        .join(upper_norm_cell, on=cell_id_column, how="inner")
+        .join(dot, on=cell_id_column, how="left")
+        .with_columns(pl.col("dot").fill_null(0.0))
+        .with_columns(
+            (
+                pl.col("dot")
+                / (
+                    (pl.col("norm_sq_lower").sqrt() * pl.col("norm_sq_upper").sqrt())
+                    + 1e-9
+                )
+            )
+            .clip(lower_bound=0.0, upper_bound=1.0)
+            .alias("coherence")
+        )
+        .select([cell_id_column, "coherence"])
+    )
+
+    coherence_vals = scored.get_column("coherence").to_numpy().astype(np.float64, copy=False)
+    if coherence_vals.size > 0:
+        result["vertical_doublet_median_coherence_fast"] = float(np.median(coherence_vals))
     return result
 
 
