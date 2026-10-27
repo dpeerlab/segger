@@ -7,6 +7,7 @@ from typing import Callable, Literal
 from pathlib import Path
 import geopandas as gpd
 import polars as pl
+import pyarrow.parquet as pq
 import pandas as pd
 import json
 import csv
@@ -28,6 +29,8 @@ from .fields import (
     XeniumBoundaryFields,
     CosMxTranscriptFields,
     CosMxBoundaryFields,
+    SopaTranscriptFields,
+    SopaBoundaryFields,
 )
 
 
@@ -1208,6 +1211,101 @@ class MerscopePreprocessor(ISTPreprocessor):
             ignore_index=True,
         )
         bd[std.id] = bd[std.id].astype(str)
+        bd.index = _build_boundary_index(bd)
+        return bd
+
+
+@register_preprocessor("standard")
+class StandardPreprocessor(ISTPreprocessor):
+    """
+    Preprocessor for data already in segger's standard layout, as written by
+    other tools like SOPA. Transcripts are expected to be filtered, with
+    coordinates in microns; no platform-specific filtering is applied.
+    """
+
+    tx_fields = SopaTranscriptFields()
+    bd_fields = SopaBoundaryFields()
+
+    @classmethod
+    def _validate_directory(cls, data_dir: Path):
+        tx_fields, bd_fields = cls.tx_fields, cls.bd_fields
+        tx_path = data_dir / tx_fields.filename
+        bd_path = data_dir / bd_fields.filename
+        for path in [tx_path, bd_path]:
+            if not path.is_file():
+                raise IOError(f"Standard input directory must contain '{path.name}'.")
+
+        # Check columns so other platforms with a transcripts.parquet don't match
+        tx_columns = _lazyframe_column_names(pl.scan_parquet(tx_path))
+        missing = {tx_fields.x, tx_fields.y, tx_fields.feature, tx_fields.cell_id}
+        missing -= set(tx_columns)
+        if missing:
+            raise IOError(f"'{tx_path.name}' is missing columns: {sorted(missing)}.")
+
+        bd_columns = pq.read_schema(bd_path).names
+        missing = {bd_fields.id, bd_fields.boundary_type} - set(bd_columns)
+        if missing:
+            raise IOError(f"'{bd_path.name}' is missing columns: {sorted(missing)}.")
+
+    @cached_property
+    def transcripts(self) -> pl.DataFrame:
+        raw = self.tx_fields
+        std = StandardTranscriptFields()
+
+        lf = pl.scan_parquet(self.data_dir / raw.filename, parallel='row_groups')
+        has_compartment = raw.compartment in _lazyframe_column_names(lf)
+
+        # Standardize cell IDs (null_cell_id means unassigned)
+        cell_id = pl.col(raw.cell_id).cast(pl.Utf8)
+        lf = lf.with_columns(
+            pl.when(cell_id == str(raw.null_cell_id))
+            .then(None)
+            .otherwise(cell_id)
+            .alias(std.cell_id)
+        )
+
+        # Use given compartments, or infer from cell IDs (no nucleus info)
+        if has_compartment:
+            compartment = pl.col(raw.compartment).cast(pl.Int64)
+        else:
+            compartment = (
+                pl.when(pl.col(std.cell_id).is_not_null())
+                .then(std.cytoplasmic_value)
+                .otherwise(std.extracellular_value)
+            )
+
+        return (
+            lf
+            .with_row_index(name=std.row_index)
+            .with_columns(
+                pl.col(raw.feature).cast(pl.Utf8),
+                compartment.alias(std.compartment),
+            )
+            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
+            .select([std.row_index, std.x, std.y, std.feature, std.cell_id,
+                     std.compartment])
+            .collect()
+        )
+
+    @cached_property
+    def boundaries(self) -> gpd.GeoDataFrame:
+        raw = self.bd_fields
+        std = StandardBoundaryFields()
+
+        bd = gpd.read_parquet(self.data_dir / raw.filename)
+        bd = bd.rename(columns={raw.id: std.id, raw.boundary_type: std.boundary_type})
+        bd[std.boundary_type] = bd[std.boundary_type].map({
+            raw.cell_value: std.cell_value,
+            raw.nucleus_value: std.nucleus_value,
+        })
+        bd[std.id] = bd[std.id].astype(str)
+        bd = fix_invalid_geometry(bd)
+
+        # Mark cells that have a nucleus with the same ID
+        is_nucleus = bd[std.boundary_type] == std.nucleus_value
+        nucleus_ids = set(bd.loc[is_nucleus, std.id])
+        bd[std.contains_nucleus] = is_nucleus | bd[std.id].isin(nucleus_ids)
+
         bd.index = _build_boundary_index(bd)
         return bd
 
