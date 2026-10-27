@@ -201,6 +201,17 @@ class ISTDataModule(LightningDataModule):
         tx = self.tx = pp.transcripts
         bd = pp.boundaries
 
+        # Fall back to cell mode when the data has no nucleus information
+        if self.segmentation_graph_mode == "nucleus":
+            has_nuclear_tx = (tx[tx_fields.compartment] == tx_fields.nucleus_value).any()
+            has_nuclei = (bd[bd_fields.boundary_type] == bd_fields.nucleus_value).any()
+            if not (has_nuclear_tx and has_nuclei):
+                self.logger.warning(
+                    "No nucleus information found in the input data; "
+                    "falling back to segmentation_graph_mode='cell'."
+                )
+                self.segmentation_graph_mode = "cell"
+
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":
             compartments = [tx_fields.nucleus_value]
