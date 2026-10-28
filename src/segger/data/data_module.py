@@ -84,6 +84,9 @@ class ISTDataModule(LightningDataModule):
     ----------
     input_directory : Path
         Path to the standardized IST dataset directory.
+    platform : str or None, default=None
+        Input platform (e.g. "10x_xenium", "standard"). Inferred from the
+        input directory if None.
     num_workers : int, default=8
         Number of workers for DataLoader processes.
     cells_representation_mode : {"pca", "morphology"}, default="pca"
@@ -140,6 +143,7 @@ class ISTDataModule(LightningDataModule):
         Strategy for handling genes present in the data but missing from the reference.
     """
     input_directory: Path
+    platform: str | None = None
     num_workers: int = 8
     cells_representation_mode: Literal["pca", "morphology"] = "pca"
     cells_embedding_size: int | None = 128
@@ -195,6 +199,7 @@ class ISTDataModule(LightningDataModule):
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
         pp = get_preprocessor(
             self.input_directory,
+            platform=self.platform,
             transcript_field_overrides=self.transcript_field_overrides,
             boundary_field_overrides=self.boundary_field_overrides,
         )

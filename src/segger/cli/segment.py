@@ -111,6 +111,11 @@ def segment(
         required=False,
     )] = None,
 
+    platform: Annotated[str | None, registry.get_parameter(
+        "platform",
+        group=group_io,
+    )] = registry.get_default("platform"),
+
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -387,6 +392,7 @@ def segment(
         boundary_field_overrides['nucleus_filename'] = nucleus_boundaries_file
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        platform=platform,
         transcript_field_overrides={'cell_id': transcripts_cell_id} if transcripts_cell_id else None,
         boundary_field_overrides=boundary_field_overrides or None,
         cells_representation_mode=cells_representation,
