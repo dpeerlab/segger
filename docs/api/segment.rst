@@ -19,6 +19,9 @@ I/O
    * - ``-o, --output-directory``
      - *required*
      - Output directory.
+   * - ``--platform``
+     - None
+     - Input format (e.g. ``10x_xenium``, ``standard``). Auto-detected if not set.
    * - ``--save-anndata``
      - ``True``
      - Also write ``segger_anndata.h5ad``.

@@ -19,6 +19,44 @@ See all available options:
 
    segger segment --help
 
+Use data prepared by another tool
+-----------------------------------
+
+Tools like `Sopa <https://github.com/prism-oncology/sopa>`_ can give segger already
+filtered data in the ``standard`` format, a directory with two files:
+
+- ``transcripts.parquet``: ``x``, ``y`` (microns), ``feature_name``, ``cell_id``
+  (prior cell, ``0`` = unassigned) and optionally ``cell_compartment``
+  (``0`` = outside, ``1`` = cytoplasm, ``2`` = nucleus)
+- ``boundaries.parquet``: GeoParquet with ``cell_id``, ``boundary_type``
+  (``cell`` or ``nucleus``) and ``geometry``
+
+No platform-specific filtering is applied. Without ``cell_compartment`` or nucleus
+polygons, segger falls back to ``--segmentation-mode cell``.
+
+.. code-block:: bash
+
+   segger segment -i /path/to/standard/dir/ -o /path/to/outputs/ --platform standard
+
+The same data can be passed in memory from Python. ``segger.segment`` takes any
+``segger segment`` option by its Python name and returns the content of
+``segger_segmentation.parquet``:
+
+.. code-block:: python
+
+   import segger
+
+   segger.configure_memory()  # optional: shared GPU memory pool, as in the CLI
+   seg = segger.segment(
+       output_directory="/path/to/outputs/",
+       transcripts=transcripts,  # polars or pandas DataFrame
+       boundaries=boundaries,    # GeoDataFrame
+       n_epochs=20,
+   )
+
+Join ``seg`` back to your transcripts by ``row_index`` (the row position in
+``transcripts``).
+
 Export to other formats
 --------------------------
 
