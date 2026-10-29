@@ -3,7 +3,7 @@ import logging
 from ..utils import setup_logging
 
 from cyclopts import App, Parameter, Group, validators
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from pathlib import Path
 
 from .registry import ParameterRegistry
@@ -76,7 +76,12 @@ def segment(
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
     )] = registry.get_default("output_directory"),
-    
+
+    platform: Annotated[str | None, registry.get_parameter(
+        "platform",
+        group=group_io,
+    )] = registry.get_default("platform"),
+
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -318,6 +323,10 @@ def segment(
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = False,
+
+    # In-memory inputs, Python only (see `segger.api.segment`)
+    transcripts: Annotated[Any, Parameter(parse=False)] = None,
+    boundaries: Annotated[Any, Parameter(parse=False)] = None,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 
@@ -332,7 +341,7 @@ def segment(
         debug_dir.mkdir(exist_ok=True, parents=True)
         params = {k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
                   for k, v in locals().items()
-                  if k not in {"logger", "debug_dir", "json"}}
+                  if k not in {"logger", "debug_dir", "json", "transcripts", "boundaries"}}
         with open(debug_dir / "params.json", "w") as f:
             json.dump(params, f, indent=2, default=str)
         logger.info(f"Saved run params to {debug_dir / 'params.json'}")
@@ -346,6 +355,7 @@ def segment(
     from ..data import ISTDataModule
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        platform=platform,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,
@@ -366,6 +376,8 @@ def segment(
         gene_corr_reference_path=gene_corr_reference_path,
         gene_missing_strategy=gene_missing_strategy,
         debug_dir=debug_dir,
+        transcripts=transcripts,
+        boundaries=boundaries,
     )
     
     # Setup Lightning Model

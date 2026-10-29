@@ -106,6 +106,28 @@ class CosMxBoundaryFields:
     mpp: float = 0.12028
 
 
+# Sopa writes these files already filtered, with x/y in microns.
+# `compartment` is optional.
+@dataclass
+class SopaTranscriptFields:
+    filename: str = 'transcripts.parquet'
+    x: str = 'x'
+    y: str = 'y'
+    feature: str = 'feature_name'
+    cell_id: str = 'cell_id'
+    null_cell_id: int = 0
+    compartment: str = 'cell_compartment'
+
+# GeoParquet with one polygon per row. `boundary_type` is 'cell' or 'nucleus'.
+@dataclass
+class SopaBoundaryFields:
+    filename: str = 'boundaries.parquet'
+    id: str = 'cell_id'
+    boundary_type: str = 'boundary_type'
+    cell_value: str = 'cell'
+    nucleus_value: str = 'nucleus'
+
+
 # TODO: Add description
 @dataclass
 class StandardTranscriptFields:

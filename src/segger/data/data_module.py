@@ -20,6 +20,7 @@ from .tile_dataset import (
     TilePredictDataset, 
     DynamicBatchSamplerPatch
 )
+from ..io.preprocessor import StandardPreprocessor
 from ..io import (
     StandardTranscriptFields,
     StandardBoundaryFields, 
@@ -82,8 +83,11 @@ class ISTDataModule(LightningDataModule):
 
     Parameters
     ----------
-    input_directory : Path
+    input_directory : Path or None
         Path to the standardized IST dataset directory.
+    platform : str or None, default=None
+        Input platform (e.g. "10x_xenium", "standard"). Inferred from the
+        input directory if None.
     num_workers : int, default=8
         Number of workers for DataLoader processes.
     cells_representation_mode : {"pca", "morphology"}, default="pca"
@@ -132,8 +136,14 @@ class ISTDataModule(LightningDataModule):
         Optional reference AnnData object used to compute gene-gene correlation features.
     gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
         Strategy for handling genes present in the data but missing from the reference.
+    transcripts : pl.DataFrame or None, default=None
+        In-memory transcripts in the standard input format, used with
+        `boundaries` instead of `input_directory` (which is then None).
+    boundaries : gpd.GeoDataFrame or None, default=None
+        In-memory boundaries in the standard input format.
     """
-    input_directory: Path
+    input_directory: Path | None
+    platform: str | None = None
     num_workers: int = 8
     cells_representation_mode: Literal["pca", "morphology"] = "pca"
     cells_embedding_size: int | None = 128
@@ -160,6 +170,8 @@ class ISTDataModule(LightningDataModule):
     gene_corr_reference_path: Path | None = None
     gene_missing_strategy: Literal["error", "remove", "fill"] = "error"
     debug_dir: Path | None = None
+    transcripts: "pl.DataFrame | None" = None
+    boundaries: "gpd.GeoDataFrame | None" = None
     
     def __post_init__(self):
         """TODO: Description
@@ -173,7 +185,7 @@ class ISTDataModule(LightningDataModule):
             self.debug_dir.mkdir(exist_ok=True, parents=True)
         
         # load data
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["transcripts", "boundaries"])
         self.load()
 
     def load(self):
@@ -185,9 +197,24 @@ class ISTDataModule(LightningDataModule):
 
         # Load standardized IST data
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
-        pp = get_preprocessor(self.input_directory)
+        if self.transcripts is not None and self.boundaries is not None:
+            pp = StandardPreprocessor.from_data(self.transcripts, self.boundaries)
+            self.transcripts = self.boundaries = None  # keep a single copy (pp)
+        else:
+            pp = get_preprocessor(self.input_directory, platform=self.platform)
         tx = self.tx = pp.transcripts
         bd = self.bd = pp.boundaries
+
+        # Fall back to cell mode when the data has no nucleus information
+        if self.segmentation_graph_mode == "nucleus":
+            has_nuclear_tx = (tx[tx_fields.compartment] == tx_fields.nucleus_value).any()
+            has_nuclei = (bd[bd_fields.boundary_type] == bd_fields.nucleus_value).any()
+            if not (has_nuclear_tx and has_nuclei):
+                self.logger.warning(
+                    "No nucleus information found in the input data; "
+                    "falling back to segmentation_graph_mode='cell'."
+                )
+                self.segmentation_graph_mode = "cell"
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":

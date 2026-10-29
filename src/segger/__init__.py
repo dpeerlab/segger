@@ -55,3 +55,5 @@ def free_mem_str() -> str:
 
 def print_free_mem():
     print(free_mem_str())
+
+from .api import segment

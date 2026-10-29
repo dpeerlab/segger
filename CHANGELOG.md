@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `standard` input format for data prepared by other tools (e.g. Sopa): a directory
+  with `transcripts.parquet` and `boundaries.parquet`, used as-is with no
+  platform-specific filtering.
+- `segger segment --platform` to choose the input format instead of auto-detecting it.
+- `segger.segment()` Python function: runs segmentation on in-memory transcripts and
+  boundaries (or a directory) and returns the per-transcript assignment table.
+
+### Changed
+- If the input has no nucleus information, `segmentation_mode="nucleus"` falls back to
+  `"cell"` with a warning.
+
 ## [0.4.0] - 2026-09-18
 
 ### Changed
