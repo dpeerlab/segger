@@ -1226,33 +1226,65 @@ class StandardPreprocessor(ISTPreprocessor):
     tx_fields = SopaTranscriptFields()
     bd_fields = SopaBoundaryFields()
 
+    # In-memory inputs (see `from_data`); None when reading from `data_dir`
+    _tx_data: pl.DataFrame | None = None
+    _bd_data: gpd.GeoDataFrame | None = None
+
+    @classmethod
+    def from_data(
+        cls,
+        transcripts: pl.DataFrame | pd.DataFrame,
+        boundaries: gpd.GeoDataFrame,
+    ) -> "StandardPreprocessor":
+        """
+        Build a preprocessor from in-memory transcripts and boundaries
+        instead of a data directory. Both use the same columns as the files.
+        """
+        if isinstance(transcripts, pd.DataFrame):
+            transcripts = pl.from_pandas(transcripts)
+        cls._check_columns(transcripts.columns, boundaries.columns)
+        self = cls.__new__(cls)
+        self.data_dir = None
+        self._tx_data = transcripts
+        self._bd_data = boundaries
+        return self
+
+    @classmethod
+    def _check_columns(cls, tx_columns, bd_columns, tx_name="transcripts", bd_name="boundaries"):
+        tx_fields, bd_fields = cls.tx_fields, cls.bd_fields
+        missing = {tx_fields.x, tx_fields.y, tx_fields.feature, tx_fields.cell_id}
+        missing -= set(tx_columns)
+        if missing:
+            raise IOError(f"'{tx_name}' is missing columns: {sorted(missing)}.")
+        missing = {bd_fields.id, bd_fields.boundary_type} - set(bd_columns)
+        if missing:
+            raise IOError(f"'{bd_name}' is missing columns: {sorted(missing)}.")
+
     @classmethod
     def _validate_directory(cls, data_dir: Path):
-        tx_fields, bd_fields = cls.tx_fields, cls.bd_fields
-        tx_path = data_dir / tx_fields.filename
-        bd_path = data_dir / bd_fields.filename
+        tx_path = data_dir / cls.tx_fields.filename
+        bd_path = data_dir / cls.bd_fields.filename
         for path in [tx_path, bd_path]:
             if not path.is_file():
                 raise IOError(f"Standard input directory must contain '{path.name}'.")
 
         # Check columns so other platforms with a transcripts.parquet don't match
-        tx_columns = _lazyframe_column_names(pl.scan_parquet(tx_path))
-        missing = {tx_fields.x, tx_fields.y, tx_fields.feature, tx_fields.cell_id}
-        missing -= set(tx_columns)
-        if missing:
-            raise IOError(f"'{tx_path.name}' is missing columns: {sorted(missing)}.")
-
-        bd_columns = pq.read_schema(bd_path).names
-        missing = {bd_fields.id, bd_fields.boundary_type} - set(bd_columns)
-        if missing:
-            raise IOError(f"'{bd_path.name}' is missing columns: {sorted(missing)}.")
+        cls._check_columns(
+            _lazyframe_column_names(pl.scan_parquet(tx_path)),
+            pq.read_schema(bd_path).names,
+            tx_path.name,
+            bd_path.name,
+        )
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
         raw = self.tx_fields
         std = StandardTranscriptFields()
 
-        lf = pl.scan_parquet(self.data_dir / raw.filename, parallel='row_groups')
+        if self._tx_data is not None:
+            lf = self._tx_data.lazy()
+        else:
+            lf = pl.scan_parquet(self.data_dir / raw.filename, parallel='row_groups')
         has_compartment = raw.compartment in _lazyframe_column_names(lf)
 
         # Standardize cell IDs (null_cell_id means unassigned)
@@ -1292,7 +1324,11 @@ class StandardPreprocessor(ISTPreprocessor):
         raw = self.bd_fields
         std = StandardBoundaryFields()
 
-        bd = gpd.read_parquet(self.data_dir / raw.filename)
+        if self._bd_data is not None:
+            bd = self._bd_data
+        else:
+            bd = gpd.read_parquet(self.data_dir / raw.filename)
+        # rename() returns a copy, so the caller's data is never modified
         bd = bd.rename(columns={raw.id: std.id, raw.boundary_type: std.boundary_type})
         bd[std.boundary_type] = bd[std.boundary_type].map({
             raw.cell_value: std.cell_value,

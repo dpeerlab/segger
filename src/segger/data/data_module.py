@@ -20,6 +20,7 @@ from .tile_dataset import (
     TilePredictDataset, 
     DynamicBatchSamplerPatch
 )
+from ..io.preprocessor import StandardPreprocessor
 from ..io import (
     StandardTranscriptFields,
     StandardBoundaryFields, 
@@ -82,7 +83,7 @@ class ISTDataModule(LightningDataModule):
 
     Parameters
     ----------
-    input_directory : Path
+    input_directory : Path or None
         Path to the standardized IST dataset directory.
     platform : str or None, default=None
         Input platform (e.g. "10x_xenium", "standard"). Inferred from the
@@ -141,8 +142,13 @@ class ISTDataModule(LightningDataModule):
         Optional reference AnnData object used to compute gene-gene correlation features.
     gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
         Strategy for handling genes present in the data but missing from the reference.
+    transcripts : pl.DataFrame or None, default=None
+        In-memory transcripts in the standard input format, used with
+        `boundaries` instead of `input_directory` (which is then None).
+    boundaries : gpd.GeoDataFrame or None, default=None
+        In-memory boundaries in the standard input format.
     """
-    input_directory: Path
+    input_directory: Path | None
     platform: str | None = None
     num_workers: int = 8
     cells_representation_mode: Literal["pca", "morphology"] = "pca"
@@ -172,6 +178,8 @@ class ISTDataModule(LightningDataModule):
     gene_corr_reference_path: Path | None = None
     gene_missing_strategy: Literal["error", "remove", "fill"] = "error"
     debug_dir: Path | None = None
+    transcripts: "pl.DataFrame | None" = None
+    boundaries: "gpd.GeoDataFrame | None" = None
     
     def __post_init__(self):
         """TODO: Description
@@ -185,7 +193,7 @@ class ISTDataModule(LightningDataModule):
             self.debug_dir.mkdir(exist_ok=True, parents=True)
         
         # load data
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["transcripts", "boundaries"])
         self.load()
 
     def load(self):
@@ -197,12 +205,16 @@ class ISTDataModule(LightningDataModule):
 
         # Load standardized IST data
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
-        pp = get_preprocessor(
-            self.input_directory,
-            platform=self.platform,
-            transcript_field_overrides=self.transcript_field_overrides,
-            boundary_field_overrides=self.boundary_field_overrides,
-        )
+        if self.transcripts is not None and self.boundaries is not None:
+            pp = StandardPreprocessor.from_data(self.transcripts, self.boundaries)
+            self.transcripts = self.boundaries = None  # keep a single copy (pp)
+        else:
+            pp = get_preprocessor(
+                self.input_directory,
+                platform=self.platform,
+                transcript_field_overrides=self.transcript_field_overrides,
+                boundary_field_overrides=self.boundary_field_overrides,
+            )
         tx = self.tx = pp.transcripts
         bd = pp.boundaries
 
