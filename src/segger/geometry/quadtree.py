@@ -43,7 +43,8 @@ def quadtree_leaf_bounds(
     -------
     np.ndarray
         Leaf bounds of shape (K, 4) as (x_min, y_min, x_max, y_max). The
-        leaves partition the padded extent exactly.
+        leaves partition the padded data extent exactly; boundary leaves
+        are clipped to it and may be non-square.
     """
     from fastquadtree import QuadTree
 
@@ -51,7 +52,9 @@ def quadtree_leaf_bounds(
     x_min, y_min = (positions.amin(0).double() - margin_bounds).tolist()
     x_max, y_max = (positions.amax(0).double() + margin_bounds).tolist()
 
-    # square root box so every node is square, as with the cuSpatial quadtree
+    # square root box so every node is square, as with the cuSpatial quadtree;
+    # leaves are clipped back to the data extent below
+    extent = (x_min, y_min, x_max, y_max)
     side = max(x_max - x_min, y_max - y_min)
     x_max, y_max = x_min + side, y_min + side
 
@@ -89,6 +92,11 @@ def quadtree_leaf_bounds(
     _, first = np.unique(nodes[:, :2], axis=0, return_index=True)
     leaves = nodes[first]
     smallest = float((leaves[:, 2] - leaves[:, 0]).min())
+
+    # clip to the data extent and drop leaves that lie entirely outside it
+    leaves[:, :2] = np.maximum(leaves[:, :2], extent[:2])
+    leaves[:, 2:] = np.minimum(leaves[:, 2:], extent[2:])
+    leaves = leaves[(leaves[:, 2] > leaves[:, 0]) & (leaves[:, 3] > leaves[:, 1])]
     if smallest < min_tile_size * (1 - 1e-6):
         logger.warning(
             f"Smallest quadtree tile is {smallest:.3g} µm, below "
