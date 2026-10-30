@@ -255,7 +255,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 tli = threshold_li_custom(arr, max_iter=250)
                 threshold = min(tye, tli)
             except StopIteration:
-                logger.debug(f"Failed to converge {feature[0]}. Will use 50% quantile of segger similarities of other genes as cutoff.")
+                logger.debug(f"Failed to converge {feature[0]}. Will use the median threshold of converged genes as cutoff.")
                 failed_to_converge.append(feature[0])
                 continue
 
@@ -268,8 +268,18 @@ class ISTSegmentationWriter(BasePredictionWriter):
         #  move from loop to after: ctx_hp 55.4s → 2.3s, pancreas 83.0s → 1.4s)
         gc.collect()
 
-        # backfill failed features in using the 80% quantile of thresholds
-        global_threshold = np.quantile([t["similarity_threshold"] for t in thresholds], .5)
+        # backfill failed features in using the 50% quantile of thresholds
+        if thresholds:
+            global_threshold = np.quantile([t["similarity_threshold"] for t in thresholds], .5)
+        else:
+            # no gene converged: fall back to the median similarity of all assigned transcripts
+            global_threshold = (
+                segmentation
+                .filter(pl.col('segger_cell_id').is_not_null())
+                ["segger_similarity"]
+                .median()
+            )
+            logger.warning("No gene threshold converged; using median similarity of assigned transcripts as cutoff.")
         for feature in failed_to_converge:
             thresholds.append({tx_fields.feature: feature, "similarity_threshold": global_threshold, "converged": False})
         logger.debug(f"Global Threshold: {global_threshold} | Used this to backfill {len(failed_to_converge)} features.")
