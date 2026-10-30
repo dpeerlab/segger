@@ -91,11 +91,12 @@ class LitISTEncoder(LightningModule):
                 f"{type(self.trainer.datamodule).__name__}."
             )
 
-        # Only set gene embeddings if exist in data module
-        if hasattr(self.trainer.datamodule, "gene_embedding"):
+        # Only set gene embeddings if exist in data module. Restrict to 'fit'
+        # so the trained embedding isn't overwritten before 'predict'.
+        if stage == "fit" and hasattr(self.trainer.datamodule, "tx_embedding"):
             tx_fields = StandardTranscriptFields()
             embedding_weights = (
-                self.trainer.datamodule.gene_embedding
+                self.trainer.datamodule.tx_embedding
                 .drop(tx_fields.feature)
                 .to_torch()
                 .to(torch.float)
