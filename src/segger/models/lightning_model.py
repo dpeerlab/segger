@@ -283,7 +283,7 @@ class LitISTEncoder(LightningModule):
             dim_size=batch['tx'].num_nodes,
         )
         # Filter by similarity
-        valid = max_idx < dst.shape[0]
+        valid = (max_idx >= 0) & (max_idx < dst.shape[0])
         if min_similarity is not None:
             valid &= max_sim >= min_similarity
 
