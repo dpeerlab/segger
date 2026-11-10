@@ -4,9 +4,22 @@ GNN-based cell segmentation of spatial transcriptomics data.
 
 ![segger overview](segger_overview.png)
 
-> The accurate assignment of transcripts to their cells of origin remains the Achilles heel of imaging-based spatial transcriptomics, despite being critical for nearly all downstream analyses. We introduce segger, a versatile graph neural network based on a heterogeneous graph representation of individual transcripts and cells, that frames cell segmentation as a transcript-to-cell link prediction task and can leverage single-cell RNA-seq information to improve transcript assignments. On multiple Xenium dataset benchmarks, segger exhibits superior sensitivity and specificity, while requiring orders of magnitude less compute time than existing methods.
+> Segger is a graph neural network (GNN)-based method that formulates cell segmentation in imaging-based spatial transcriptomics (iST) as a problem of transcript–cell assignment. Rather than relying solely on geometric proximity, Segger assumes that a transcript belongs to a cell if it is consistent both with its local spatial context and with the gene expression programs that define cell identity, as captured in a shared latent representation.
 >
-> — [Heidari, Moorman, et al. (2025)](https://www.biorxiv.org/content/10.1101/2025.03.14.643160v1)
+> — [Heidari, Moorman, et al., segger methods description](segger_methods.pdf)
+
+> [!IMPORTANT]
+> **Latest cuspa-accelerated segger:** the version used for the manuscript, which scales to billion-transcript
+> whole-transcriptome datasets (e.g. Atera) using NVIDIA `cuspa`, is available as
+> [release **v0.4.0-manuscript**](https://github.com/dpeerlab/segger/releases/tag/v0.4.0-manuscript).
+> It requires CUDA 13 and Python 3.13 and is **not yet stable**. To install it:
+>
+> ```bash
+> git clone --branch v0.4.0-manuscript https://github.com/dpeerlab/segger.git && cd segger
+> pixi install   # or: conda env create -n segger -f environment.yml
+> ```
+>
+> The instructions below install the stable release on `main`.
 
 Full documentation - installation, quickstart, outputs, API reference, etc.:
 [segger-segmentation.readthedocs.io](https://segger-segmentation.readthedocs.io/en/latest/)
@@ -42,20 +55,20 @@ See [notebooks/quickstart.ipynb](notebooks/quickstart.ipynb) for an end-to-end w
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Preprint
+## Methods description
 
-[Heidari, E., Moorman, A., et al. Segger: Fast and accurate cell segmentation of imaging-based spatial transcriptomics data. *bioRxiv* (2025).](https://www.biorxiv.org/content/10.1101/2025.03.14.643160v1.full.pdf)
+[Heidari, E., Moorman, A., et al. Segger: Fast and accurate cell segmentation of imaging-based spatial transcriptomics data. Methods description (2026).](segger_methods.pdf)
 
 ## Citation
 
 If you use segger in your research, please cite:
 
 ```bibtex
-@article{heidari2025segger,
+@misc{heidari2026segger,
   title={Segger: Fast and accurate cell segmentation of imaging-based spatial transcriptomics data},
   author={Heidari, Elyas and Moorman, Andrew and others},
-  journal={bioRxiv},
-  year={2025},
-  doi={10.1101/2025.03.14.643160}
+  note={Methods description},
+  year={2026},
+  howpublished={\url{https://github.com/dpeerlab/segger/blob/main/segger_methods.pdf}}
 }
 ```
