@@ -182,7 +182,7 @@ def setup_anndata(
     ad.obs = obs.reset_index(names=bd_fields.id).set_index(bd_fields.index, verify_integrity=True)
 
     # Explicitly sort indices for reproducibility
-    ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()]
+    ad = ad[ad.obs.index.sort_values(), ad.var.index.sort_values()].copy()
 
     # Normalise data
     def _normalise(adata: sc.AnnData) -> sc.AnnData:
@@ -190,7 +190,7 @@ def setup_anndata(
         adata.obs.loc[:, "filtered"] = adata.obs["n_counts"].ge(cells_min_counts)
         adata.layers["norm"] = adata.X.copy()
         target_sum = adata.obs.loc[adata.obs["filtered"], "n_counts"].median()
-        sc.pp.normalize_total(adata, target_sum=target_sum, layer="norm")
+        sc.pp.normalize_total(adata, target_sum=target_sum, use="layers.norm")
         return adata
 
     # Select genes passing the count threshold
@@ -227,7 +227,7 @@ def setup_anndata(
                 raise ValueError(f"Unknown gene_missing_strategy: {gene_missing_strategy}. Choose from 'error', 'remove', or 'fill'.")
 
     # Filter genes and normalise
-    ad = _normalise(ad[:, gene_mask])
+    ad = _normalise(ad[:, gene_mask].copy())
 
     # Prepare reference
     if gene_corr_reference is not None:

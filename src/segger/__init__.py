@@ -1,6 +1,10 @@
 import logging
 import os
+import warnings
 from pathlib import Path
+
+# torch_geometric uses torch.jit. issue here: https://github.com/pyg-team/pytorch_geometric/issues/10697
+warnings.filterwarnings("ignore", message=".*torch.jit.script.*is deprecated", category=FutureWarning)
 
 import cupy as cp
 import torch
