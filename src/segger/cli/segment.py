@@ -60,6 +60,16 @@ group_loss = Group(
 
 app_segment = App(name="segment", help="Run cell segmentation on spatial transcriptomics data.")
 
+
+def _validate_output_directory(type_, value: Path):
+    """Allow a missing output directory as long as its parent exists."""
+    value = Path(value)
+    if value.exists() and not value.is_dir():
+        raise ValueError(f"Output path exists but is not a directory: {value}")
+    if not value.parent.is_dir():
+        raise ValueError(f"Parent of output directory does not exist: {value.parent}")
+
+
 @app_segment.command(name="segment")
 def segment(
     # I/O
@@ -74,9 +84,33 @@ def segment(
         "output_directory",
         alias="-o",
         group=group_io,
-        validator=validators.Path(exists=True, dir_okay=True),
+        validator=_validate_output_directory,
     )] = registry.get_default("output_directory"),
-    
+
+    transcripts_cell_id: Annotated[str | None, Parameter(
+        help="Column in the transcripts file with cell assignments (e.g. a "
+             "custom segmentation column). Defaults to the platform default.",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    cells_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom cell boundaries file to use. The file must "
+             "contain a list of x/y vertices for each cell (e.g. Xenium's "
+             "cell_boundaries.parquet file). Defaults to the platform default.",
+        group=group_io,
+        required=False,
+    )] = None,
+
+    nucleus_boundaries_file: Annotated[str | None, Parameter(
+        help="Filename of a custom nucleus boundaries file to use. The file "
+             "must contain a list of x/y vertices for each nucleus (e.g. "
+             "Xenium's nucleus_boundaries.parquet file). Defaults to the "
+             "platform default.",
+        group=group_io,
+        required=False,
+    )] = None,
+
     # Cell Representation
     node_representation_dim: Annotated[int, Parameter(
         help="Number of dimensions used to represent each node type.",
@@ -150,6 +184,13 @@ def segment(
         group=group_transcripts_graph,
     )] = registry.get_default("transcripts_graph_max_dist"),
 
+
+    # Segmentation (Reference) Graph
+    segmentation_mode: Annotated[Literal["nucleus", "cell"], Parameter(
+        help="Segmentation used as the reference for training edges: "
+             "'nucleus' or 'cell'.",
+        group=group_prediction,
+    )] = "nucleus",
 
     # Segmentation (Prediction) Graph
     segmentation_mode: Annotated[
@@ -325,6 +366,9 @@ def segment(
     setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"), debug=debug)
     logger = logging.getLogger(__name__)
 
+    # Validator guarantees the parent exists; only create the last level
+    Path(output_directory).mkdir(exist_ok=True)
+
     debug_dir = None
     if debug:
         import json
@@ -344,8 +388,15 @@ def segment(
     # Setup Lightning Data Module
     logger.debug(f"Setting up ISTDataModule | Input Directory: '{input_directory}'")
     from ..data import ISTDataModule
+    boundary_field_overrides = {}
+    if cells_boundaries_file:
+        boundary_field_overrides['cell_filename'] = cells_boundaries_file
+    if nucleus_boundaries_file:
+        boundary_field_overrides['nucleus_filename'] = nucleus_boundaries_file
     datamodule = ISTDataModule(
         input_directory=input_directory,
+        transcript_field_overrides={'cell_id': transcripts_cell_id} if transcripts_cell_id else None,
+        boundary_field_overrides=boundary_field_overrides or None,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,

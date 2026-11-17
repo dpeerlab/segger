@@ -1,27 +1,38 @@
 # Changelog
 
-## [0.4.0] - 2026-09-18
+## [0.3.1] - 2026-10-14
+
+Bugfixes and reader updates for the CUDA 12 install, released before the 0.4.0 move to
+CUDA 13.
+
+### Added
+- `MerscopePreprocessor` reads Vizgen MERSCOPE datasets: `detected_transcripts.csv` or
+  `transcripts.parquet`, cell/nucleus assignments, and cell/nucleus boundary parquets (#60).
+- `CosMXPreprocessor` reads real NanoString CosMX exports: CSV or parquet transcripts,
+  columns resolved by candidate names, and cell/nucleus polygons from masks (#63).
+- `segger segment` options `--transcripts-cell-id`, `--cells-boundaries-file` and
+  `--nucleus-boundaries-file` for a custom cell-assignment column and boundary files (#98).
+- `--segmentation-mode {nucleus,cell}` on `segger segment` selects the
+  segmentation used for training edges (#98).
+- `imagecodecs` dependency for LZW-compressed TIFFs (#99).
 
 ### Changed
-- cuSpatial is replaced by `cuspa` for point-in-polygon joins and by `fastquadtree`
-  for quadtree tiling.
-- CUDA 13 / Python 3.13 is the only supported install path; the cuda121 environment
-  is gone.
-- `torch_scatter.scatter_max` is replaced by native `torch.scatter_reduce`.
-- Quadtree construction subsamples on the source device, so only the sampled points
-  are transferred to host memory, and the root extent is taken from all points.
-- Type hints are explicit throughout the codebase.
-- Installation docs rewritten for the CUDA 13 path; CUDA 12 users are pointed at the
-  `v0.3.0` release.
+- `segger segment` creates the output directory if it's missing. Its parent must exist.
 
 ### Fixed
-- RAPIDS dependencies carry a `>=26` floor; without it `uv` could resolve them to
-  NVIDIA's empty `0.0.0a0` placeholder wheels and the install would silently lack `cudf`.
+- Spatialdata export, which broke in 0.3.0 (#95).
+- Export treats a missing `converged` column as True, so outputs from older versions still
+  export (#95).
+- `segger segment` drops cells without a matching boundary, and their transcripts, with a
+  warning instead of failing an assert (#99).
+- MultiPolygons and polygons with holes are reduced to the largest part's exterior ring
+  before conversion (#99).
+- `edge_index` is cast to int64 for all edge types, so uint32 indices from cudf/cuspatial
+  no longer break partitioning (#99).
 
-Thanks to Severin Dicks (@Intron7) for developing `cuspa`, packaging an early build for
-segger, and working closely with us to resolve issues and test the integration.
+Thanks to @EliHei2 for the MERSCOPE and CosMX readers.
 
-[0.4.0]: https://github.com/dpeerlab/segger/releases/tag/v0.4.0
+[0.3.1]: https://github.com/dpeerlab/segger/releases/tag/v0.3.1
 
 ## [0.3.0] - 2026-09-15
 

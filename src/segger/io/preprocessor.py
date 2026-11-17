@@ -1,6 +1,7 @@
 from pandas.errors import DtypeWarning
 from functools import cached_property
 from abc import ABC, abstractmethod
+from dataclasses import replace as dc_replace
 from anndata import AnnData
 from typing import Callable, Literal
 from pathlib import Path
@@ -148,22 +149,62 @@ class ISTPreprocessor(ABC):
     transcript and boundary GeoDataFrames for the given platform.
     """
 
-    def __init__(self, data_dir: Path):
+    def __init__(
+        self,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
         """
         Parameters
         ----------
         data_dir : Path
             Path to the raw data directory for the spatial platform.
+        transcript_field_overrides : dict or None
+            Overrides applied to the platform's TranscriptFields dataclass.
+            Keys must be valid field names (e.g. ``{'cell_id': 'my_col'}``).
+        boundary_field_overrides : dict or None
+            Overrides applied to the platform's BoundaryFields dataclass.
+            Keys must be valid field names (e.g.
+            ``{'cell_filename': 'my_file.parquet'}``).
         """
         data_dir = Path(data_dir)
-        type(self)._validate_directory(data_dir)
+        type(self)._validate_directory(
+            data_dir,
+            transcript_field_overrides=transcript_field_overrides,
+            boundary_field_overrides=boundary_field_overrides,
+        )
         self.data_dir = data_dir
+        self.tx_fields, self.bd_fields = self._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
 
-    @staticmethod
-    @abstractmethod
-    def _validate_directory(data_dir: Path):
+    @classmethod
+    def _resolve_fields(
+        cls,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ) -> tuple:
         """
-        Check that all required files/directories are present in `data_dir`.
+        Return the platform's transcript and boundary fields with overrides applied.
+        """
+        return (
+            dc_replace(cls.tx_fields, **(transcript_field_overrides or {})),
+            dc_replace(cls.bd_fields, **(boundary_field_overrides or {})),
+        )
+
+    @classmethod
+    @abstractmethod
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
+        """
+        Check that all required files/directories are present in `data_dir`,
+        respecting any transcript/boundary field overrides (e.g. custom
+        filenames).
         """
         ...
 
@@ -315,95 +356,277 @@ class CosMXPreprocessor(ISTPreprocessor):
     """
     Preprocessor for NanoString CosMX datasets.
     """
-    @staticmethod
-    def _validate_directory(data_dir: Path):
 
-        # Check required files/directories
-        bd_fields = CosMxBoundaryFields()
-        tx_fields = CosMxTranscriptFields()
-        for pat in [
-            tx_fields.filename,
-            bd_fields.compartment_labels_dirname,
-            bd_fields.cell_labels_dirname,
-            bd_fields.fov_positions_filename,
-        ]:
-            num_matches = len(list(data_dir.glob(pat)))
-            if not num_matches == 1:
+    tx_fields = CosMxTranscriptFields()
+    bd_fields = CosMxBoundaryFields()
+
+    @staticmethod
+    def _assignment_candidates(raw: CosMxTranscriptFields) -> list[str]:
+        return [
+            raw.cell_id,
+            "cell_id",
+            "cell_ID",
+            "EntityID",
+            "entity_id",
+            "nucleus_boundaries_id",
+            "cell_boundaries_id",
+        ]
+
+    @staticmethod
+    def _has_mask_inputs(data_dir: Path, bd_fields: CosMxBoundaryFields) -> bool:
+        return (
+            len(list(data_dir.glob(bd_fields.compartment_labels_dirname))) == 1
+            and len(list(data_dir.glob(bd_fields.cell_labels_dirname))) == 1
+            and len(list(data_dir.glob(bd_fields.fov_positions_filename))) == 1
+        )
+
+    @staticmethod
+    def _has_native_schema(columns: list[str] | set[str], raw: CosMxTranscriptFields) -> bool:
+        return {raw.x, raw.y, raw.feature}.issubset(set(columns))
+
+    @classmethod
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
+
+        tx_fields, bd_fields = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
+        tx_path = cls._resolve_transcripts_path(data_dir, tx_fields)
+        tx_columns = _lazyframe_column_names(
+            cls._scan_transcripts_file(tx_path)
+        )
+
+        # Keep auto-inference strict: only match CosMX when native markers exist.
+        has_native_file = len(list(data_dir.glob(tx_fields.filename))) == 1
+        has_native_schema = cls._has_native_schema(tx_columns, tx_fields)
+        has_native_masks = cls._has_mask_inputs(data_dir, bd_fields)
+        if not (has_native_file or has_native_schema or has_native_masks):
+            raise IOError(
+                "Directory does not look like a CosMX output layout "
+                "(missing native transcript schema and mask markers)."
+            )
+
+        x_col = _first_existing(
+            tx_columns,
+            [tx_fields.x, "x", "x_location", "global_x"],
+        )
+        y_col = _first_existing(
+            tx_columns,
+            [tx_fields.y, "y", "y_location", "global_y"],
+        )
+        feature_col = _first_existing(
+            tx_columns,
+            [tx_fields.feature, "feature_name", "gene"],
+        )
+        assignment_col = _first_existing(
+            tx_columns,
+            cls._assignment_candidates(tx_fields),
+        )
+
+        if x_col is None or y_col is None or feature_col is None or assignment_col is None:
+            missing_tx_columns: list[str] = []
+            if x_col is None:
+                missing_tx_columns.append("x")
+            if y_col is None:
+                missing_tx_columns.append("y")
+            if feature_col is None:
+                missing_tx_columns.append("feature")
+            if assignment_col is None:
+                missing_tx_columns.append("cell_or_nucleus_assignment")
+            raise IOError(
+                f"CosMx transcripts file '{tx_path.name}' is missing minimum usable columns "
+                f"{missing_tx_columns}."
+            )
+
+    @staticmethod
+    def _resolve_transcripts_path(data_dir: Path, tx_fields: CosMxTranscriptFields) -> Path:
+        matches_by_pattern: dict[str, list[Path]] = {}
+        for pattern in (tx_fields.filename, tx_fields.fallback_filename):
+            matches = sorted(data_dir.glob(pattern))
+            if len(matches) > 1:
                 raise IOError(
-                    f"CosMx sample directory must contain exactly 1 file or "
-                    f"directory matching {pat}, but found {num_matches}."
+                    f"CosMx sample directory must contain at most one file "
+                    f"matching '{pattern}', but found {len(matches)}."
                 )
+            matches_by_pattern[pattern] = matches
+
+        primary = matches_by_pattern[tx_fields.filename]
+        fallback = matches_by_pattern[tx_fields.fallback_filename]
+        if len(primary) == 1:
+            return primary[0]
+        if len(fallback) == 1:
+            return fallback[0]
+        raise IOError(
+            "CosMx sample directory must contain either "
+            f"'{tx_fields.filename}' or '{tx_fields.fallback_filename}'."
+        )
+
+    @staticmethod
+    def _scan_transcripts_file(path: Path) -> pl.LazyFrame:
+        if path.suffix.lower() == ".csv":
+            return pl.scan_csv(path)
+        if path.suffix.lower() == ".parquet":
+            return pl.scan_parquet(path, parallel="row_groups")
+        raise ValueError(f"Unsupported CosMx transcript file format: {path}")
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
 
-        # Field names
-        raw = CosMxTranscriptFields()
+        raw = self.tx_fields
         std = StandardTranscriptFields()
 
-        return (
-            # Read in lazily
-            pl.scan_csv(next(self.data_dir.glob(raw.filename)))
-            .with_row_index(name=std.row_index)
-            # Filter data
-            .filter(pl.col(raw.feature).str.contains(
-                '|'.join(raw.filter_substrings)).not_()
+        source_path = self._resolve_transcripts_path(self.data_dir, raw)
+        lf = self._scan_transcripts_file(source_path).with_row_index(name=std.row_index)
+        columns = _lazyframe_column_names(lf)
+
+        x_col = _first_existing(columns, [raw.x, "x", "x_location", "global_x"])
+        y_col = _first_existing(columns, [raw.y, "y", "y_location", "global_y"])
+        feature_col = _first_existing(columns, [raw.feature, "feature_name", "gene"])
+        assignment_col = _first_existing(columns, self._assignment_candidates(raw))
+        compartment_col = _first_existing(columns, [raw.compartment, "cell_compartment", "compartment"])
+
+        if x_col is None or y_col is None or feature_col is None or assignment_col is None:
+            raise ValueError(
+                "CosMx transcripts require minimum usable data columns: "
+                "x, y, feature, and cell/nucleus assignment."
             )
-            # Standardize compartment labels
-            .with_columns(
-                pl.col(raw.compartment)
-                .replace_strict(
-                    {
-                        raw.nucleus_value: std.nucleus_value,
-                        raw.membrane_value: std.cytoplasmic_value,
-                        raw.cytoplasmic_value: std.cytoplasmic_value,
-                        raw.extracellular_value: std.extracellular_value,
-                        None: std.extracellular_value,
-                    },
-                    return_dtype=pl.Int8,
+
+        if (
+            x_col != raw.x
+            or y_col != raw.y
+            or feature_col != raw.feature
+            or assignment_col != raw.cell_id
+        ):
+            warnings.warn(
+                "CosMx transcripts are being parsed in compatibility mode "
+                f"(x='{x_col}', y='{y_col}', feature='{feature_col}', assignment='{assignment_col}')."
+            )
+
+        # Filter technical controls when feature labels look CosMx-like.
+        lf = lf.filter(
+            pl.col(feature_col).str.contains("|".join(raw.filter_substrings)).not_()
+        )
+
+        assignment_expr = _clean_assignment_expr(assignment_col)
+        if compartment_col is not None:
+            compartment_raw = pl.col(compartment_col).cast(pl.String, strict=False).str.strip_chars()
+            compartment_lower = compartment_raw.str.to_lowercase()
+            compartment_expr = (
+                pl.when(
+                    compartment_raw == raw.nucleus_value
                 )
+                .then(std.nucleus_value)
+                .when(
+                    compartment_lower == "nucleus"
+                )
+                .then(std.nucleus_value)
+                .when(
+                    compartment_lower == "nuclear"
+                )
+                .then(std.nucleus_value)
+                .when(
+                    compartment_raw.is_in(
+                        [raw.membrane_value, raw.cytoplasmic_value]
+                    ).fill_null(False)
+                )
+                .then(std.cytoplasmic_value)
+                .when(
+                    compartment_lower.is_in(["cytoplasm", "cytoplasmic", "membrane"]).fill_null(False)
+                )
+                .then(std.cytoplasmic_value)
+                .otherwise(std.extracellular_value)
                 .alias(std.compartment)
             )
-            # Standardize cell IDs
+        else:
+            warnings.warn(
+                "CosMx transcripts have no compartment column. Using assignment-only "
+                "compartment fallback."
+            )
+            compartment_expr = (
+                pl.when(assignment_expr.is_not_null())
+                .then(std.cytoplasmic_value)
+                .otherwise(std.extracellular_value)
+                .alias(std.compartment)
+            )
+
+        cell_id_expr = assignment_expr
+        lf = (
+            lf
+            .with_columns(compartment_expr)
             .with_columns(
                 pl.when(pl.col(std.compartment) != std.extracellular_value)
-                .then(pl.col(raw.cell_id))
+                .then(cell_id_expr)
                 .otherwise(None)
                 .alias(std.cell_id)
             )
-            # Map to standard field names
-            .rename({raw.x: std.x, raw.y: std.y, raw.feature: std.feature})
-            
-            # Subset to necessary fields 
-            .select([std.row_index, std.x, std.y, std.feature, std.cell_id, 
-                     std.compartment])
+        )
 
-            # Add numeric index
-            .with_row_index()
+        rename_map = {x_col: std.x, y_col: std.y, feature_col: std.feature}
+        select_cols = [std.row_index, std.x, std.y, std.feature, std.cell_id, std.compartment]
+
+        return (
+            lf
+            .rename(rename_map)
+            .select(select_cols)
             .collect()
         )
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        
-        # Field names
-        raw = CosMxBoundaryFields()
+        raw = self.bd_fields
         std = StandardBoundaryFields()
+        std_tx = StandardTranscriptFields()
 
-        # Join boundary datasets
-        cells = get_cosmx_polygons(self.data_dir, 'cell').reset_index(
-            drop=False, names=std.id)
-        cells = fix_invalid_geometry(cells)
-        cells[std.boundary_type] = std.cell_value
+        has_mask_inputs = self._has_mask_inputs(self.data_dir, raw)
 
-        nuclei = get_cosmx_polygons(self.data_dir, 'nucleus').reset_index(
-            drop=False, names=std.id)
-        nuclei = fix_invalid_geometry(nuclei)
-        nuclei[std.boundary_type] = std.nucleus_value
+        cells = _empty_boundaries()
+        nuclei = _empty_boundaries()
+        if has_mask_inputs:
+            try:
+                cells = get_cosmx_polygons(self.data_dir, "cell").reset_index(
+                    drop=False, names=std.id
+                )
+                cells = fix_invalid_geometry(cells)
+                cells[std.boundary_type] = std.cell_value
 
-        bd = pd.concat([cells, nuclei])
+                nuclei = get_cosmx_polygons(self.data_dir, "nucleus").reset_index(
+                    drop=False, names=std.id
+                )
+                nuclei = fix_invalid_geometry(nuclei)
+                nuclei[std.boundary_type] = std.nucleus_value
+            except Exception as exc:
+                warnings.warn(
+                    "CosMx boundary masks were found but could not be parsed. "
+                    f"Falling back to synthetic boundaries ({exc})."
+                )
+                cells = _empty_boundaries()
+                nuclei = _empty_boundaries()
 
-        # Add nucleus column
+        if len(cells) == 0 and len(nuclei) > 0:
+            cells = nuclei.copy()
+            cells[std.boundary_type] = std.cell_value
+        if len(nuclei) == 0 and len(cells) > 0:
+            nuclei = cells.copy()
+            nuclei[std.boundary_type] = std.nucleus_value
+        if len(cells) == 0 and len(nuclei) == 0:
+            raise ValueError(
+                "Could not construct CosMx boundaries. Minimum usable transcripts "
+                "must include x/y plus cell or nucleus assignment."
+            )
+
+        bd = pd.concat(
+            [
+                cells.reset_index(drop=False, names=std.id),
+                nuclei.reset_index(drop=False, names=std.id),
+            ],
+            ignore_index=True,
+        )
+        bd[std.id] = bd[std.id].astype(str)
+
         bd[std.contains_nucleus] = bd[std.id].map(
             pl.from_pandas(bd[[std.id, std.boundary_type]])
             .group_by(std.id)
@@ -412,11 +635,7 @@ class CosMXPreprocessor(ISTPreprocessor):
             .set_index(std.id)
             .get(std.boundary_type)
         )
-        # Convert index to string type (to join on AnnData)
-        bd.index = bd[std.id] + '_' + bd[std.boundary_type].map({
-            std.nucleus_value: '0',
-            std.cell_value: '1',
-        })
+        bd.index = _build_boundary_index(bd)
         return bd
     
     def _get_anndata(self, transcripts: gpd.GeoDataFrame, label: str) -> AnnData:
@@ -460,7 +679,12 @@ class XeniumPreprocessor(ISTPreprocessor):
         return version
 
     @classmethod
-    def _validate_directory(cls, data_dir: Path):
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
 
         # Apply xenium software version 2 or higher (when cell id "Unassigned" was introduced. Previously -1)
         version = XeniumPreprocessor._get_analysis_sw_version(data_dir)
@@ -469,12 +693,15 @@ class XeniumPreprocessor(ISTPreprocessor):
                 f"Xenium analysis software version must be 2.0.0 or higher, "
                 f"but found version {'.'.join(version)}."
             )
-        
+
         # Check required files/directories
+        tx_fields, bd_fields = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
         for pat in [
-            cls.tx_fields.filename,
-            cls.bd_fields.cell_filename,
-            cls.bd_fields.nucleus_filename,
+            tx_fields.filename,
+            bd_fields.cell_filename,
+            bd_fields.nucleus_filename,
         ]:
             num_matches = len(list(data_dir.glob(pat)))
             if not num_matches == 1:
@@ -535,16 +762,15 @@ class XeniumPreprocessor(ISTPreprocessor):
             .collect()
         )
 
-    @classmethod
     def _get_boundaries(
-        cls,
+        self,
         filepath: Path,
         boundary_type: str
     ) -> gpd.GeoDataFrame:
         # TODO: Add documentation
 
         # Field names
-        raw = cls.bd_fields
+        raw = self.bd_fields
         std = StandardBoundaryFields()
 
         # Read in flat vertices and convert to geometries
@@ -562,6 +788,7 @@ class XeniumPreprocessor(ISTPreprocessor):
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
         # TODO: Add documentation
+        # Field names
         raw = self.bd_fields
         std = StandardBoundaryFields()
 
@@ -620,9 +847,15 @@ class MerscopePreprocessor(ISTPreprocessor):
     Preprocessor for Vizgen MERSCOPE datasets.
     """
 
+    tx_fields = MerscopeTranscriptFields()
+    bd_fields = MerscopeBoundaryFields()
+
     @staticmethod
     def _cell_assignment_candidates(raw: MerscopeTranscriptFields) -> list[str]:
+        # a user-set cell_id takes precedence over the boundary-id column
+        custom = [raw.cell_id] if raw.cell_id != MerscopeTranscriptFields.cell_id else []
         return [
+            *custom,
             raw.cell_boundary_id,
             raw.cell_id,
             "cell",
@@ -641,19 +874,26 @@ class MerscopePreprocessor(ISTPreprocessor):
         ]
 
     @staticmethod
-    def _resolve_assignment_columns(columns: list[str] | set[str]) -> tuple[str | None, str | None]:
-        raw = MerscopeTranscriptFields()
+    def _resolve_assignment_columns(
+        columns: list[str] | set[str], raw: MerscopeTranscriptFields
+    ) -> tuple[str | None, str | None]:
         cell_col = _first_existing(columns, MerscopePreprocessor._cell_assignment_candidates(raw))
         nucleus_col = _first_existing(columns, MerscopePreprocessor._nucleus_assignment_candidates(raw))
         return cell_col, nucleus_col
 
-    @staticmethod
-    def _validate_directory(data_dir: Path):
-        raw_tx = MerscopeTranscriptFields()
-        raw_bd = MerscopeBoundaryFields()
+    @classmethod
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
+        raw_tx, raw_bd = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
 
-        tx_path = MerscopePreprocessor._resolve_transcripts_path(data_dir)
-        tx_lf = MerscopePreprocessor._scan_transcripts_file(tx_path)
+        tx_path = cls._resolve_transcripts_path(data_dir, raw_tx)
+        tx_lf = cls._scan_transcripts_file(tx_path)
         tx_columns = _lazyframe_column_names(tx_lf)
 
         # Keep auto-inference strict: only match MERSCOPE when native markers exist.
@@ -691,14 +931,14 @@ class MerscopePreprocessor(ISTPreprocessor):
             )
 
         if len(cell_boundary_matches) == 0 and len(nucleus_boundary_matches) == 0:
-            cell_assignment_col, nucleus_assignment_col = MerscopePreprocessor._resolve_assignment_columns(
-                tx_columns
+            cell_assignment_col, nucleus_assignment_col = cls._resolve_assignment_columns(
+                tx_columns, raw_tx
             )
             if cell_assignment_col is None and nucleus_assignment_col is None:
                 assignment_candidates = sorted(
                     {
-                        *MerscopePreprocessor._cell_assignment_candidates(raw_tx),
-                        *MerscopePreprocessor._nucleus_assignment_candidates(raw_tx),
+                        *cls._cell_assignment_candidates(raw_tx),
+                        *cls._nucleus_assignment_candidates(raw_tx),
                     }
                 )
                 raise IOError(
@@ -736,8 +976,7 @@ class MerscopePreprocessor(ISTPreprocessor):
                 )
 
     @staticmethod
-    def _resolve_transcripts_path(data_dir: Path) -> Path:
-        raw_tx = MerscopeTranscriptFields()
+    def _resolve_transcripts_path(data_dir: Path, raw_tx: MerscopeTranscriptFields) -> Path:
         matches_by_pattern: dict[str, list[Path]] = {}
         for pattern in (raw_tx.filename, raw_tx.fallback_filename):
             matches_by_pattern[pattern] = sorted(data_dir.glob(pattern))
@@ -799,10 +1038,10 @@ class MerscopePreprocessor(ISTPreprocessor):
 
     @cached_property
     def transcripts(self) -> pl.DataFrame:
-        raw = MerscopeTranscriptFields()
+        raw = self.tx_fields
         std = StandardTranscriptFields()
 
-        source_path = self._resolve_transcripts_path(self.data_dir)
+        source_path = self._resolve_transcripts_path(self.data_dir, raw)
         lf = self._scan_transcripts_file(source_path)
         columns = _lazyframe_column_names(lf)
 
@@ -816,7 +1055,7 @@ class MerscopePreprocessor(ISTPreprocessor):
                 f"Need x/y/feature; available columns: {columns}"
             )
 
-        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(columns)
+        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(columns, raw)
 
         if cell_assignment_col is not None:
             cell_id_expr = self._clean_id_expr(cell_assignment_col)
@@ -871,8 +1110,9 @@ class MerscopePreprocessor(ISTPreprocessor):
         return _empty_boundaries()
 
     @staticmethod
-    def _load_boundary_file(path: Path, boundary_type: str) -> gpd.GeoDataFrame:
-        raw = MerscopeBoundaryFields()
+    def _load_boundary_file(
+        path: Path, boundary_type: str, raw: MerscopeBoundaryFields
+    ) -> gpd.GeoDataFrame:
         std = StandardBoundaryFields()
 
         try:
@@ -919,22 +1159,24 @@ class MerscopePreprocessor(ISTPreprocessor):
 
     @cached_property
     def boundaries(self) -> gpd.GeoDataFrame:
-        raw_bd = MerscopeBoundaryFields()
+        raw_bd = self.bd_fields
         std = StandardBoundaryFields()
 
         cell_boundary_matches = sorted(self.data_dir.glob(raw_bd.cell_filename))
         nucleus_boundary_matches = sorted(self.data_dir.glob(raw_bd.nucleus_filename))
-        tx_path = self._resolve_transcripts_path(self.data_dir)
+        tx_path = self._resolve_transcripts_path(self.data_dir, self.tx_fields)
         tx_columns = _lazyframe_column_names(self._scan_transcripts_file(tx_path))
-        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(tx_columns)
+        cell_assignment_col, nucleus_assignment_col = self._resolve_assignment_columns(
+            tx_columns, self.tx_fields
+        )
 
         cells = (
-            self._load_boundary_file(cell_boundary_matches[0], std.cell_value)
+            self._load_boundary_file(cell_boundary_matches[0], std.cell_value, raw_bd)
             if len(cell_boundary_matches) == 1
             else self._empty_boundaries()
         )
         nuclei = (
-            self._load_boundary_file(nucleus_boundary_matches[0], std.nucleus_value)
+            self._load_boundary_file(nucleus_boundary_matches[0], std.nucleus_value, raw_bd)
             if len(nucleus_boundary_matches) == 1
             else self._empty_boundaries()
         )
@@ -970,12 +1212,20 @@ class MerscopePreprocessor(ISTPreprocessor):
         return bd
 
 
-def _infer_platform(data_dir: Path) -> str:
+def _infer_platform(
+    data_dir: Path,
+    transcript_field_overrides: dict | None = None,
+    boundary_field_overrides: dict | None = None,
+) -> str:
     matches = []
     exceptions = []
     for platform, preprocessor in PREPROCESSORS.items():
         try:
-            preprocessor._validate_directory(data_dir)
+            preprocessor._validate_directory(
+                data_dir,
+                transcript_field_overrides=transcript_field_overrides,
+                boundary_field_overrides=boundary_field_overrides,
+            )
             matches.append(platform)
         except Exception as e:
             exceptions.append(e)
@@ -995,15 +1245,25 @@ def _infer_platform(data_dir: Path) -> str:
 
 def get_preprocessor(
     data_dir: Path,
-    platform: str | None = None
+    platform: str | None = None,
+    transcript_field_overrides: dict | None = None,
+    boundary_field_overrides: dict | None = None,
 ) -> ISTPreprocessor:
     data_dir = Path(data_dir)
     if platform is None:
-        platform = _infer_platform(data_dir) 
+        platform = _infer_platform(
+            data_dir,
+            transcript_field_overrides=transcript_field_overrides,
+            boundary_field_overrides=boundary_field_overrides,
+        )
     if platform not in PREPROCESSORS:
         raise ValueError(
             f"Unknown platform: '{platform}'. "
             f"Available: {list(PREPROCESSORS)}"
         )
     cls = PREPROCESSORS[platform.lower()]
-    return cls(data_dir)
+    return cls(
+        data_dir,
+        transcript_field_overrides=transcript_field_overrides,
+        boundary_field_overrides=boundary_field_overrides,
+    )
