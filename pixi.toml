@@ -1,12 +1,9 @@
 [workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = [{ name = "linux-64", platform = "linux-64", cuda = "13" }]
 
 [dependencies]
 python = ">=3.13,<3.14"
-
-[system-requirements]
-cuda = "13"
 
 [pypi-options]
 index-strategy = "unsafe-best-match"

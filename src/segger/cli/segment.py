@@ -193,14 +193,6 @@ def segment(
     )] = "nucleus",
 
     # Segmentation (Prediction) Graph
-    segmentation_mode: Annotated[
-        Literal["nucleus", "cell"],
-        registry.get_parameter(
-            "segmentation_graph_mode",
-            group=group_prediction,
-        )
-    ] = registry.get_default("segmentation_graph_mode"),
-
     prediction_mode: Annotated[
         Literal["nucleus", "cell", "uniform"],
         registry.get_parameter(
