@@ -347,11 +347,6 @@ def segment(
     )] = registry.get_default("sg_weight_end"),
 
     # Reference
-    save_anndata: Annotated[bool, registry.get_parameter(
-        "save_anndata",
-        group=group_io,
-    )] = registry.get_default("save_anndata"),
-    
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = False,
@@ -449,7 +444,6 @@ def segment(
     csvlogger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(
         output_directory,
-        save_anndata=save_anndata,
         debug=debug,
     )
 
@@ -497,3 +491,24 @@ def segment(
     # Prediction
     logger.debug("Predicting segmentation")
     predictions = trainer.predict(model=model, datamodule=datamodule)
+
+    # Point to the export step
+    out = Path(output_directory).resolve()
+    seg = out / "segger_segmentation.parquet"
+    rule = "─" * 72
+    print(
+        f"\n\n{rule}\n"
+        f" Segmentation complete\n"
+        f"{rule}\n\n"
+        f" Outputs: {out}\n\n"
+        f" Export results into other formats with `segger export`:\n\n"
+        f"   • anndata (also for Sopa)\n\n"
+        f"       segger export anndata boundaries \\\n"
+        f"           -s {seg} \\\n"
+        f"           -o {out / 'export'}\n\n"
+        f"   • spatialdata\n\n"
+        f"       segger export spatialdata \\\n"
+        f"           -s {seg} \\\n"
+        f"           --sdata <path/to/sdata.zarr>\n\n"
+        f"{rule}\n"
+    )
