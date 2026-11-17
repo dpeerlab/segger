@@ -167,21 +167,29 @@ def _legacy_join(tx: pl.DataFrame, source_path: Optional[Path], std) -> pl.DataF
     return tx
 
 # -- XENIUMRANGER IMPORT-SEGMENTATION SUPPORT --
-def _build_xenium_transcript_csv(tx: "pl.DataFrame", source_path: Path) -> "pl.DataFrame":
+def _build_xenium_transcript_csv(tx: "pl.DataFrame", source_path: Path, cell_labels: dict) -> "pl.DataFrame":
     """Columns for `xeniumranger import-segmentation`: transcript_id,cell,is_noise
 
     `row_index` is the row position in the raw Xenium transcripts file, so the real
     `transcript_id` is joined back from `source_path`. Takes `tx` (not `assigned`) since
-    `filtered` is only kept there.
+    `filtered` is only kept there. `cell_labels` maps segger cell IDs to the xeniumranger
+    labels of cells with a polygon. A transcript is assigned if it is filtered and its cell has
+    a label; all others get an empty `cell` and `is_noise=true`.
     """
     from ..io.fields import XeniumTranscriptFields
 
     std = StandardTranscriptFields()
     ids = pl.read_parquet(source_path / XeniumTranscriptFields().filename, columns=["transcript_id"]).with_row_index(std.row_index)
-    return tx.join(ids, on=std.row_index, how="left").select(
-        "transcript_id",
-        pl.col("segger_cell_id").alias("cell"),
-        (pl.col("filtered").not_()).alias("is_noise"),
+    labels = pl.DataFrame({"segger_cell_id": list(cell_labels), "cell": list(cell_labels.values())})
+    assigned = pl.col("filtered") & pl.col("cell").is_not_null()
+    return (
+        tx.join(ids, on=std.row_index, how="left")
+        .join(labels, on="segger_cell_id", how="left")
+        .select(
+            "transcript_id",
+            pl.when(assigned).then(pl.col("cell")).alias("cell"),
+            assigned.not_().alias("is_noise"),
+        )
     )
 
 
@@ -398,14 +406,20 @@ def export(
         )
 
     if "xeniumranger" in selected:
-        xenium_tx = _build_xenium_transcript_csv(tx, source_path)
+        # xeniumranger needs "<prefix>-<n>" cell IDs with one shared prefix and a unique n,
+        # for cells that have both a polygon and assigned transcripts
+        assigned_cells = set(tx.filter(pl.col("filtered"))["segger_cell_id"].drop_nulls())
+        gdf_xr = gdf[gdf.index.isin(assigned_cells)]
+        cell_labels = {cell_id: f"segger-{i}" for i, cell_id in enumerate(gdf_xr.index, start=1)}
+        xenium_tx = _build_xenium_transcript_csv(tx, source_path, cell_labels)
         transcript_assignment_path = output_directory / "xenium_transcript_assignment.csv"
         xenium_tx.write_csv(transcript_assignment_path)
         print(f"Wrote {xenium_tx.height} transcripts for xeniumranger: {transcript_assignment_path}")
 
         viz_polygons_path = output_directory / "xenium_cell_boundaries.geojson"
-        gdf.reset_index(drop=True).to_file(viz_polygons_path, driver="GeoJSON")
-        print(f"Wrote {len(gdf)} cell boundaries for xeniumranger: {viz_polygons_path}")
+        # features carry "id" = cell label, as xeniumranger expects; `cell_id` keeps the segger ID
+        viz_polygons_path.write_text(gdf_xr.rename(index=cell_labels).to_json())
+        print(f"Wrote {len(gdf_xr)} cell boundaries for xeniumranger: {viz_polygons_path}")
 
         print(
             "\nRun this to import the segmentation into a Xenium bundle "
