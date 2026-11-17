@@ -50,7 +50,7 @@ to implement segger natively into `sopa <https://github.com/prism-oncology/sopa/
      - delaunay
      - Cell-polygon method for boundaries (``delaunay`` or ``convex_hull``); recommended default.
    * - ``--chaikin-iterations``
-     - 0
+     - 2
      - `Chaikin corner-cutting <https://www.cs.unc.edu/~dm/UNC/COMP258/LECTURES/Chaikins-Algorithm.pdf>`_
        iterations to round boundaries (``0`` disables).
    * - ``--include-all-transcripts``
