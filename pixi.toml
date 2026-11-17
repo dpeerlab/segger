@@ -1,6 +1,6 @@
 [workspace]
 channels = ["conda-forge"]
-platforms = [{ name = "linux-64", platform = "linux-64", cuda = "13" }]
+platforms = ["linux-64"]
 
 [dependencies]
 python = ">=3.13,<3.14"
