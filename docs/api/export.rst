@@ -6,10 +6,10 @@ Positional arguments select which elements to write (default: ``anndata boundari
 - ``anndata`` — cell x gene table (``adata.h5ad``), obs indexed by cell id.
 - ``transcripts`` — per-transcript cell assignments (``transcripts.parquet``), post-filtering.
 - ``boundaries`` — one polygon per cell (``cell_boundaries.parquet``), GeoParquet.
-- ``spatialdata`` — adds the above elements into an existing SpatialData Zarr store.
-- ``xeniumranger`` — ``xenium_transcript_assignment.csv`` (``transcript_id,cell,is_noise``) and
-  ``xenium_cell_boundaries.geojson``, plus the ``xeniumranger import-segmentation`` command to
-  run with them. Requires ``-i`` (Xenium only).
+- ``spatialdata`` — adds the above elements into an existing SpatialData Zarr store. See :doc:`../how-to`.
+- ``xeniumranger`` — xenium-ranger compatible table (``xenium_transcript_assignment.csv`` and
+  ``xenium_cell_boundaries.geojson``), plus the ``xeniumranger import-segmentation`` command to
+  run after. See :doc:`../how-to`.
 
 ``sopa`` exports: ``anndata`` + ``boundaries`` (the default) is enough. There is an ongoing effort
 to implement segger natively into `sopa <https://github.com/prism-oncology/sopa/issues/431>`_. Run

@@ -62,6 +62,17 @@ segger segment \
 segger export boundaries \
   -s /path/to/save/outputs/segger_segmentation.parquet \
   -o /path/to/export/
+
+# export spatialdata. transcripts are added to the existing sdata
+segger export spatialdata \
+  -s /path/to/save/outputs/segger_segmentation.parquet \
+  --sdata /path/to/sdata.zarr
+
+# for Xenium data to visualise in xenium explorer
+segger export xeniumranger \
+  -s /path/to/save/outputs/segger_segmentation.parquet \
+  -i /path/to/your/ist/data/ \
+  -o /path/to/export/
 ```
 
 See [notebooks/quickstart.ipynb](notebooks/quickstart.ipynb) for an end-to-end walkthrough.

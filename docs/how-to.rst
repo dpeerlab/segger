@@ -72,6 +72,43 @@ This edits ``sdata.zarr`` in place: it appends segger's per-transcript columns t
 ``transcripts`` points element, and adds ``cell_boundaries_segger`` (shapes) and ``table_segger``
 (table) elements. See :doc:`outputs` for details.
 
+Use with Xenium Explorer
+--------------------------
+
+To bring segger's segmentation back into a Xenium bundle, so it opens in `Xenium Explorer
+<https://www.10xgenomics.com/support/software/xenium-explorer>`_, use `xeniumranger
+<https://www.10xgenomics.com/support/software/xenium-ranger>`_.
+
+1. **Run normal segger segmentation** as above.
+2. **Export the inputs for xeniumranger**, with the original Xenium bundle as ``-i``:
+
+   .. code-block:: bash
+
+      segger export xeniumranger \
+          -s /path/to/save/outputs/segger_segmentation.parquet \
+          -i /path/to/your/xenium/bundle/ \
+          -o /path/to/export/
+
+   This writes ``xenium_transcript_assignment.csv`` and ``xenium_cell_boundaries.geojson``, and
+   prints the command for the next step.
+3. **Run the command** (also printed automatically after the previous command for easy copy-paste):
+
+   .. code-block:: bash
+
+      cd /path/to/export/ && xeniumranger import-segmentation \
+          --id=xeniumranger_import \
+          --xenium-bundle=/path/to/your/xenium/bundle/ \
+          --transcript-assignment=/path/to/export/xenium_transcript_assignment.csv \
+          --viz-polygons=/path/to/export/xenium_cell_boundaries.geojson \
+          --units=microns
+
+   The new bundle is written to ``/path/to/export/xeniumranger_import/``; open its ``outs/``
+   folder in Xenium Explorer.
+
+The raw Xenium transcripts in ``-i`` supply the original ``transcript_id`` values. Transcripts
+that segger drops (quality and probe filtering) are not in the CSV, so xeniumranger treats them as
+unassigned.
+
 Full walkthrough notebook
 ---------------------------
 
