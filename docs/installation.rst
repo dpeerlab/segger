@@ -15,13 +15,46 @@ Clone the repository
 include unreleased changes, or name an older tag from the
 `releases page <https://github.com/dpeerlab/segger/releases>`_.
 
-Install with conda
-------------------
+Choose an installation method
+-----------------------------
+
+Run one of these from the cloned repository. Times are typical and depend on your network
+and package cache.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 20 65
+
+   * - Method
+     - Typical time
+     - Command
+   * - uv
+     - about 30 seconds
+     - ``uv pip install -e .``
+   * - pixi
+     - about 1.5 minutes
+     - ``pixi install``
+   * - conda
+     - about 5 minutes
+     - ``conda env create -n segger -f environment.yml``
+
+Install with uv
+---------------
+
+Install uv first if you don't have it:
 
 .. code-block:: bash
 
-   conda env create -n segger -f environment.yml
-   conda activate segger
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+
+See the `uv documentation <https://docs.astral.sh/uv/getting-started/installation/>`_ for other
+install methods. Then create an environment and install segger into it:
+
+.. code-block:: bash
+
+   uv venv --python 3.13
+   source .venv/bin/activate
+   uv pip install -e .
 
 Install with pixi
 -----------------
@@ -40,6 +73,14 @@ See the `pixi documentation <https://pixi.sh/latest/installation/>`_ for other i
    pixi shell
 
 To run one command without activating the environment, use ``pixi run <command>``.
+
+Install with conda
+------------------
+
+.. code-block:: bash
+
+   conda env create -n segger -f environment.yml
+   conda activate segger
 
 Install without cloning
 -----------------------
