@@ -362,7 +362,7 @@ def segment(
         group=group_io,
         consume_multiple=True,
         required=False,
-    )] = ["anndata", "boundaries"],
+    )] = ["anndata"],
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 

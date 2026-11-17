@@ -16,7 +16,7 @@ written. The main output is ``segger_segmentation.parquet``, the per-transcript 
 .. tip::
 
    ``segger segment`` also runs :doc:`segger export <api/export>` for you: by default it writes
-   ``anndata`` and ``boundaries`` to ``<output>/export``. Choose other elements with ``--export``
+   ``anndata`` to ``<output>/export``. Choose other elements with ``--export``
    (e.g. ``--export anndata xeniumranger``) or skip it with ``--empty-export``.
 
 See all available options:

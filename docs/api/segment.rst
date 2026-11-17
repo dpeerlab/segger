@@ -21,7 +21,7 @@ I/O
      - *required*
      - Output directory.
    * - ``--export``
-     - anndata boundaries
+     - anndata
      - Elements to export once segmentation is done, written to ``<output>/export``. Runs
        :doc:`segger export <export>`, see there for the elements. ``--empty-export`` skips it.
    * - ``--transcripts``
