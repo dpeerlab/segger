@@ -6,6 +6,12 @@ from pathlib import Path
 # torch_geometric uses torch.jit. issue here: https://github.com/pyg-team/pytorch_geometric/issues/10697
 warnings.filterwarnings("ignore", message=".*torch.jit.script.*is deprecated", category=FutureWarning)
 
+# ignore lightning's pytree warning: https://github.com/Lightning-AI/pytorch-lightning/issues/21326
+warnings.filterwarnings("ignore", message=".*isinstance\\(treespec, LeafSpec\\).*is deprecated")
+
+# ignore batch sampler warning. it returns every tile
+warnings.filterwarnings("ignore", message=".*custom batch sampler `DynamicBatchSamplerPatch` for prediction.*")
+
 import cupy as cp
 import torch
 import rmm
