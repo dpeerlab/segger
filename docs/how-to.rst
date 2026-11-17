@@ -13,6 +13,12 @@ Run segger segmentation
 ``-i`` is a standardized IST dataset directory (Xenium, CosMx, ...); ``-o`` is where outputs are
 written. The main output is ``segger_segmentation.parquet``, the per-transcript assignment table (see :doc:`outputs`).
 
+.. tip::
+
+   ``segger segment`` also runs :doc:`segger export <api/export>` for you: by default it writes
+   ``anndata`` to ``<output>/export``. Choose other elements with ``--export``
+   (e.g. ``--export anndata xeniumranger``) or skip it with ``--empty-export``.
+
 See all available options:
 
 .. code-block:: bash
@@ -68,7 +74,7 @@ Export to other formats
 
 - ``anndata`` — cell x gene AnnData table with spatial coordinates
 - ``boundaries`` — one polygon per cell, as GeoParquet
-- ``transcripts`` — per-transcript table with assigned cell IDs
+- ``transcripts-filtered`` — per-transcript table with assigned cell IDs
 - ``spatialdata`` — adds segger's outputs into an existing SpatialData store
 
 For example, to write an AnnData table and cell boundaries:

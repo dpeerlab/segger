@@ -13,10 +13,9 @@ From ``segger segment``
 - ``x``, ``y``, ``feature_name``
 - ``filtered`` — assigned, converged, and above threshold; the recommended keep mask
 
-Segger also writes ``segger_anndata.h5ad``, a cell x gene AnnData table, unless ``--save-anndata``
-is disabled (this default will be deprecated soon — use ``segger export anndata`` instead). With
-``--debug``, it additionally writes a ``debug/`` directory with run params, tiles, predictions, and
-the trainer checkpoint.
+For an AnnData table or other formats, use ``segger export`` (see below). With ``--debug``, segger
+additionally writes a ``debug/`` directory with run params, tiles, predictions, and the trainer
+checkpoint.
 
 .. code-block:: python
 
@@ -49,7 +48,7 @@ From ``segger export``
      - ``cell_boundaries.parquet``
      - One polygon per cell, as GeoParquet
      - ``--method``, ``--chaikin-iterations``
-   * - ``transcripts``
+   * - ``transcripts-filtered``
      - ``transcripts.parquet``
      - Per-transcript table with assigned cell IDs
      - ``--include-all-transcripts``

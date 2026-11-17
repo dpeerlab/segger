@@ -3,10 +3,11 @@ import logging
 from ..utils import setup_logging
 
 from cyclopts import App, Parameter, Group, validators
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from pathlib import Path
 
 from .registry import ParameterRegistry
+from .export import _Element
 
 
 # Register defaults and descriptions from files directly
@@ -20,6 +21,9 @@ to_register = [
 ]
 for file_path, class_name in to_register:
     registry.register_from_file(base_dir / file_path, class_name)
+
+# Export elements that can run after segmentation (spatialdata needs an existing store)
+ExportElements = Literal[tuple(e for e in get_args(_Element) if e != "spatialdata")]
 
 # Parameter groups
 group_io = Group(
@@ -347,20 +351,27 @@ def segment(
     )] = registry.get_default("sg_weight_end"),
 
     # Reference
-    save_anndata: Annotated[bool, registry.get_parameter(
-        "save_anndata",
-        group=group_io,
-    )] = registry.get_default("save_anndata"),
-    
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = False,
+
+    export: Annotated[list[ExportElements] | None, Parameter(
+        help="Run `segger export` for these elements once segmentation is done, "
+             "writing to the `export` folder of the output directory (xeniumranger needs -i). "
+             "Use `--empty-export` to skip.",
+        group=group_io,
+        consume_multiple=True,
+        required=False,
+    )] = ["anndata"],
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 
     # Setup logger and debug directory
     setup_logging(level=os.environ.get("LOG_LEVEL", "WARNING"), debug=debug)
     logger = logging.getLogger(__name__)
+
+    if export and "xeniumranger" in export and input_directory is None:
+        raise ValueError("`--export xeniumranger` needs `-i/--input-directory` (the Xenium bundle).")
 
     # Validator guarantees the parent exists; only create the last level
     Path(output_directory).mkdir(exist_ok=True)
@@ -449,7 +460,6 @@ def segment(
     csvlogger = CSVLogger(output_directory)
     writer = ISTSegmentationWriter(
         output_directory,
-        save_anndata=save_anndata,
         debug=debug,
     )
 
@@ -497,3 +507,63 @@ def segment(
     # Prediction
     logger.debug("Predicting segmentation")
     predictions = trainer.predict(model=model, datamodule=datamodule)
+
+    # Export, then point to the remaining formats
+    out = Path(os.path.abspath(output_directory))
+    seg = out / "segger_segmentation.parquet"
+    exp = out / "export"
+    export = export or []
+    if export:
+        from .export import export as _export
+        _export(*export, segmentation_path=seg, output_directory=exp, source_path=input_directory)
+
+    # print verbose outputs
+    files = {
+        "anndata": [("AnnData", "adata.h5ad")],
+        "transcripts-filtered": [("Filtered transcripts", "transcripts.parquet")],
+        "boundaries": [("Cell boundaries", "cell_boundaries.parquet")],
+        "xeniumranger": [
+            ("Xenium Ranger transcripts", "xenium_transcript_assignment.csv"),
+            ("Xenium Ranger boundaries", "xenium_cell_boundaries.geojson"),
+        ],
+    }
+    rows = [("Segmentation", seg)] + [(name, exp / f) for e in export for name, f in files[e]]
+    width = max(len(name) for name, _ in rows) + 1
+    outputs = "".join(f"   {name + ':':<{width}} {path}\n" for name, path in rows)
+    todo = [e for e in ("anndata", "transcripts-filtered", "boundaries") if e not in export]
+    rest = ""
+    if todo:
+        sopa = " (anndata + boundaries also work for Sopa)" if "anndata" in todo and "boundaries" in todo else ""
+        rest += (
+            f"   • {', '.join(todo)}{sopa}\n\n"
+            f"       segger export {' '.join(todo)} \\\n"
+            f"           -s {seg} \\\n"
+            f"           -o {exp}\n\n"
+        )
+    rest += (
+        f"   • spatialdata\n\n"
+        f"       segger export spatialdata \\\n"
+        f"           -s {seg} \\\n"
+        f"           --sdata <path/to/sdata.zarr>\n\n"
+    )
+    if "xeniumranger" not in export and input_directory is not None and (Path(input_directory) / "experiment.xenium").exists():
+        rest += (
+            f"   • xeniumranger (Xenium data)\n\n"
+            f"       segger export xeniumranger \\\n"
+            f"           -s {seg} \\\n"
+            f"           -i {os.path.abspath(input_directory)} \\\n"
+            f"           -o {exp}\n\n"
+        )
+    rule = "─" * 72
+    print(
+        f"\n\n{rule}\n"
+        f" Segmentation complete\n"
+        f"{rule}\n\n"
+        f"{outputs}\n"
+        f"{rule}\n"
+        f" Export to other formats\n"
+        f"{rule}\n\n"
+        f" Run `segger export` for more formats:\n\n"
+        f"{rest}"
+        f"{rule}\n"
+    )

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _group_io = Group(name="I/O", sort_key=0)
 _group_opts = Group(name="Options", sort_key=1)
 
-_Element = Literal["anndata", "transcripts", "boundaries", "spatialdata", "xeniumranger"]
+_Element = Literal["anndata", "transcripts-filtered", "boundaries", "spatialdata", "xeniumranger"]
 _DEFAULT_ELEMENTS = ("anndata", "boundaries")
 
 _Seg = Annotated[Path, Parameter(alias="-s", group=_group_io, validator=validators.Path(exists=True, dir_okay=False))]
@@ -327,7 +327,7 @@ def export(
     sdata_table_name: _SdataTableName = "table_segger",
     min_counts: _MinCounts = 10,
 ):
-    """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
+    """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts-filtered, boundaries, spatialdata, xeniumranger)."""
     selected = elements or _DEFAULT_ELEMENTS
 
     sdata = None
@@ -382,7 +382,7 @@ def export(
             adata = adata[adata.obs_names.isin(gdf.index)].copy()
 
     # save outputs
-    if "transcripts" in selected:
+    if "transcripts-filtered" in selected:
         tx.write_parquet(output_directory / "transcripts.parquet")
         print(f"Wrote {tx.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
 
