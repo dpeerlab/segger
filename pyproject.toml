@@ -36,7 +36,7 @@ dependencies = [
     "torchvision",
     "lightning",
     "torch_geometric",
-    "cuspa @ git+https://github.com/NVIDIA/cuspa",
+    "cuspa-cu13",
     # add floors to avoid resolving to placeholder wheels
     "cudf-cu13>=26",
     "cuml-cu13>=26",
@@ -51,9 +51,6 @@ spatialdata = ["spatialdata"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/segger"]
