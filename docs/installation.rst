@@ -41,8 +41,8 @@ Run one of these from the cloned repository. These only work on v1.0.0 and later
      - about 5 minutes
      - ``conda env create -n segger -f environment.yml``
 
-Install to a `uv` python environment
----------------
+Install to a ``uv`` python environment
+--------------------------------------
 
 Install uv first if you don't have it:
 
