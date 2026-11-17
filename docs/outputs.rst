@@ -57,6 +57,10 @@ From ``segger export``
      - ``<sdata>.zarr`` (in place)
      - Adds segger's outputs into an existing SpatialData store
      - ``--sdata``, ``--sdata-transcripts-name``, ``--sdata-cell-boundaries-name``, ``--sdata-table-name``
+   * - ``xeniumranger``
+     - ``xenium_transcript_assignment.csv``, ``xenium_cell_boundaries.geojson``
+     - Inputs for ``xeniumranger import-segmentation`` (Xenium only); prints the command to run (see :doc:`how-to`)
+     - ``-i``
 
 See :doc:`how-to` for how to build the SpatialData store in the first place, and :doc:`api/export`
 for a full description of every parameter.
