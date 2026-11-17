@@ -694,7 +694,7 @@ class XeniumPreprocessor(ISTPreprocessor):
         if not cls.sw_version(version):
             raise IOError(
                 f"Xenium analysis software version must be 2.0.0 or higher, "
-                f"but found version {'.'.join(version)}."
+                f"but found version {'.'.join(map(str, version))}."
             )
 
         # Check required files/directories
@@ -1261,9 +1261,17 @@ class StandardPreprocessor(ISTPreprocessor):
             raise IOError(f"'{bd_name}' is missing columns: {sorted(missing)}.")
 
     @classmethod
-    def _validate_directory(cls, data_dir: Path):
-        tx_path = data_dir / cls.tx_fields.filename
-        bd_path = data_dir / cls.bd_fields.filename
+    def _validate_directory(
+        cls,
+        data_dir: Path,
+        transcript_field_overrides: dict | None = None,
+        boundary_field_overrides: dict | None = None,
+    ):
+        tx_fields, bd_fields = cls._resolve_fields(
+            transcript_field_overrides, boundary_field_overrides
+        )
+        tx_path = data_dir / tx_fields.filename
+        bd_path = data_dir / bd_fields.filename
         for path in [tx_path, bd_path]:
             if not path.is_file():
                 raise IOError(f"Standard input directory must contain '{path.name}'.")
@@ -1375,6 +1383,15 @@ def _infer_platform(
             f"{conflicting_platforms}."
         )
     return matches[0]
+
+
+def describe_platforms() -> str:
+    """Bullet list of the registered platforms with their main transcript columns."""
+    lines = []
+    for name, cls in PREPROCESSORS.items():
+        f = cls.tx_fields
+        lines.append(f"  - {name} [{f.x}, {f.y}, {f.cell_id}]")
+    return "\n".join(lines)
 
 
 def get_preprocessor(

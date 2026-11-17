@@ -10,14 +10,16 @@ import polars as pl
 def segment(
     output_directory: Path,
     input_directory: Path | None = None,
-    transcripts: pl.DataFrame | pd.DataFrame | None = None,
-    boundaries: gpd.GeoDataFrame | None = None,
+    transcripts: pl.DataFrame | pd.DataFrame | str | Path | None = None,
+    boundaries: gpd.GeoDataFrame | str | Path | None = None,
     **options,
 ) -> pl.DataFrame:
     """Run segger segmentation and return the per-transcript assignments.
 
-    Give either `input_directory` or both `transcripts` and `boundaries`
+    Give `input_directory`, or `transcripts` together with `boundaries`
     (standard input format, see `segger.io.fields.SopaTranscriptFields`).
+    `input_directory` can be omitted with in-memory inputs, or with
+    `platform="standard"` and `transcripts` and `boundaries` given as paths.
     Unlike the CLI, this does not configure GPU memory allocators; call
     `segger.configure_memory()` first if needed.
 
@@ -26,13 +28,18 @@ def segment(
     output_directory : Path
         Directory to write outputs to. Created if missing.
     input_directory : Path or None
-        IST data directory, as for `segger segment -i`.
-    transcripts : pl.DataFrame or pd.DataFrame or None
+        IST data directory, as for `segger segment -i`. Not needed for the
+        cases above.
+    transcripts : pl.DataFrame or pd.DataFrame or str or Path or None
         In-memory transcripts with columns `x`, `y`, `feature_name`,
-        `cell_id` (0 = unassigned) and optionally `cell_compartment`.
-    boundaries : gpd.GeoDataFrame or None
+        `cell_id` (0 = unassigned) and optionally `cell_compartment`
+        or the path to a custom transcripts file. Requires `boundaries` of
+        the same kind, and `platform` if given as paths.
+    boundaries : gpd.GeoDataFrame or str or Path or None
         In-memory boundaries with columns `cell_id`, `boundary_type`
-        ('cell' or 'nucleus') and `geometry`.
+        ('cell' or 'nucleus') and `geometry`, or the path to a custom
+        boundaries file, used as the cell boundaries of the prediction
+        graph (sets `prediction_mode="cell"`).
     **options
         Any `segger segment` option, using its Python name
         (e.g. `n_epochs=20`, `segmentation_mode="cell"`).
@@ -43,14 +50,6 @@ def segment(
         Contents of `segger_segmentation.parquet`: one row per transcript,
         joined to the input by `row_index`.
     """
-    in_memory = transcripts is not None or boundaries is not None
-    if in_memory and (transcripts is None or boundaries is None):
-        raise ValueError("Give both `transcripts` and `boundaries`.")
-    if in_memory == (input_directory is not None):
-        raise ValueError(
-            "Give either `input_directory` or `transcripts` + `boundaries`."
-        )
-
     from .cli.segment import segment as _segment
 
     output_directory = Path(output_directory)

@@ -73,12 +73,13 @@ def _validate_output_directory(type_, value: Path):
 @app_segment.command(name="segment")
 def segment(
     # I/O
-    input_directory: Annotated[Path, registry.get_parameter(
+    input_directory: Annotated[Path | None, registry.get_parameter(
         "input_directory",
         alias="-i",
         group=group_io,
         validator=validators.Path(exists=True, dir_okay=True),
-    )] = registry.get_default("input_directory"),
+        required=False,
+    )] = None,
 
     output_directory: Annotated[Path, registry.get_parameter(
         "output_directory",
@@ -94,19 +95,17 @@ def segment(
         required=False,
     )] = None,
 
-    cells_boundaries_file: Annotated[str | None, Parameter(
-        help="Filename of a custom cell boundaries file to use. The file must "
-             "contain a list of x/y vertices for each cell (e.g. Xenium's "
-             "cell_boundaries.parquet file). Defaults to the platform default.",
+    transcripts: Annotated[str | None, Parameter(
+        help="Path to a custom transcripts file (relative paths resolve against "
+             "the input directory). Requires --boundaries and --platform.",
         group=group_io,
         required=False,
     )] = None,
 
-    nucleus_boundaries_file: Annotated[str | None, Parameter(
-        help="Filename of a custom nucleus boundaries file to use. The file "
-             "must contain a list of x/y vertices for each nucleus (e.g. "
-             "Xenium's nucleus_boundaries.parquet file). Defaults to the "
-             "platform default.",
+    boundaries: Annotated[str | None, Parameter(
+        help="Path to a custom boundaries file, used as the cell boundaries of the "
+             "prediction graph (sets `--prediction-mode cell`). It needs one polygon "
+             "per training cell ID.",
         group=group_io,
         required=False,
     )] = None,
@@ -356,10 +355,6 @@ def segment(
     debug: Annotated[bool, Parameter(
         help="Whether to save additional debug information (trainer, predictions).",
     )] = False,
-
-    # In-memory inputs, Python only (see `segger.api.segment`)
-    transcripts: Annotated[Any, Parameter(parse=False)] = None,
-    boundaries: Annotated[Any, Parameter(parse=False)] = None,
 ):
     """Run cell segmentation on spatial transcriptomics data."""
 
@@ -377,7 +372,8 @@ def segment(
         debug_dir.mkdir(exist_ok=True, parents=True)
         params = {k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
                   for k, v in locals().items()
-                  if k not in {"logger", "debug_dir", "json", "transcripts", "boundaries"}}
+                  if k not in {"logger", "debug_dir", "json"}
+                  and not (k in {"transcripts", "boundaries"} and not isinstance(v, (str, Path)))}
         with open(debug_dir / "params.json", "w") as f:
             json.dump(params, f, indent=2, default=str)
         logger.info(f"Saved run params to {debug_dir / 'params.json'}")
@@ -389,16 +385,10 @@ def segment(
     # Setup Lightning Data Module
     logger.debug(f"Setting up ISTDataModule | Input Directory: '{input_directory}'")
     from ..data import ISTDataModule
-    boundary_field_overrides = {}
-    if cells_boundaries_file:
-        boundary_field_overrides['cell_filename'] = cells_boundaries_file
-    if nucleus_boundaries_file:
-        boundary_field_overrides['nucleus_filename'] = nucleus_boundaries_file
     datamodule = ISTDataModule(
         input_directory=input_directory,
         platform=platform,
         transcript_field_overrides={'cell_id': transcripts_cell_id} if transcripts_cell_id else None,
-        boundary_field_overrides=boundary_field_overrides or None,
         cells_representation_mode=cells_representation,
         cells_embedding_size=node_representation_dim,
         cells_min_counts=cells_min_counts,

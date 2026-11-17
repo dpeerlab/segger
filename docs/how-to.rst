@@ -46,7 +46,7 @@ The same data can be passed in memory from Python. ``segger.segment`` takes any
 
    import segger
 
-   segger.configure_memory()  # optional: shared GPU memory pool, as in the CLI
+   segger.configure_memory()  # highly recommended: shared GPU memory pool
    seg = segger.segment(
        output_directory="/path/to/outputs/",
        transcripts=transcripts,  # polars or pandas DataFrame
@@ -54,8 +54,12 @@ The same data can be passed in memory from Python. ``segger.segment`` takes any
        n_epochs=20,
    )
 
-Join ``seg`` back to your transcripts by ``row_index`` (the row position in
-``transcripts``).
+``seg`` is a polars DataFrame with the columns ``row_index``, ``segger_cell_id``,
+``segger_similarity``, ``similarity_threshold``, ``converged``, ``x``, ``y``,
+``feature_name`` and ``filtered`` (see :doc:`outputs`). Join it to your transcripts by
+``row_index`` (the row position in ``transcripts``), or run ``segger export <format>``
+on ``/path/to/outputs/segger_segmentation.parquet`` to turn it into an AnnData table or
+other formats (see below).
 
 Export to other formats
 --------------------------
