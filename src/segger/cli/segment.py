@@ -493,9 +493,18 @@ def segment(
     predictions = trainer.predict(model=model, datamodule=datamodule)
 
     # Point to the export step
-    out = Path(output_directory).resolve()
+    out = Path(os.path.abspath(output_directory))
     seg = out / "segger_segmentation.parquet"
     rule = "─" * 72
+    xenium = ""
+    if input_directory is not None and (Path(input_directory) / "experiment.xenium").exists():
+        xenium = (
+            f"   • xeniumranger (Xenium data)\n\n"
+            f"       segger export xeniumranger \\\n"
+            f"           -s {seg} \\\n"
+            f"           -i {os.path.abspath(input_directory)} \\\n"
+            f"           -o {out / 'export'}\n\n"
+        )
     print(
         f"\n\n{rule}\n"
         f" Segmentation complete\n"
@@ -510,5 +519,6 @@ def segment(
         f"       segger export spatialdata \\\n"
         f"           -s {seg} \\\n"
         f"           --sdata <path/to/sdata.zarr>\n\n"
+        f"{xenium}"
         f"{rule}\n"
     )
