@@ -3,7 +3,6 @@ channels:
 
 dependencies:
   - python>=3.13,<3.14
-  - cuda-nvcc=13.*
   - pip
   - pip:
       - --extra-index-url https://pypi.nvidia.com

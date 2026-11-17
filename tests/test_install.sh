@@ -14,9 +14,7 @@ export UV_CACHE_DIR="/usersoftware/peerd/${USER}/.uv_cache"
 mkdir -p "$UV_CACHE_DIR"
 
 ## ---- Test PIP ----
-# a plain venv has no nvcc; cuspa is built from source, so a CUDA 13
-# compiler must be installed first (here via conda-forge's cuda-nvcc)
-conda create -n segger_test_env_pip -c conda-forge -y python=3.13 "cuda-nvcc=13.*"
+conda create -n segger_test_env_pip -c conda-forge -y python=3.13
 conda activate segger_test_env_pip
 pip install uv
 uv pip install -e .

@@ -1,9 +1,7 @@
 Installation
 ============
 
-segger requires **CUDA 13** and **Python 3.13**. ``cuspa`` is built from source, so a CUDA
-compiler (``nvcc``) must be on ``PATH``. Both ``conda`` and ``pixi`` install ``cuda-nvcc``
-for you.
+segger requires **CUDA 13** and **Python 3.13**.
 
 Clone the repository
 --------------------
@@ -46,7 +44,7 @@ To run one command without activating the environment, use ``pixi run <command>`
 Install without cloning
 -----------------------
 
-If you already have a CUDA 13 ``nvcc`` on ``PATH``, install straight from GitHub:
+Install straight from GitHub:
 
 .. code-block:: bash
 

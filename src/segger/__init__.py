@@ -2,13 +2,6 @@ import logging
 import os
 from pathlib import Path
 
-import dask
-
-if int(dask.__version__.split(".")[0]) < 2025:
-    # old spatialdata doesn't support dask-expr; must be set before cudf pulls
-    # in dask.dataframe. Newer dask dropped the legacy implementation.
-    dask.config.set({"dataframe.query-planning": False})
-
 import cupy as cp
 import torch
 import rmm
