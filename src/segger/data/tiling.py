@@ -11,6 +11,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from .csr import index_to_ptr
 from ..geometry import (
     assign_points_to_polygons,
     bounds_to_cuspa,
@@ -51,13 +52,53 @@ class Tiling(ABC):
         """
         assert self.tiles.geom_type.eq('Polygon').all()
     
+    @cached_property
+    def bounds(self) -> np.ndarray:
+        """Tile bounds as a (K, 4) array of (min_x, min_y, max_x, max_y)."""
+        return self.tiles.bounds.to_numpy().astype(np.float64)
+
+    def neighbors(self, margin: float) -> tuple[torch.Tensor, torch.Tensor]:
+        """CSR `(ptr, tile_ids)` of the tiles each margined tile can reach.
+
+        1. Grow tiles
+        2. Find intersecting (neighboring) tiles
+        3. Build CSR representation of neighbors
+        """
+
+        # grow tiles without rounding corners
+        grown = self.tiles.buffer(margin, join_style='mitre')
+
+        # find overlaps
+        hits = gpd.sjoin(
+            gpd.GeoDataFrame(geometry=grown),
+            gpd.GeoDataFrame(geometry=self.tiles),
+            predicate='intersects',
+        )
+
+        # get indices
+        tile = hits.index.to_numpy()
+        neighbor = hits['index_right'].to_numpy()
+
+        # group by tile, listing each tile before its neighbors
+        order = np.lexsort((neighbor != tile, tile))
+        tile, neighbor = tile[order], neighbor[order]
+        ptr, _ = index_to_ptr(
+            torch.from_numpy(tile), is_sorted=True, n_buckets=len(grown)
+        )
+
+        logger.debug(
+            f"Tile neighbors (margin={margin}): {len(grown)} tiles, "
+            f"{len(neighbor) / len(grown):.1f} tiles gathered per tile on average"
+        )
+        return ptr, torch.from_numpy(neighbor)
+
     def _tile_bounds(self, margin: float = 0.0) -> np.ndarray:
         """Tile bounds as (K, 4) boxes, shrunk inward by `margin`.
 
         Tiles are axis-aligned boxes in all current tilings. A margin that
         would shrink a tile to nothing is halved until every tile survives.
         """
-        bounds = self.tiles.bounds.to_numpy().astype(np.float64)
+        bounds = self.bounds
         eff_margin = margin
         while eff_margin > 0:
             shrunk = bounds + [eff_margin, eff_margin, -eff_margin, -eff_margin]
@@ -71,7 +112,7 @@ class Tiling(ABC):
                 f"({eff_margin}) so their geometries are not dropped from "
                 f"the query."
             )
-        return bounds
+        return bounds.copy()
 
     def _tile_polygons(self, margin: float = 0.0):
         """Tiles as cuspa polygons, shrunk inward by `margin`; built once
@@ -130,9 +171,9 @@ class Tiling(ABC):
             predicate,
             check_full=(inclusive and margin == 0),
         )
-        return torch.as_tensor(
-            cp.asnumpy(labels), dtype=torch.int64, device=geometry.device
-        )
+        # Stay on device: a host round-trip costs 4 GB each way at a
+        # billion points.
+        return torch.as_tensor(labels, device=geometry.device, dtype=torch.int64)
 
     def label(self, geometry: torch.Tensor) -> torch.Tensor:
         """Assigns a tile index to each point; -1 if unmatched.

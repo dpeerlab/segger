@@ -1,7 +1,6 @@
 from typing import Literal
 import logging
 
-import cudf
 import cupy as cp
 import cuspa
 import geopandas as gpd
@@ -96,12 +95,11 @@ def assign_points_to_polygons(
             )
     return labels
 
-
 def points_in_polygons(
     points: torch.Tensor,
     polygons: PolygonArg,
     predicate: Literal['contains', 'intersects'] = 'intersects',
-) -> cudf.DataFrame:
+) -> torch.Tensor:
     """Finds which points fall inside which polygons using a given predicate.
 
     Points in multiple (overlapping) polygons yield one row per match.
@@ -120,9 +118,8 @@ def points_in_polygons(
 
     Returns
     -------
-    cudf.DataFrame
-        A DataFrame with 'index_query' and 'index_match' columns
-        mapping each query point to its corresponding matching polygon.
+    torch.Tensor
+        Two columns. First contains point indices, second contains the corresponding polygon indices.
     """
     if predicate not in ['contains', 'intersects']:
         raise TypeError(
@@ -145,7 +142,4 @@ def points_in_polygons(
         chunks.append(pairs)
     pairs = chunks[0] if len(chunks) == 1 else cp.concatenate(chunks)
     del chunks
-    return cudf.DataFrame({
-        'index_query': pairs[:, 0],
-        'index_match': pairs[:, 1],
-    })
+    return torch.as_tensor(pairs, device="cuda").T

@@ -2,47 +2,17 @@ from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
-from torch_geometric.utils.map import map_index
-from torch_geometric.index import index2ptr
 import logging
 import shapely
 import torch
 
 
+from .csr import index_to_ptr, query_ptr
 from .partition import PartitionDataset
 from .tiling import Tiling
 
 logger = logging.getLogger(__name__)
 
-
-def query_ptr(
-    csr: tuple[torch.Tensor, torch.Tensor], query: int | torch.Tensor
-) -> torch.Tensor:
-    """Gather values for bucket(s) `query` from a `(ptr, values)` CSR.
-
-    `query` may be a scalar (one bucket) or a 1-D tensor (concatenated in
-    the given order).
-    """
-    ptr, values = csr
-
-    # single value
-    if not (torch.is_tensor(query) and query.dim() > 0):
-        q = int(query)
-        return values[ptr[q]:ptr[q + 1]]
-
-    # tensor of values
-    starts = ptr[query]
-    ends = ptr[query + 1]
-    counts = ends - starts
-    total = int(counts.sum())
-    if total == 0:
-        return values.new_empty(0)
-    base = torch.repeat_interleave(starts, counts)
-    within = (torch.arange(total, device=values.device) - torch.repeat_interleave(counts.cumsum(0) - counts, counts))
-    return values[base + within]
-
-
-logger = logging.getLogger(__name__)
 
 class TileFitDataset(PartitionDataset):
     """
@@ -50,8 +20,7 @@ class TileFitDataset(PartitionDataset):
 
     This class extends `PartitionDataset` to create partitions by assigning
     each node to a tile based on its spatial coordinates. It can also add a
-    mask for nodes within a certain margin of tile boundaries and optionally
-    remove the geometry data after partitioning.
+    mask for nodes within a certain margin of tile boundaries.
 
     Parameters
     ----------
@@ -63,19 +32,15 @@ class TileFitDataset(PartitionDataset):
         The margin distance used to create the boolean mask.
     geometry_key : str, optional
         The attribute key for accessing node geometry data, by default
-        'geometry'.
-    drop_geometry : bool, optional
-        If True, removes the geometry attribute from the data after
-        partitioning, by default True.
+        'pos'. Kept on the graph: the model reads it as 'batch.pos_dict'.
     """
     def __init__(
         self,
         data: Data | HeteroData,
         tiling: Tiling,
         margin: float,
-        geometry_key: str = 'geometry',
+        geometry_key: str = 'pos',
         clone: bool = True,
-        drop_geometry: bool = True,
     ):
         """Initializes and tiles the dataset"""
         self.geometry_key = geometry_key
@@ -90,8 +55,6 @@ class TileFitDataset(PartitionDataset):
         # Note: self.data and self.partition are set inside super.__init__()
         super().__init__(data=data, partition=partition, clone=clone)
         self.data = self._mask_data(self.data)
-        if drop_geometry:
-            self.data = self._drop_geometry(self.data)
 
     def _validate_geometry(
         self,
@@ -187,15 +150,6 @@ class TileFitDataset(PartitionDataset):
             data['mask'] = self.tiling.mask(geom, self.margin)
         return data
 
-    def _drop_geometry(self, data: Data | HeteroData) -> Data | HeteroData:
-        """Removes the geometry attribute from all node stores."""
-        if isinstance(data, HeteroData):
-            for node_type in data.node_types:
-                del data[node_type][self.geometry_key]
-        else:  # isinstance(data, Data)
-            del data[self.geometry_key]
-        return data
-
 
 class TilePredictDataset(Dataset):
     """A dataset for iterating over spatial tiles with overlapping margins.
@@ -203,6 +157,10 @@ class TilePredictDataset(Dataset):
     This dataset provides subgraphs of a larger graph based on spatial
     tiling. Each item corresponds to a tile, returning the subgraph of
     nodes that fall within the tile boundaries plus a specified margin.
+
+    Store only tiliing without margins. Instead, add margins from tile
+    and its neighbours -> reduces memory load, avoids integer overflows
+    and avoids rebuilding this.
     
     Parameters
     ----------
@@ -244,19 +202,53 @@ class TilePredictDataset(Dataset):
         # Precompute CSRs for fast per-tile subsetting (one-time cost).
         if self._is_hetero:
             logger.debug("Building tile/edge pointers for fast subsetting...")
-            self._tile_ptr_inner = self._build_tile_ptr(margin=0.0)
-            self._tile_ptr_outer = self._build_tile_ptr(margin=self.margin)
+            self._tile_ptr = self._build_tile_ptr()
+            # Tile sizes on the host: reading them off the CSR would sync
+            # once per item.
+            self._tile_sizes = {
+                nt: (ptr[1:] - ptr[:-1]).cpu()
+                for nt, (ptr, _) in self._tile_ptr.items()
+            }
+            # Store neighboring tiles
+            self._neighbor_ptr = self._build_neighbor_ptr()
+            self._margin_bounds = self._build_margin_bounds()
             self._edges_ptr = self._build_edge_ptr()
 
-    def _build_tile_ptr(self, margin: float) -> dict:
-        """Builds CSR-like structure of {node_type: (ptr[tile_id], node_id)} for fast subsetting."""
-        n_tiles = len(getattr(self.tiling, 'tiles', self.tiling))
+    @property
+    def _device(self) -> torch.device:
+        """Device the graph lives on."""
+        node_type = self.data.node_types[0]
+        return self.data[node_type]['pos'].device
+
+    def _build_tile_ptr(self) -> dict:
+        """CSR {node_type: (ptr[tile_id], node_id)} over the unmargined tiles.
+
+        Tiles partition the plane, so each node appears once. Labels come
+        from the tiling itself, the same cuspa query the training path uses.
+        """
+        n_tiles = len(self.tiling.tiles)
         out = {}
         for nt in self.data.node_types:
-            pairs = self._get_tiles_to_nodes_edges(nt, margin=margin)
-            ptr = index2ptr(pairs[0], size=n_tiles)
-            out[nt] = (ptr, pairs[1])
+            pos = self.data[nt]['pos']
+            logger.debug(
+                f"TilePredict CSR '{nt}': {pos.shape[0]} nodes vs "
+                f"{n_tiles} tiles"
+            )
+            out[nt] = index_to_ptr(self.tiling.label(pos), n_buckets=n_tiles)
         return out
+
+    def _build_neighbor_ptr(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """CSR (ptr[tile_id], tile_id) of tiles reachable within the margin."""
+        ptr, values = self.tiling.neighbors(self.margin)
+        return ptr.to(self._device), values.to(self._device)
+
+    def _build_margin_bounds(self) -> torch.Tensor:
+        """Tile bounds grown by the margin, as a (K, 4) tensor."""
+        m = self.margin
+        bounds = self.tiling.bounds + [-m, -m, m, m]
+        return torch.as_tensor(
+            bounds, dtype=torch.float32, device=self._device
+        )
 
     def _build_edge_ptr(self) -> dict:
         """Builds CSR-like structure of {edge_type: (ptr[src-node], dst-node)} for edges in each tile.
@@ -269,10 +261,7 @@ class TilePredictDataset(Dataset):
             ei = self.data[et].edge_index
             assert (ei[0][1:] >= ei[0][:-1]).all(), f"edge_index[0] for {et} not sorted by src"
             n_src = self.data[et[0]]["pos"].shape[0]
-            out[et] = (
-                index2ptr(ei[0], size=n_src),
-                torch.arange(ei.shape[1], device=ei.device),
-            )
+            out[et] = index_to_ptr(ei[0], is_sorted=True, n_buckets=n_src)
         return out
 
     def __len__(self) -> int:
@@ -292,66 +281,63 @@ class TilePredictDataset(Dataset):
             )
         return self._subset_new(idx)
 
-    def _get_tiles_to_nodes_edges(self, node_type: str, margin: float) -> torch.Tensor:
-        """
-        Create edges `(tile_id, node_id)` for nodes in each tile's margined bbox.
-
-        Return tuples, sorted by `tile_id`.
-        """
-        pos: torch.Tensor = self.data[node_type]['pos'].to(torch.float32)
-        tiles_geom = getattr(self.tiling, 'tiles', self.tiling)
-        bounds = tiles_geom.bounds.to_numpy().astype("float32")
-        bounds = torch.from_numpy(bounds).to(pos.device)
-        bounds[:, :2] -= margin
-        bounds[:, 2:] += margin
-
-        # Chunk tiles & nodes, cap at ~128 MB intermediate
-        K, N = bounds.shape[0], pos.shape[0]
-        budget = 2 ** 27  # ~128M bools = 128MB
-        chunk_K = max(8, min(256, K))
-        chunk_N = max(1, min(N, budget // (8 * max(chunk_K, 1))))
-
-        tile_ids, node_ids = [], []
-
-        # for each batch of tiles
-        for s_t in range(0, K, chunk_K):
-            ch = bounds[s_t:min(s_t + chunk_K, K)]
-
-            # for each batch of nodes
-            for s_n in range(0, N, chunk_N):
-                px = pos[s_n:min(s_n + chunk_N, N), 0]
-                py = pos[s_n:min(s_n + chunk_N, N), 1]
-
-                # create boundary mask. results in a (chunked) binary matrix of (chunk_k, chunk_n) where "True" indicates assignment
-                m = (
-                    (ch[:, None, 0] <= px[None, :]) & (ch[:, None, 2] >  px[None, :]) &
-                    (ch[:, None, 1] <= py[None, :]) & (ch[:, None, 3] >  py[None, :])
-                )
-
-                # extract pairs
-                ki, ni = torch.nonzero(m, as_tuple=True)
-                tile_ids.append(ki + s_t)
-                node_ids.append(ni + s_n)
+    def _nodes_in_margin(
+        self,
+        node_type: str,
+        idx: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Graph stores nodes within tiles, but not in the extended prediction margin.
         
-        tile_ids = torch.cat(tile_ids)
-        node_ids = torch.cat(node_ids)
+        - Get transcripts from the node + its neighbors within the margin.
+        - Subset nodes within prediction margin
 
-        # sort by tile_id (and preserve node order)
-        perm = torch.argsort(tile_ids, stable=True)
-        return torch.stack([tile_ids[perm], node_ids[perm]], 0)
+        Note: This could also be a simple cuspa spatial join, but the overhead is much larger than 
+        using this pre-computed CSR structure.
+        """
+
+        # query the tile and its neighbors, own nodes first
+        tiles = query_ptr(self._neighbor_ptr, idx)
+        candidates = query_ptr(self._tile_ptr[node_type], tiles)
+        n_in_tile = int(self._tile_sizes[node_type][idx])
+
+        # the tile's own nodes lie in the margin by definition, so only the
+        # neighbors' nodes need the box test
+        pos = self.data[node_type]['pos'][candidates[n_in_tile:]]
+        min_x, min_y, max_x, max_y = self._margin_bounds[idx]
+        keep = (
+            (pos[:, 0] >= min_x) & (pos[:, 0] < max_x) &
+            (pos[:, 1] >= min_y) & (pos[:, 1] < max_y)
+        )
+
+        nodes = torch.cat([candidates[:n_in_tile], candidates[n_in_tile:][keep]])
+        in_tile = torch.arange(nodes.numel(), device=nodes.device) < n_in_tile
+        return nodes, in_tile
 
     def _subset_new(self, idx: int) -> Data | HeteroData:
         """Subset the Heterograph to nodes and edges within tile `idx`.
 
-        Uses CSRs precomputed in `__init__` (`_tile_ptr_outer`, `_tile_ptr_inner`, `_edges_ptr`).
+        Uses CSRs precomputed in `__init__` (`_tile_ptr`, `_neighbor_ptr`,
+        `_edges_ptr`).
         """
         subset = HeteroData()
+        margin_nodes = {}
+        sorted_nodes = {}
 
         # create nodes
         for node_type in self.data.node_types:
 
-            # get list of nodes in tile
-            nodes_subset_idx = query_ptr(self._tile_ptr_outer[node_type], idx)
+            # get list of nodes in tile, and which of them it owns
+            nodes_subset_idx, predict_mask = self._nodes_in_margin(node_type, idx)
+            margin_nodes[node_type] = nodes_subset_idx
+
+            # store sorted nodes (+ max sentinel), and order
+            order = torch.argsort(nodes_subset_idx)
+            max_dtype = torch.tensor(
+                [torch.iinfo(nodes_subset_idx.dtype).max],
+                dtype=nodes_subset_idx.dtype,
+                device=nodes_subset_idx.device,
+            )
+            sorted_nodes[node_type] = torch.cat([nodes_subset_idx[order], max_dtype]), order
 
             # populate metadata for these nodes
             for key, value in self.data[node_type].items():
@@ -362,9 +348,7 @@ class TilePredictDataset(Dataset):
                 else:
                     subset[node_type][key] = value
 
-            # get mask (mask for nodes within margined tiles)
-            nodes_margin_idx = query_ptr(self._tile_ptr_inner[node_type], idx)
-            subset[node_type]['predict_mask'] = torch.isin(nodes_subset_idx, nodes_margin_idx)
+            subset[node_type]['predict_mask'] = predict_mask
 
 
         # create edges
@@ -372,24 +356,28 @@ class TilePredictDataset(Dataset):
 
             # get src (source) and dst (destination) nodes that fall within the tile
             src, _, dst = edge_type
-            src_subset = query_ptr(self._tile_ptr_outer[src], idx)
-            dst_subset = query_ptr(self._tile_ptr_outer[dst], idx)
+            src_sorted, src_order = sorted_nodes[src]
+            dst_sorted, dst_order = sorted_nodes[dst]
 
             # get edges where src node is in tile
-            edge_src_subset_idx = query_ptr(self._edges_ptr[edge_type], src_subset)
+            edge_src_subset_idx = query_ptr(self._edges_ptr[edge_type], margin_nodes[src])
             candidate_edges = self.data[edge_type].edge_index[:, edge_src_subset_idx]
 
-            # get edges where also dst node is in tile
-            edge_dst_subset_idx = torch.isin(candidate_edges[1], dst_subset)
+            # find which candidate edge have a dst node in the tile
+            # -> use that dst is sorted. searchsort finds the first position where it would be inserted, which
+            #    is much faster than "torch.isin" for sorted arrays.
+            slot = torch.searchsorted(dst_sorted, candidate_edges[1])
+            edge_dst_subset_idx = dst_sorted[slot] == candidate_edges[1]
 
             # store mask
             kept_orig = edge_src_subset_idx[edge_dst_subset_idx]
             edge_index_new = candidate_edges[:, edge_dst_subset_idx]
 
-            # map indices to new subset
-            src_index, _ = map_index(edge_index_new[0], src_subset, max_index=self.data[src]["pos"].shape[0])
-            dst_index, _ = map_index(edge_index_new[1], dst_subset, max_index=self.data[dst]["pos"].shape[0])
-            edge_index_mapped = torch.stack([src_index, dst_index], dim=0)
+            # map to new indices. "slot" is already using the subset indices, src needs to be looked up.
+            edge_index_mapped = torch.stack([
+                src_order[torch.searchsorted(src_sorted, edge_index_new[0])],
+                dst_order[slot[edge_dst_subset_idx]],
+            ], dim=0)
 
             # populate heterodata
             for key, value in self.data[edge_type].items():
