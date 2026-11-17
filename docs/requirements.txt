@@ -1,0 +1,4 @@
+sphinx<8
+sphinx_rtd_theme
+nbsphinx
+ipython

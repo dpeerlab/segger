@@ -1,6 +1,6 @@
 [project]
 name = "segger"
-version = "0.2.0"
+version = "1.0.0"
 description = "Segmentation of spatial transcriptomics data"
 authors = [
     {name = "Elyas Heidari", email = "elyas.heidari@dkfz-heidelberg.de"},
@@ -9,12 +9,14 @@ authors = [
 keywords = ["spatial-transcriptomics", "segmentation", "image-analysis"]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 
 dependencies = [
     "anndata",
     "cyclopts",
+    "fastquadtree",
     "geopandas",
+    "imagecodecs",
     "numba",
     "numpy",
     "opencv-python",
@@ -27,8 +29,23 @@ dependencies = [
     "scikit-image",
     "scikit-learn",
     "tifffile",
-    "tqdm"
+    "tqdm",
+    # CUDA 13 GPU stack (incl. cuspa)
+    "torch==2.14.*",
+    "torchvision",
+    "lightning",
+    "torch_geometric",
+    "cuspa-cu13",
+    # add floors to avoid resolving to placeholder wheels
+    "cudf-cu13>=26",
+    "cuml-cu13>=26",
+    "cugraph-cu13>=26",
+    "cupy-cuda13x",
+    "rmm-cu13>=26",
 ]
+
+[project.optional-dependencies]
+spatialdata = ["spatialdata"]
 
 [build-system]
 requires = ["hatchling"]
@@ -39,3 +56,12 @@ packages = ["src/segger"]
 
 [project.scripts]
 segger = "segger.cli.main:app"
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu130"
+
+[[tool.uv.index]]
+url = "https://pypi.nvidia.com"

@@ -20,12 +20,15 @@ Example usage:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Literal, Optional
 from cyclopts import Parameter, Group, validators
 
 import polars as pl
 from ..io import StandardTranscriptFields
+
+logger = logging.getLogger(__name__)
 
 _group_io = Group(name="I/O", sort_key=0)
 _group_opts = Group(name="Options", sort_key=1)
@@ -41,7 +44,7 @@ _Source = Annotated[
         group=_group_io,
         validator=validators.Path(exists=True, dir_okay=True),
         help="Source transcripts directory. Needed for segger v0.2.0 (before x/y/feature_name were included in outputs), "
-        "and for 'xeniumranger' for more verbose outputs.",
+        "and for 'xeniumranger' (raw transcript_id and the import command).",
     ),
 ]
 _Out = Annotated[
@@ -59,8 +62,14 @@ _Sdata = Annotated[
 ]
 
 _IncludeAll = Annotated[
-    bool,
-    Parameter(group=_group_opts, help="Keep every transcript in the segmentation output, not just the ones segger's 'filtered' flag marked as kept."),
+    Optional[bool],
+    Parameter(
+        group=_group_opts,
+        help="Override each element's default transcript filtering. Unset (default): 'anndata' and 'boundaries' "
+        "use only filtered transcripts, 'transcripts' and 'spatialdata' use all of them. Pass this flag to force "
+        "every element to include all transcripts, or --no-include-all-transcripts to restrict every element to "
+        "filtered ones.",
+    ),
 ]
 _SdataTranscriptsName = Annotated[
     str,
@@ -97,8 +106,7 @@ _MinCounts = Annotated[
 # -- LOAD TRANSCRIPTS --
 def load_transcripts(
     segmentation_path: Path,
-    include_all_transcripts: bool,
-    source_path: Path = None,
+    source_path: Optional[Path] = None,
 ):
     # read transcripts
     tx = pl.read_parquet(segmentation_path)
@@ -108,26 +116,32 @@ def load_transcripts(
     if not {std.x, std.y, std.feature, "filtered"} <= set(tx.columns):
         tx = _legacy_join(tx, source_path=source_path, std=std)
 
+    # older outputs have no "converged" column; treat all features as converged
+    if "converged" not in tx.columns:
+        logger.warning("Segmentation has no 'converged' column (older output); assuming converged=True for all transcripts.")
+        tx = tx.with_columns(pl.lit(True).alias("converged"))
+
     # subset
     coord_cols = [pl.col(std.x).alias("x"), pl.col(std.y).alias("y")]
     if std.z in tx.columns:
         coord_cols.append(pl.col(std.z).alias("z"))
 
-    # filter
-    kept = tx.filter(pl.col("filtered")) if not include_all_transcripts else tx
-
     # select
-    assigned = kept.select(
+    tx = tx.select(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
         pl.col(std.feature).alias("feature_name"),
+        pl.col("segger_similarity"),
+        pl.col("similarity_threshold"),
+        pl.col("converged"),
+        pl.col("filtered"),
         *coord_cols,
     )
 
-    return assigned, tx
+    return tx
 
 
-def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.DataFrame":
+def _legacy_join(tx: pl.DataFrame, source_path: Optional[Path], std) -> pl.DataFrame:
     """Join x/y/feature_name onto a segmentation output written before they were included inline."""
     if source_path is None:
         raise ValueError("This segmentation output predates inline x/y/feature_name; pass -i/--source-path to join them from the source transcripts.")
@@ -152,30 +166,32 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
     
     return tx
 
-# -- xeniumranger import-segmentation support
-def _build_xenium_transcript_csv(tx: "pl.DataFrame") -> "pl.DataFrame":
-    """Required Xenium transcript columns: transcript_id,cell,is_noise
+# -- XENIUMRANGER IMPORT-SEGMENTATION SUPPORT --
+def _build_xenium_transcript_csv(tx: "pl.DataFrame", source_path: Path) -> "pl.DataFrame":
+    """Columns for `xeniumranger import-segmentation`: transcript_id,cell,is_noise
 
-    Takes `tx` (not `assigned`) since `filtered` is only kept there — `tx` already went
-    through the legacy join in `load_transcripts` if this segmentation predates it.
+    `row_index` is the row position in the raw Xenium transcripts file, so the real
+    `transcript_id` is joined back from `source_path`. Takes `tx` (not `assigned`) since
+    `filtered` is only kept there.
     """
-    return tx.select(
-        pl.col("row_index").alias("transcript_id"),
+    from ..io.fields import XeniumTranscriptFields
+
+    std = StandardTranscriptFields()
+    ids = pl.read_parquet(source_path / XeniumTranscriptFields().filename, columns=["transcript_id"]).with_row_index(std.row_index)
+    return tx.join(ids, on=std.row_index, how="left").select(
+        "transcript_id",
         pl.col("segger_cell_id").alias("cell"),
-        pl.col("feature_name"),
-        pl.col("x"),
-        pl.col("y"),
         (pl.col("filtered").not_()).alias("is_noise"),
     )
 
 
-# -- Spatial Data Support
+# -- SPATIAL DATA SUPPORT --
 def _check_sdata_elements(
-        sdata,
-        transcripts_element: str,
-        cell_boundaries_element: str,
-        table_element: str,
-    ) -> None:
+    sdata,
+    transcripts_element: str,
+    cell_boundaries_element: str,
+    table_element: str,
+) -> None:
     """Fail fast if the transcripts element is missing, or any target element name already exists."""
     if transcripts_element not in sdata.points:
         raise KeyError(f"{transcripts_element!r} not found in sdata.points; pass --sdata-transcripts-name to point at the right one.")
@@ -186,8 +202,9 @@ def _check_sdata_elements(
 
 
 
-def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_index: str) -> "dd.DataFrame":
+def _merge_sdata_transcripts(sdata_tx: dd.DataFrame, tx: pl.DataFrame) -> dd.DataFrame:
     """Segger's per-transcript outputs, joined onto the existing (dask-backed) transcripts table. Stays lazy throughout."""
+    row_index = StandardTranscriptFields().row_index
 
     # rename; these names are hardcoded. make sure to update this if any name should change going forward
     map_columns = {
@@ -219,9 +236,9 @@ def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_i
 
 def _write_to_sdata(
     sdata,
-    tx: "pl.DataFrame",
-    gdf: "gpd.GeoDataFrame",
-    adata: "AnnData",
+    tx: pl.DataFrame,
+    gdf: gpd.GeoDataFrame,
+    adata: AnnData,
     transcripts_element: str = "transcripts",
     cell_boundaries_element: str = "cell_boundaries_segger",
     table_element: str = "table_segger",
@@ -236,7 +253,7 @@ def _write_to_sdata(
     transformations = get_transformation(base_transcripts, get_all=True)
 
     # new element fully in memory, required for overwriting
-    tx = _merge_sdata_transcripts(base_transcripts, tx, "row_index").compute().reset_index(drop=True)
+    tx = _merge_sdata_transcripts(base_transcripts, tx).compute().reset_index(drop=True)
 
     coordinates = {"x": "x", "y": "y"}
     if "z" in tx.columns:
@@ -265,7 +282,7 @@ def _write_to_sdata(
     sdata[cell_boundaries_element] = new_boundaries
     sdata[table_element] = new_table
 
-    # 3 4 delete and write
+    # 3, 4 delete and write
     print(f"Writing {transcripts_element}, {cell_boundaries_element}, {table_element} to {sdata.path}...")
     try:
         sdata.delete_element_from_disk(transcripts_element)
@@ -277,7 +294,7 @@ def _write_to_sdata(
         )
         raise
     else:
-        # delete backup
+        # 5 drop backup
         sdata.delete_element_from_disk(backup_element)
         if sdata.has_consolidated_metadata():
             sdata.write_consolidated_metadata()
@@ -296,7 +313,7 @@ def export(
     chaikin_iterations: Annotated[
         int, Parameter(group=_group_opts, help="Chaikin corner-cutting iterations to round boundaries (0 disables).")
     ] = 0,
-    include_all_transcripts: _IncludeAll = True,
+    include_all_transcripts: _IncludeAll = None,
     sdata_transcripts_name: _SdataTranscriptsName = "transcripts",
     sdata_cell_boundaries_name: _SdataCellBoundariesName = "cell_boundaries_segger",
     sdata_table_name: _SdataTableName = "table_segger",
@@ -320,10 +337,18 @@ def export(
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
     if "xeniumranger" in selected and source_path is None:
-        raise ValueError("-i/--source-path is required for 'xeniumranger': it's used to join back transcript_id/qv/overlaps_nucleus from the raw Xenium transcripts.")
+        raise ValueError("-i/--source-path is required for 'xeniumranger': it provides the raw Xenium transcript_id and the --xenium-bundle path.")
 
     # load tx
-    assigned, tx = load_transcripts(segmentation_path, include_all_transcripts, source_path)
+    tx = load_transcripts(segmentation_path, source_path)
+    tx_filtered = tx.filter(pl.col("filtered"))
+
+    # None (default): tx stays unfiltered, tx_filtered stays filtered; explicit True/False overrides both
+    if include_all_transcripts is False:
+        tx = tx.filter(pl.col("filtered"))
+    if include_all_transcripts:
+        tx_filtered = tx
+
     if output_directory is not None:
         output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -331,13 +356,13 @@ def export(
     gdf = None
     if "boundaries" in selected or "spatialdata" in selected or "xeniumranger" in selected:
         from ..export import generate_boundaries
-        gdf = generate_boundaries(assigned, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
+        gdf = generate_boundaries(tx_filtered, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
 
     adata = None
     if "anndata" in selected or "spatialdata" in selected:
         from ..export import build_anndata
         adata = build_anndata(
-            assigned,
+            tx_filtered,
             cell_id="segger_cell_id",
             z="z",
             area=gdf.geometry.area if gdf is not None else None,
@@ -350,8 +375,8 @@ def export(
 
     # save outputs
     if "transcripts" in selected:
-        assigned.write_parquet(output_directory / "transcripts.parquet")
-        print(f"Wrote {assigned.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
+        tx.write_parquet(output_directory / "transcripts.parquet")
+        print(f"Wrote {tx.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
 
     if "boundaries" in selected:
         gdf.to_parquet(output_directory / "cell_boundaries.parquet")
@@ -373,7 +398,7 @@ def export(
         )
 
     if "xeniumranger" in selected:
-        xenium_tx = _build_xenium_transcript_csv(tx)
+        xenium_tx = _build_xenium_transcript_csv(tx, source_path)
         transcript_assignment_path = output_directory / "xenium_transcript_assignment.csv"
         xenium_tx.write_csv(transcript_assignment_path)
         print(f"Wrote {xenium_tx.height} transcripts for xeniumranger: {transcript_assignment_path}")

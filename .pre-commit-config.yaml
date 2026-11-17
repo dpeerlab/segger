@@ -1,0 +1,9 @@
+repos:
+    - repo: local
+      hooks:
+          - id: clean-notebook-outputs
+            name: Strip notebook outputs to stdout text and images
+            entry: python scripts/clean_notebook_outputs.py
+            language: python
+            additional_dependencies: [nbformat]
+            files: '\.ipynb$'

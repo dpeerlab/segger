@@ -1,6 +1,6 @@
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from typing import Any, Literal
+from typing import Literal
 import geopandas as gpd
 import polars as pl
 import numpy as np
@@ -53,7 +53,7 @@ def phenograph_rapids(
 
 def knn_to_edge_index(
     neighbor_table: torch.Tensor,
-    padding_value = None,
+    padding_value: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Convert a dense neighbor table (with padding) into COO edge index.
@@ -94,7 +94,7 @@ def knn_to_edge_index(
 
 def edge_index_to_knn(
     edge_index: torch.Tensor,
-    padding_value: Any = None,
+    padding_value: int | None = None,
 ) -> torch.Tensor:
     """TODO: Add description.
     """
@@ -182,7 +182,7 @@ def setup_transcripts_graph(
 
 def setup_segmentation_graph(
     tx: pl.DataFrame,
-    segmentation_mask: pl.Expr | pl.Series = None,
+    segmentation_mask: pl.Expr | pl.Series,
 ) -> torch.Tensor:
     """TODO: Add description.
     """
@@ -191,6 +191,8 @@ def setup_segmentation_graph(
         tx
         .with_row_index("_tid")
         .filter(segmentation_mask)
+        # Dropped-boundary cells leave cell_encoding null despite passing segmentation_mask.
+        .filter(pl.col(tx_fields.cell_encoding).is_not_null())
         .select(["_tid", tx_fields.cell_encoding])
         .to_torch()
         .T
@@ -221,18 +223,16 @@ def setup_prediction_graph(
         return edge_index
     
     # Shape-based graph
-    points = tx[[tx_fields.x, tx_fields.y]].to_numpy()
+    points = tx[[tx_fields.x, tx_fields.y]].to_torch()
     boundary_type = (bd_fields.cell_value if mode == "cell"
                      else bd_fields.nucleus_value)
     polygons = bd[bd[bd_fields.boundary_type] == boundary_type].geometry
     buffer_dists = np.sqrt(polygons.area / np.pi) * buffer_ratio
     polygons = polygons.buffer(buffer_dists).reset_index(drop=True)
-    result = points_in_polygons(
+    edge_index = points_in_polygons(
         points=points,
         polygons=polygons,
         predicate='contains',
-        batches=100,
     )
 
-    return torch.tensor(
-        result[['index_query', 'index_match']].values.T).to(torch.int).cpu()
+    return edge_index.to(torch.int).cpu()
