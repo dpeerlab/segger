@@ -132,8 +132,7 @@ def setup_heterodata(
     data['tx']['x'] = transcripts[tx_fields.gene_encoding].to_torch()
     data['tx']['cluster'] = transcripts[tx_fields.gene_cluster].to_torch()
     data['tx']['index'] = transcripts[tx_fields.row_index].to_torch()
-    data['tx']['geometry'] = transcripts[[tx_fields.x, tx_fields.y]].to_torch()
-    data['tx']['pos'] = data['tx']['geometry']
+    data['tx']['pos'] = transcripts[[tx_fields.x, tx_fields.y]].to_torch()
 
     # Boundary nodes
     logger.debug("Setting up boundary nodes")
@@ -143,9 +142,8 @@ def setup_heterodata(
         adata.obs[cells_clusters_column].values).to(torch.int)
     data['bd']['index'] = torch.tensor(
         adata.obs[cells_encoding_column].values).to(torch.int)
-    data['bd']['geometry'] = torch.tensor(
+    data['bd']['pos'] = torch.tensor(
         adata.obsm['X_spatial']).to(torch.float)
-    data['bd']['pos'] = data['bd']['geometry']
 
     # Transcript neighbors graph
     logger.debug("Setting up transcript neighbors graph")

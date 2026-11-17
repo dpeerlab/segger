@@ -1,0 +1,10 @@
+channels:
+  - conda-forge
+
+dependencies:
+  - python>=3.13,<3.14
+  - pip
+  - pip:
+      - --extra-index-url https://pypi.nvidia.com
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - --editable .
