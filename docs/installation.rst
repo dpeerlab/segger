@@ -8,18 +8,21 @@ Clone the repository
 
 .. code-block:: bash
 
-   git clone --branch v0.4.0 https://github.com/dpeerlab/segger.git
+   git clone https://github.com/dpeerlab/segger.git
    cd segger
 
-``--branch v0.4.0`` pins the clone to the latest release. Omit it to get ``main``, which may
-include unreleased changes, or name an older tag from the
-`releases page <https://github.com/dpeerlab/segger/releases>`_.
+To install an older release instead, name its tag with ``--branch``, for example ``v0.3.1`` for CUDA 12 support (see `Older CUDA versions`_ below):
+
+.. code-block:: bash
+
+   git clone --branch v0.3.1 https://github.com/dpeerlab/segger.git
+
+Tags are listed on the `releases page <https://github.com/dpeerlab/segger/releases>`_.
 
 Choose an installation method
 -----------------------------
 
-Run one of these from the cloned repository. Times are typical and depend on your network
-and package cache.
+Run one of these from the cloned repository. These only work on v1.0.0 and later.
 
 .. list-table::
    :header-rows: 1
@@ -38,7 +41,7 @@ and package cache.
      - about 5 minutes
      - ``conda env create -n segger -f environment.yml``
 
-Install with uv
+Install to a `uv` python environment
 ---------------
 
 Install uv first if you don't have it:
@@ -47,8 +50,7 @@ Install uv first if you don't have it:
 
    curl -LsSf https://astral.sh/uv/install.sh | sh
 
-See the `uv documentation <https://docs.astral.sh/uv/getting-started/installation/>`_ for other
-install methods. Then create an environment and install segger into it:
+Then create an environment and install segger into it:
 
 .. code-block:: bash
 
@@ -64,15 +66,9 @@ Install pixi first if you don't have it:
 .. code-block:: bash
 
    curl -fsSL https://pixi.sh/install.sh | sh
-
-See the `pixi documentation <https://pixi.sh/latest/installation/>`_ for other install methods.
-
-.. code-block:: bash
-
    pixi install
    pixi shell
 
-To run one command without activating the environment, use ``pixi run <command>``.
 
 Install with conda
 ------------------
@@ -99,11 +95,11 @@ Older CUDA versions
 
 .. note::
    segger no longer supports CUDA 12. If CUDA 13 is not available to you, use the
-   ``v0.3.0`` release, which runs on CUDA 12.1 and Python 3.11 via pixi:
+   ``v0.3.1`` release, which runs on CUDA 12.1 and Python 3.11 via pixi:
 
    .. code-block:: bash
 
-      git clone --branch v0.3.0 https://github.com/dpeerlab/segger.git
+      git clone --branch v0.3.1 https://github.com/dpeerlab/segger.git
       cd segger
       pixi install -e cuda121
       pixi shell -e cuda121
