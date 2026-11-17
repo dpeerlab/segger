@@ -90,7 +90,7 @@ class ISTDataModule(LightningDataModule):
         `boundaries` given as paths.
     platform : str or None, default=None
         Input platform (e.g. "10x_xenium", "standard"). Inferred from the
-        input directory if None.
+        input directory if None. Ignored for in-memory inputs (standard format).
     num_workers : int, default=8
         Number of workers for DataLoader processes.
     cells_representation_mode : {"pca", "morphology"}, default="pca"
@@ -243,6 +243,11 @@ class ISTDataModule(LightningDataModule):
         # Load standardized IST data
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
         if self.transcripts is not None and not isinstance(self.transcripts, (str, Path)):
+            if self.platform is not None:
+                self.logger.warning(
+                    f"`platform='{self.platform}'` is ignored for in-memory inputs, which must "
+                    f"already be in the standard format (x, y, feature_name, cell_id)."
+                )
             pp = StandardPreprocessor.from_data(self.transcripts, self.boundaries)
             self.transcripts = self.boundaries = None  # keep a single copy (pp)
         else:
