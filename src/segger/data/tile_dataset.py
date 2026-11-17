@@ -394,5 +394,9 @@ class DynamicBatchSamplerPatch(DynamicBatchSampler):
     """TODO: Description
     """
     def __len__(self):
-        return len(self.dataset)  # ceiling on dataset length
+        # estimate max: use ~50 evenly spaced tiles to approximate the number of batches
+        if not hasattr(self, "_n_est"):
+            n = len(self.dataset); ids = range(0, n, max(1, n // 50))
+            self._n_est = max(1, round(n * sum(self.dataset[i].num_edges for i in ids) / len(ids) / self.max_num))
+        return self._n_est
 
