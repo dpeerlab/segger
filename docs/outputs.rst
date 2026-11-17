@@ -48,7 +48,7 @@ From ``segger export``
      - ``cell_boundaries.parquet``
      - One polygon per cell, as GeoParquet
      - ``--method``, ``--chaikin-iterations``
-   * - ``transcripts``
+   * - ``transcripts-filtered``
      - ``transcripts.parquet``
      - Per-transcript table with assigned cell IDs
      - ``--include-all-transcripts``

@@ -4,7 +4,7 @@ segger export
 Positional arguments select which elements to write (default: ``anndata boundaries``):
 
 - ``anndata`` — cell x gene table (``adata.h5ad``), obs indexed by cell id.
-- ``transcripts`` — per-transcript cell assignments (``transcripts.parquet``), post-filtering.
+- ``transcripts-filtered`` — per-transcript cell assignments (``transcripts.parquet``), post-filtering.
 - ``boundaries`` — one polygon per cell (``cell_boundaries.parquet``), GeoParquet.
 - ``spatialdata`` — adds the above elements into an existing SpatialData Zarr store. See :doc:`../how-to`.
 - ``xeniumranger`` — xenium-ranger compatible table (``xenium_transcript_assignment.csv`` and

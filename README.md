@@ -53,7 +53,8 @@ pip install --extra-index-url https://pypi.nvidia.com --extra-index-url https://
 ## Usage
 
 ```bash
-# run segger segmentation
+# run segger segmentation. This also runs `segger export anndata boundaries` into
+# /path/to/save/outputs/export (change with --export, skip with --empty-export)
 segger segment \
   -i /path/to/your/ist/data/ \
   -o /path/to/save/outputs/
