@@ -124,6 +124,23 @@ def setup_heterodata(
         .set_index(bd_fields.index)
     )
 
+    # check that every cell id has a corresponding prediction polygon
+    if prediction_graph_mode != "uniform":
+        boundary_type = (bd_fields.cell_value if prediction_graph_mode == "cell"
+                         else bd_fields.nucleus_value)
+        pred_ids = boundaries.loc[
+            boundaries[bd_fields.boundary_type] == boundary_type, bd_fields.id
+        ].astype(str).tolist()
+        cell_ids = adata.obs[bd_fields.id].astype(str).tolist()
+        if pred_ids != cell_ids:
+            missing = sorted(set(cell_ids) - set(pred_ids))
+            raise ValueError(
+                f"Prediction boundaries (mode='{prediction_graph_mode}') must have exactly one "
+                f"'{boundary_type}' polygon for each of the {len(cell_ids)} cells; "
+                f"{len(missing)} cells have none (e.g. {missing[:5]}) and "
+                f"{len(set(pred_ids) - set(cell_ids))} polygons match no cell."
+            )
+
     # Create PyG object
     data = HeteroData()
 

@@ -1,4 +1,5 @@
 import logging
+import os
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import BaseTransform
@@ -20,6 +21,7 @@ from .tile_dataset import (
     TilePredictDataset, 
     DynamicBatchSamplerPatch
 )
+from ..io.preprocessor import StandardPreprocessor, describe_platforms
 from ..io import (
     StandardTranscriptFields,
     StandardBoundaryFields, 
@@ -82,8 +84,13 @@ class ISTDataModule(LightningDataModule):
 
     Parameters
     ----------
-    input_directory : Path
-        Path to the standardized IST dataset directory.
+    input_directory : Path or None
+        Path to the IST dataset directory. Optional (None) with in-memory
+        inputs, or with `platform="standard"` and `transcripts` and
+        `boundaries` given as paths.
+    platform : str or None, default=None
+        Input platform (e.g. "10x_xenium", "standard"). Inferred from the
+        input directory if None. Ignored for in-memory inputs (standard format).
     num_workers : int, default=8
         Number of workers for DataLoader processes.
     cells_representation_mode : {"pca", "morphology"}, default="pca"
@@ -138,8 +145,20 @@ class ISTDataModule(LightningDataModule):
         Optional reference AnnData object used to compute gene-gene correlation features.
     gene_missing_strategy : {"error", "warn", "remove", "fill"}, default="error"
         Strategy for handling genes present in the data but missing from the reference.
+    transcripts : pl.DataFrame or pd.DataFrame or str or Path or None, default=None
+        In-memory transcripts in the standard input format (`input_directory`
+        is then None), or the path to a custom transcripts file (relative
+        paths resolve against `input_directory`). Requires `boundaries` of the
+        same kind, and `platform` if given as paths.
+    boundaries : gpd.GeoDataFrame or str or Path or None, default=None
+        In-memory boundaries in the standard input format, or the path to a
+        custom boundaries file. A path replaces the cell boundaries and sets
+        `prediction_graph_mode="cell"`, so the file defines the prediction
+        polygons, one per training cell. Without `transcripts`,
+        `platform="standard"` is needed for standard-format directories.
     """
-    input_directory: Path
+    input_directory: Path | None
+    platform: str | None = None
     num_workers: int = 8
     cells_representation_mode: Literal["pca", "morphology"] = "pca"
     cells_embedding_size: int | None = 128
@@ -168,11 +187,41 @@ class ISTDataModule(LightningDataModule):
     gene_corr_reference_path: Path | None = None
     gene_missing_strategy: Literal["error", "remove", "fill"] = "error"
     debug_dir: Path | None = None
+    transcripts: "pl.DataFrame | pd.DataFrame | str | Path | None" = None
+    boundaries: "gpd.GeoDataFrame | str | Path | None" = None
     
     def __post_init__(self):
         """TODO: Description
         """
         super().__init__()
+
+        # `transcripts` and `boundaries` come together, both in memory or both paths
+        tx, bd = self.transcripts, self.boundaries
+        is_mem = lambda x: x is not None and not isinstance(x, (str, Path))
+        if tx is not None and bd is None:
+            raise ValueError("`boundaries` must be given together with `transcripts`.")
+        if tx is None and is_mem(bd):
+            raise ValueError("In-memory `boundaries` need in-memory `transcripts`.")
+        if tx is not None and is_mem(tx) != is_mem(bd):
+            raise ValueError(
+                "`transcripts` and `boundaries` must both be in memory or both be paths."
+            )
+        if is_mem(tx) and self.input_directory is not None:
+            raise ValueError(
+                "Give either `input_directory` or in-memory `transcripts` + `boundaries`."
+            )
+        if tx is not None and not is_mem(tx) and self.platform is None:
+            raise ValueError(
+                "`platform` is required with custom `transcripts` and `boundaries` "
+                "paths, since it sets how the files are read. Options "
+                "[main transcript columns]:\n" + describe_platforms()
+            )
+        if self.input_directory is None and tx is None:
+            raise ValueError("`input_directory` is required without `transcripts` and `boundaries`.")
+        if self.input_directory is None and not is_mem(tx) and self.platform != "standard":
+            raise ValueError(
+                "`input_directory` is required unless `platform` is 'standard' (or the inputs are in memory)."
+            )
 
         # setup logging
         self.logger = logging.getLogger(__name__)
@@ -181,7 +230,7 @@ class ISTDataModule(LightningDataModule):
             self.debug_dir.mkdir(exist_ok=True, parents=True)
         
         # load data
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["transcripts", "boundaries"])
         self.load()
 
     def load(self):
@@ -193,13 +242,56 @@ class ISTDataModule(LightningDataModule):
 
         # Load standardized IST data
         self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
-        pp = get_preprocessor(
-            self.input_directory,
-            transcript_field_overrides=self.transcript_field_overrides,
-            boundary_field_overrides=self.boundary_field_overrides,
-        )
+        if self.transcripts is not None and not isinstance(self.transcripts, (str, Path)):
+            if self.platform is not None:
+                self.logger.warning(
+                    f"`platform='{self.platform}'` is ignored for in-memory inputs, which must "
+                    f"already be in the standard format (x, y, feature_name, cell_id)."
+                )
+            pp = StandardPreprocessor.from_data(self.transcripts, self.boundaries)
+            self.transcripts = self.boundaries = None  # keep a single copy (pp)
+        else:
+            base = Path(self.input_directory) if self.input_directory is not None else Path.cwd()
+
+            def rel(path, what):  # preprocessors glob relative to the input directory
+                rel_path = os.path.relpath(path, base) if Path(path).is_absolute() else str(path)
+                if not list(base.glob(rel_path)):
+                    raise FileNotFoundError(f"Custom {what} file not found: '{path}'")
+                return rel_path
+
+            tx_overrides = self.transcript_field_overrides
+            if self.transcripts is not None:
+                tx_overrides = {**(tx_overrides or {}), "filename": rel(self.transcripts, "transcripts")}
+            bd_overrides = self.boundary_field_overrides
+            if self.boundaries is not None:
+                # Custom boundaries are the prediction polygons, handled as cell boundaries
+                key = "filename" if self.platform == "standard" else "cell_filename"
+                bd_overrides = {**(bd_overrides or {}), key: rel(self.boundaries, "boundaries")}
+                if self.prediction_graph_mode != "cell":
+                    self.logger.warning(
+                        f"Custom boundaries given: using prediction_graph_mode='cell' "
+                        f"instead of '{self.prediction_graph_mode}'."
+                    )
+                    self.prediction_graph_mode = "cell"
+            pp = get_preprocessor(
+                base,
+                platform=self.platform,
+                transcript_field_overrides=tx_overrides,
+                boundary_field_overrides=bd_overrides,
+            )
         tx = self.tx = pp.transcripts
         bd = pp.boundaries
+
+        # Fall back to cell mode when the data has no nucleus information
+        if self.segmentation_graph_mode == "nucleus":
+            has_nuclear_tx = (tx[tx_fields.compartment] == tx_fields.nucleus_value).any()
+            has_nuclei = (bd[bd_fields.boundary_type] == bd_fields.nucleus_value).any()
+            if not (has_nuclear_tx and has_nuclei):
+                self.logger.warning(
+                    "No nucleus information found in the input data; "
+                    "falling back to segmentation_graph_mode='cell'."
+                )
+                self.segmentation_graph_mode = "cell"
 
         # Mask transcripts to reference segmentation
         if self.segmentation_graph_mode == "nucleus":
