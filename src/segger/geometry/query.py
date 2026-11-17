@@ -142,7 +142,4 @@ def points_in_polygons(
         chunks.append(pairs)
     pairs = chunks[0] if len(chunks) == 1 else cp.concatenate(chunks)
     del chunks
-    return cudf.DataFrame({
-        'index_query': pairs[:, 0],
-        'index_match': pairs[:, 1],
-    })
+    return torch.as_tensor(pairs, device="cuda").T
