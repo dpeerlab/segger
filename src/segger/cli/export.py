@@ -52,7 +52,7 @@ _Sdata = Annotated[
 ]
 
 _IncludeAll = Annotated[
-    bool,
+    Optional[bool],
     Parameter(
         group=_group_opts,
         help="Override each element's default transcript filtering. Unset (default): 'anndata' and 'boundaries' "
@@ -96,7 +96,7 @@ _MinCounts = Annotated[
 # -- LOAD TRANSCRIPTS --
 def load_transcripts(
     segmentation_path: Path,
-    source_path: Path = None,
+    source_path: Optional[Path] = None,
 ):
     # read transcripts
     tx = pl.read_parquet(segmentation_path)
@@ -116,6 +116,9 @@ def load_transcripts(
         pl.col(std.row_index),
         pl.col("segger_cell_id").cast(pl.String),
         pl.col(std.feature).alias("feature_name"),
+        pl.col("segger_similarity"),
+        pl.col("similarity_threshold"),
+        pl.col("converged"),
         pl.col("filtered"),
         *coord_cols,
     )
@@ -123,7 +126,7 @@ def load_transcripts(
     return tx
 
 
-def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.DataFrame":
+def _legacy_join(tx: pl.DataFrame, source_path: Optional[Path], std) -> pl.DataFrame:
     """Join x/y/feature_name onto a segmentation output written before they were included inline."""
     if source_path is None:
         raise ValueError("This segmentation output predates inline x/y/feature_name; pass -i/--source-path to join them from the source transcripts.")
@@ -148,13 +151,13 @@ def _legacy_join(tx: "pl.DataFrame", source_path: Optional[Path], std) -> "pl.Da
     
     return tx
 
-# -- Spatial Data Support
+# -- SPATIAL DATA SUPPORT --
 def _check_sdata_elements(
-        sdata,
-        transcripts_element: str,
-        cell_boundaries_element: str,
-        table_element: str,
-    ) -> None:
+    sdata,
+    transcripts_element: str,
+    cell_boundaries_element: str,
+    table_element: str,
+) -> None:
     """Fail fast if the transcripts element is missing, or any target element name already exists."""
     if transcripts_element not in sdata.points:
         raise KeyError(f"{transcripts_element!r} not found in sdata.points; pass --sdata-transcripts-name to point at the right one.")
@@ -165,8 +168,9 @@ def _check_sdata_elements(
 
 
 
-def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_index: str) -> "dd.DataFrame":
+def _merge_sdata_transcripts(sdata_tx: dd.DataFrame, tx: pl.DataFrame) -> dd.DataFrame:
     """Segger's per-transcript outputs, joined onto the existing (dask-backed) transcripts table. Stays lazy throughout."""
+    row_index = StandardTranscriptFields().row_index
 
     # rename; these names are hardcoded. make sure to update this if any name should change going forward
     map_columns = {
@@ -198,9 +202,9 @@ def _merge_sdata_transcripts(sdata_tx: "dd.DataFrame", tx: "pl.DataFrame", row_i
 
 def _write_to_sdata(
     sdata,
-    tx: "pl.DataFrame",
-    gdf: "gpd.GeoDataFrame",
-    adata: "AnnData",
+    tx: pl.DataFrame,
+    gdf: gpd.GeoDataFrame,
+    adata: AnnData,
     transcripts_element: str = "transcripts",
     cell_boundaries_element: str = "cell_boundaries_segger",
     table_element: str = "table_segger",
@@ -215,7 +219,7 @@ def _write_to_sdata(
     transformations = get_transformation(base_transcripts, get_all=True)
 
     # new element fully in memory, required for overwriting
-    tx = _merge_sdata_transcripts(base_transcripts, tx, "row_index").compute().reset_index(drop=True)
+    tx = _merge_sdata_transcripts(base_transcripts, tx).compute().reset_index(drop=True)
 
     coordinates = {"x": "x", "y": "y"}
     if "z" in tx.columns:
@@ -244,7 +248,7 @@ def _write_to_sdata(
     sdata[cell_boundaries_element] = new_boundaries
     sdata[table_element] = new_table
 
-    # 3 4 delete and write
+    # 3, 4 delete and write
     print(f"Writing {transcripts_element}, {cell_boundaries_element}, {table_element} to {sdata.path}...")
     try:
         sdata.delete_element_from_disk(transcripts_element)
@@ -256,7 +260,7 @@ def _write_to_sdata(
         )
         raise
     else:
-        # delete backup
+        # 5 drop backup
         sdata.delete_element_from_disk(backup_element)
         if sdata.has_consolidated_metadata():
             sdata.write_consolidated_metadata()
