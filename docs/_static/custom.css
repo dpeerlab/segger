@@ -1,3 +1,9 @@
 /* wider content area */
 .bd-page-width { max-width: 100rem; }
 .bd-main .bd-content .bd-article-container { max-width: none; }
+
+/* hide the "Section Navigation" heading on pages without child pages */
+.bd-docs-nav:not(:has(ul)) { display: none; }
+
+/* narrower cells for wide tables with many short columns */
+table.compact-table th, table.compact-table td { padding: 0.35rem 0.5rem; font-size: 0.85em; }

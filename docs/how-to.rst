@@ -1,8 +1,6 @@
 How To
 ======
 
-.. _how-to-cli:
-
 Run segger: CLI
 ---------------
 
@@ -14,12 +12,9 @@ Run segger: CLI
 
 ``-i`` is a standardized IST dataset directory (Xenium, CosMx, ...); ``-o`` is where outputs are
 written. The main output is ``segger_segmentation.parquet``, the per-transcript assignment table (see :doc:`outputs`).
-
-.. tip::
-
-   ``segger segment`` also runs :doc:`segger export <api/export>` for you: by default it writes
-   ``anndata`` to ``<output>/export``. Choose other elements with ``--export``
-   (e.g. ``--export anndata xeniumranger``) or skip it with ``--empty-export``.
+``segger segment`` also exports an AnnData table to ``<output>/export`` by default. To export more outputs,
+use ``--export`` (e.g. ``--export anndata xeniumranger``), or ``--empty-export`` to skip it; see
+:doc:`segger export <api/export>` for the elements.
 
 See all available options:
 
@@ -27,29 +22,11 @@ See all available options:
 
    segger segment --help
 
-
-Data prepared by another tool, such as `Sopa <https://github.com/prism-oncology/sopa>`_, can be given to
-segger in the ``standard`` format, a directory with two files:
-
-- ``transcripts.parquet``: ``x``, ``y`` (microns), ``feature_name``, ``cell_id``
-  (prior cell, ``0`` = unassigned) and optionally ``cell_compartment``
-  (``0`` = outside, ``1`` = cytoplasm, ``2`` = nucleus)
-- ``boundaries.parquet``: GeoParquet with ``cell_id``, ``boundary_type``
-  (``cell`` or ``nucleus``) and ``geometry``
-
-No platform-specific filtering is applied. Without ``cell_compartment`` or nucleus
-polygons, segger falls back to ``--segmentation-mode cell``.
-
-.. code-block:: bash
-
-   segger segment -i /path/to/standard/dir/ -o /path/to/outputs/ --platform standard
-
 Run segger: API
 ---------------
 
-``segger.segment`` runs segger from Python on in-memory data (the ``standard`` format described under
-:ref:`how-to-cli`, as a transcripts DataFrame and a boundaries GeoDataFrame). It takes any
-``segger segment`` option by its Python name and returns the content of
+``segger.segment`` runs segger from Python on in-memory data, a transcripts DataFrame and a boundaries
+GeoDataFrame. It takes any ``segger segment`` option by its Python name and returns the content of
 ``segger_segmentation.parquet``:
 
 .. code-block:: python
@@ -64,9 +41,51 @@ Run segger: API
        n_epochs=20,
    )
 
-``seg`` is a polars DataFrame with the columns ``row_index``, ``segger_cell_id``,
-``segger_similarity``, ``similarity_threshold``, ``converged``, ``x``, ``y``,
-``feature_name`` and ``filtered`` (see :doc:`outputs`). Join it to your transcripts by
+``seg`` is a polars DataFrame with one row per transcript (made-up values; columns are described in
+:doc:`outputs`):
+
+.. list-table::
+   :header-rows: 1
+   :class: compact-table
+
+   * - row_index
+     - segger_cell_id
+     - segger_similarity
+     - similarity_threshold
+     - converged
+     - x
+     - y
+     - feature_name
+     - filtered
+   * - 0
+     - cell_17
+     - 0.81
+     - 0.35
+     - True
+     - 1203.4
+     - 4410.2
+     - EPCAM
+     - True
+   * - 1
+     - cell_17
+     - 0.12
+     - 0.30
+     - True
+     - 1205.1
+     - 4411.8
+     - ACTB
+     - False
+   * - 2
+     - null
+     - 0.00
+     - 0.28
+     - True
+     - 1310.7
+     - 4398.5
+     - CD3E
+     - False
+
+Join it to your transcripts by
 ``row_index`` (the row position in ``transcripts``), or run ``segger export <format>``
 on ``/path/to/outputs/segger_segmentation.parquet`` to turn it into an AnnData table or
 other formats (see `Export results`_).
