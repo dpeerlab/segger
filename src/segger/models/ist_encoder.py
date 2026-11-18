@@ -62,8 +62,8 @@ class Positional2dEmbedder(Module):
         if batch is None:
             pos = pos - pos.min(dim=0).values
             pos = pos / pos.max(dim=0).values
-        else:
-            # normalize per batch
+        elif batch.numel() > 0:
+            # normalize per batch (skipped for an empty node set, e.g. a tile without boundaries)
             mins = torch.zeros((batch.max()+1, 2), device=pos.device)
             maxs = torch.zeros((batch.max()+1, 2), device=pos.device)
             for b in range(batch.max()+1):
