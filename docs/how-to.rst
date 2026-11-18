@@ -93,7 +93,9 @@ other formats (see `Export results`_).
 Export results
 --------------
 
-``segger export`` writes segger's results in the format your downstream tool needs.
+``segger export`` writes segger's results in the format your downstream tool needs. It does the same as
+``segger segment --export ...``, but can also be run afterwards on an existing
+``segger_segmentation.parquet``.
 
 Overview
 ~~~~~~~~
