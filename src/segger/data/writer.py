@@ -91,7 +91,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
 
         # write transcripts
-        logger.debug(f"Writing segmentation output to {self.output_directory}...")
+        logger.info(f"Writing results to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
 
     @classmethod
@@ -170,7 +170,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         
         # Per-gene thresholding (iterative to reduce memory usage)
-        logger.debug(f"Calculating per-gene similarity thresholds, using {segmentation.shape[0]/1e6:.1f}M transcripts...")
+        logger.info(f"Finding per-gene similarity thresholds, using {segmentation.shape[0]/1e6:.1f}M transcripts...")
         
         segmentation_group = (
             segmentation
