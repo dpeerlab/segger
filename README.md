@@ -1,14 +1,14 @@
 # segger
 
 [![Release](https://img.shields.io/github/v/release/dpeerlab/segger)](https://github.com/dpeerlab/segger/releases)
-[![License](https://img.shields.io/github/license/dpeerlab/segger)](LICENSE)
-[![Docs](https://readthedocs.org/projects/segger-segmentation/badge/?version=latest)](https://segger-segmentation.readthedocs.io/en/latest/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-Read%20the%20Docs-8CA1AF?logo=readthedocs&logoColor=white)](https://segger-segmentation.readthedocs.io/en/latest/)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/)
 [![CUDA 13](https://img.shields.io/badge/CUDA-13-76B900)](https://developer.nvidia.com/cuda-toolkit)
 [![Powered by cuspa](https://img.shields.io/badge/powered%20by-cuspa-76B900)](https://github.com/NVIDIA/cuspa)
-[![Pixi](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://segger-segmentation.readthedocs.io/en/latest/installation.html)
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://segger-segmentation.readthedocs.io/en/latest/installation.html)
-[![conda](https://img.shields.io/badge/install-conda-44A833)](https://segger-segmentation.readthedocs.io/en/latest/installation.html)
+[![install uv](https://img.shields.io/badge/install-uv-DE5FE9)](https://segger-segmentation.readthedocs.io/en/latest/installation.html)
+[![install pixi](https://img.shields.io/badge/install-pixi-F2B600)](https://segger-segmentation.readthedocs.io/en/latest/installation.html)
+[![install conda](https://img.shields.io/badge/install-conda-44A833)](https://segger-segmentation.readthedocs.io/en/latest/installation.html)
 
 Cell segmentation for imaging-based spatial transcriptomics as graph-based transcript–cell assignment.
 
