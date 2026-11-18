@@ -12,6 +12,12 @@ warnings.filterwarnings("ignore", message=".*isinstance\\(treespec, LeafSpec\\).
 # ignore batch sampler warning. it returns every tile
 warnings.filterwarnings("ignore", message=".*custom batch sampler `DynamicBatchSamplerPatch` for prediction.*")
 
+# the lazily built model has uninitialized parameters, so lightning's parameter count is approximate
+warnings.filterwarnings("ignore", message=".*total number of parameters detected may be inaccurate.*`UninitializedParameter`.*")
+
+# small datasets only have a few training batches per epoch
+warnings.filterwarnings("ignore", message=".*number of training batches.*is smaller than the logging interval.*")
+
 import cupy as cp
 import torch
 import rmm
