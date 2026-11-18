@@ -58,6 +58,8 @@ segger export xeniumranger \
 
 See [notebooks/quickstart.ipynb](notebooks/quickstart.ipynb) for an end-to-end walkthrough.
 
+If you run into a problem, first check the [GitHub issues](https://github.com/dpeerlab/segger/issues) and the [known issues](https://segger-segmentation.readthedocs.io/en/latest/common-issues.html) in the docs.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
