@@ -3,6 +3,20 @@ Installation
 
 segger requires **CUDA 13** and **Python 3.13**.
 
+Recommended: install from PyPI
+------------------------------
+
+Use `uv` for faster installation into an existing or new python environment.
+
+... code-block:: bash
+   uv pip install segger
+
+Alternatively, `pip` installation works as well:
+
+.. code-block:: bash
+
+   pip install segger
+
 Clone the repository
 --------------------
 

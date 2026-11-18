@@ -28,27 +28,11 @@ Full documentation - installation, quickstart, outputs, API reference, etc.:
 
 **segger** requires CUDA 13 and Python 3.13.
 
-Clone the repo, then use `conda` or `pixi`:
-
 ```bash
-git clone https://github.com/dpeerlab/segger.git && cd segger
+uv pip install segger
 ```
 
-```bash
-# conda
-conda env create -n segger -f environment.yml
-conda activate segger
-
-# pixi
-pixi install
-pixi shell
-```
-
-Alternatively, install directly from GitHub without cloning:
-
-```bash
-pip install --extra-index-url https://pypi.nvidia.com --extra-index-url https://download.pytorch.org/whl/cu130 git+https://github.com/dpeerlab/segger.git
-```
+For conda, pixi, installing from source and older CUDA versions, see the [installation docs](https://segger-segmentation.readthedocs.io/en/latest/installation.html).
 
 ## Usage
 
