@@ -1,10 +1,22 @@
 import logging
 import os
+import warnings
 from pathlib import Path
 
-import dask
+# torch_geometric uses torch.jit. issue here: https://github.com/pyg-team/pytorch_geometric/issues/10697
+warnings.filterwarnings("ignore", message=".*torch.jit.script.*is deprecated", category=FutureWarning)
 
-dask.config.set({"dataframe.query-planning": False})  # spatialdata doesn't yet support dask-expr; must be set before cudf pulls in dask.dataframe
+# ignore lightning's pytree warning: https://github.com/Lightning-AI/pytorch-lightning/issues/21326
+warnings.filterwarnings("ignore", message=".*isinstance\\(treespec, LeafSpec\\).*is deprecated")
+
+# ignore batch sampler warning. it returns every tile
+warnings.filterwarnings("ignore", message=".*custom batch sampler `DynamicBatchSamplerPatch` for prediction.*")
+
+# the lazily built model has uninitialized parameters, so lightning's parameter count is approximate
+warnings.filterwarnings("ignore", message=".*total number of parameters detected may be inaccurate.*`UninitializedParameter`.*")
+
+# small datasets only have a few training batches per epoch
+warnings.filterwarnings("ignore", message=".*number of training batches.*is smaller than the logging interval.*")
 
 import cupy as cp
 import torch
@@ -17,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def configure_memory(force: bool = False) -> None:
-    """Point CuPy/cuDF/cuSpatial and PyTorch at a single shared RMM pool.
+    """Point CuPy/cuDF/cuspa and PyTorch at a single shared RMM pool.
 
     Must run before any CUDA tensor is created. Run by default from the CLI.
     Importing segger as a library should not change already set allocators.
@@ -33,10 +45,12 @@ def configure_memory(force: bool = False) -> None:
     if not force and cp.cuda.get_allocator() is rmm_cupy_allocator:
         logger.info("Allocators not configured: RMM pool already active.")
         return
+    # Note: cuspa's CUDA kernels currently reject managed-memory pointers.
     rmm.reinitialize(pool_allocator=True, managed_memory=True)
     cp.cuda.set_allocator(rmm_cupy_allocator)
     torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
     enable_statistics()
+
 
 def free_mem_str() -> str:
     stats = get_statistics()
@@ -50,3 +64,5 @@ def free_mem_str() -> str:
 
 def print_free_mem():
     print(free_mem_str())
+
+from .api import segment

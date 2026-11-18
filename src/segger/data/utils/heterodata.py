@@ -124,6 +124,23 @@ def setup_heterodata(
         .set_index(bd_fields.index)
     )
 
+    # check that every cell id has a corresponding prediction polygon
+    if prediction_graph_mode != "uniform":
+        boundary_type = (bd_fields.cell_value if prediction_graph_mode == "cell"
+                         else bd_fields.nucleus_value)
+        pred_ids = boundaries.loc[
+            boundaries[bd_fields.boundary_type] == boundary_type, bd_fields.id
+        ].astype(str).tolist()
+        cell_ids = adata.obs[bd_fields.id].astype(str).tolist()
+        if pred_ids != cell_ids:
+            missing = sorted(set(cell_ids) - set(pred_ids))
+            raise ValueError(
+                f"Prediction boundaries (mode='{prediction_graph_mode}') must have exactly one "
+                f"'{boundary_type}' polygon for each of the {len(cell_ids)} cells; "
+                f"{len(missing)} cells have none (e.g. {missing[:5]}) and "
+                f"{len(set(pred_ids) - set(cell_ids))} polygons match no cell."
+            )
+
     # Create PyG object
     data = HeteroData()
 
@@ -132,8 +149,7 @@ def setup_heterodata(
     data['tx']['x'] = transcripts[tx_fields.gene_encoding].to_torch()
     data['tx']['cluster'] = transcripts[tx_fields.gene_cluster].to_torch()
     data['tx']['index'] = transcripts[tx_fields.row_index].to_torch()
-    data['tx']['geometry'] = transcripts[[tx_fields.x, tx_fields.y]].to_torch()
-    data['tx']['pos'] = data['tx']['geometry']
+    data['tx']['pos'] = transcripts[[tx_fields.x, tx_fields.y]].to_torch()
 
     # Boundary nodes
     logger.debug("Setting up boundary nodes")
@@ -143,9 +159,8 @@ def setup_heterodata(
         adata.obs[cells_clusters_column].values).to(torch.int)
     data['bd']['index'] = torch.tensor(
         adata.obs[cells_encoding_column].values).to(torch.int)
-    data['bd']['geometry'] = torch.tensor(
+    data['bd']['pos'] = torch.tensor(
         adata.obsm['X_spatial']).to(torch.float)
-    data['bd']['pos'] = data['bd']['geometry']
 
     # Transcript neighbors graph
     logger.debug("Setting up transcript neighbors graph")

@@ -1,19 +1,29 @@
 [project]
 name = "segger"
-version = "0.3.1"
+version = "1.0.0"
 description = "Segmentation of spatial transcriptomics data"
 authors = [
     {name = "Elyas Heidari", email = "elyas.heidari@dkfz-heidelberg.de"},
     {name = "Andrew Moorman", email = "moormana@mskcc.org"},
 ]
 keywords = ["spatial-transcriptomics", "segmentation", "image-analysis"]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 
 dependencies = [
     "anndata",
     "cyclopts",
+    "fastquadtree",
     "geopandas",
     "imagecodecs",
     "numba",
@@ -22,21 +32,56 @@ dependencies = [
     "pandas",
     "polars",
     "pyarrow",
-    "scanpy",
+    "scanpy>=1.13",
     "scipy",
     "shapely",
     "scikit-image",
     "scikit-learn",
     "tifffile",
-    "tqdm"
+    "tqdm",
+    # CUDA 13 GPU stack (incl. cuspa)
+    "torch==2.14.*",
+    "torchvision",
+    "lightning",
+    "torch_geometric",
+    "cuspa-cu13",
+    # add floors to avoid resolving to placeholder wheels
+    "cudf-cu13>=26",
+    "cuml-cu13>=26",
+    "cugraph-cu13>=26",
+    "cupy-cuda13x",
+    "rmm-cu13>=26",
 ]
 
+[project.urls]
+Homepage = "https://github.com/dpeerlab/segger"
+Documentation = "https://segger-segmentation.readthedocs.io/en/latest/"
+Repository = "https://github.com/dpeerlab/segger"
+Changelog = "https://github.com/dpeerlab/segger/blob/main/CHANGELOG.md"
+Issues = "https://github.com/dpeerlab/segger/issues"
+
+[project.optional-dependencies]
+spatialdata = ["spatialdata"]
+
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/segger"]
 
+# keep notebooks, docs, scripts and large figures out of the sdist
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/CHANGELOG.md", "/LICENSE", "/pyproject.toml"]
+
 [project.scripts]
 segger = "segger.cli.main:app"
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu130"
+
+[[tool.uv.index]]
+url = "https://pypi.nvidia.com"
