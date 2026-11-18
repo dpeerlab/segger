@@ -19,8 +19,6 @@ GNN-based cell segmentation of spatial transcriptomics data.
    `release v0.4.0-manuscript <https://github.com/dpeerlab/segger/releases/tag/v0.4.0-manuscript>`_.
    It requires CUDA 13 and Python 3.13 and is **not yet stable**. Install it with
    ``git clone --branch v0.4.0-manuscript https://github.com/dpeerlab/segger.git && cd segger && pixi install``.
-   cuspa is compiled only for the GPU of the install machine; to run on other GPU types, see
-   :ref:`Common issues <no-kernel-image>`.
 
 `Methods description <https://github.com/dpeerlab/segger/blob/main/segger_methods.pdf>`_ | `GitHub <https://github.com/dpeerlab/segger>`_
 
