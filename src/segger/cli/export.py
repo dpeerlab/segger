@@ -320,7 +320,7 @@ def export(
     ] = "delaunay",
     chaikin_iterations: Annotated[
         int, Parameter(group=_group_opts, help="Chaikin corner-cutting iterations to round boundaries (0 disables).")
-    ] = 0,
+    ] = 2,
     include_all_transcripts: _IncludeAll = None,
     sdata_transcripts_name: _SdataTranscriptsName = "transcripts",
     sdata_cell_boundaries_name: _SdataCellBoundariesName = "cell_boundaries_segger",
