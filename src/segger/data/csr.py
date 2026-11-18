@@ -171,7 +171,10 @@ def index_to_ptr(
     if is_sorted:
         if labels.dtype != torch.int64 and n > INT_MAX:
             labels = labels.long()
-        ptr = index2ptr(labels, n_buckets).to(torch.int64)
+        if labels.is_cuda and n >= 2 ** 31:
+            ptr = _count_ptr(labels, n_buckets, chunk)
+        else:
+            ptr = index2ptr(labels, n_buckets).to(torch.int64)
         return ptr, torch.arange(n, dtype=dtype, device=labels.device)
 
     # always use chunked argsort which needs less memory

@@ -454,7 +454,7 @@ def segment(
 
     from lightning.pytorch.loggers import CSVLogger
     from lightning.pytorch import Trainer
-    from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar
+    from lightning.pytorch.callbacks import ModelCheckpoint
     from ..data import ISTSegmentationWriter
     
     csvlogger = CSVLogger(output_directory)
@@ -462,25 +462,7 @@ def segment(
         output_directory,
         debug=debug,
     )
-
-    # progress bar is difficult to estimate for large datasets. Just estimate it. progress to 95% and wait until done.
-    class _PredictBar(RichProgressBar):
-        def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-            # update progress bar
-            self.progress.update(
-                self.predict_progress_bar_id,
-                total=max(
-                    self.total_predict_batches_current_dataloader,
-                    int((batch_idx + 1) / 0.95) + 1)
-                )
-            super().on_predict_batch_end(trainer, pl_module, outputs, batch, batch_idx, dataloader_idx)
-        
-        def on_predict_end(self, trainer, pl_module): 
-            # snap to 100% once done
-            self.progress.update(self.predict_progress_bar_id, total=self.progress.tasks[self.predict_progress_bar_id].completed)
-            super().on_predict_end(trainer, pl_module)
-    
-    callbacks = [writer, _PredictBar()]
+    callbacks = [writer]
 
     if debug:
         checkpoint_callback = ModelCheckpoint(
@@ -506,6 +488,7 @@ def segment(
 
     # Prediction
     logger.info("Start prediction")
+    trainer.progress_bar_callback.disable()  # predict sampler shows its own tqdm bar
     predictions = trainer.predict(model=model, datamodule=datamodule)
 
     # Export, then point to the remaining formats

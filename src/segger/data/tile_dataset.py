@@ -2,6 +2,7 @@ from torch_geometric.loader import DynamicBatchSampler
 from torch_geometric.data.storage import NodeStorage
 from torch_geometric.data import Data, HeteroData
 from torch.utils.data import Dataset
+from tqdm import tqdm
 import logging
 import shapely
 import torch
@@ -391,12 +392,23 @@ class TilePredictDataset(Dataset):
         return subset
 
 class DynamicBatchSamplerPatch(DynamicBatchSampler):
-    """TODO: Description
-    """
+    """Prediction batch sampler with an estimated tqdm progress bar."""
+
     def __len__(self):
-        # estimate max: use ~50 evenly spaced tiles to approximate the number of batches
-        if not hasattr(self, "_n_est"):
-            n = len(self.dataset); ids = range(0, n, max(1, n // 50))
-            self._n_est = max(1, round(n * sum(self.dataset[i].num_edges for i in ids) / len(ids) / self.max_num))
-        return self._n_est
+        return len(self.dataset)
+
+    def __iter__(self):
+        # estimate batch count (multiple tiles are batched per iteration)
+        n = len(self.dataset)
+        ids = range(0, n, max(1, n // 50))
+        est = max(1, round(n * sum(self.dataset[i].num_edges for i in ids) / len(ids) / self.max_num))
+        bar = tqdm(total=est, desc="Predicting")
+        for batch in super().__iter__():
+            yield batch
+            bar.update()
+            # hold the bar below 100% until the sampler is actually done.
+            if bar.n >= 0.95 * bar.total:
+                bar.total = int(bar.n / 0.95) + 1
+        bar.total = bar.n
+        bar.close()
 
