@@ -28,5 +28,10 @@ html_theme_options = {
     "github_url": "https://github.com/dpeerlab/segger",
     "show_toc_level": 2,
     "navigation_depth": 3,
+    "secondary_sidebar_items": [],
 }
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+# the sections of the current page, in the left sidebar (the top bar only links to top-level pages)
+html_sidebars = {"**": ["sidebar-nav-bs", "page-toc"]}
 html_show_copyright = False
