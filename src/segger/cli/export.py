@@ -65,8 +65,8 @@ _IncludeAll = Annotated[
     Optional[bool],
     Parameter(
         group=_group_opts,
-        help="Override each element's default transcript filtering. Unset (default): 'anndata' and 'boundaries' "
-        "use only filtered transcripts, 'transcripts' and 'spatialdata' use all of them. Pass this flag to force "
+        help="Override each element's default transcript filtering. Unset (default): 'anndata', 'boundaries' "
+        "and 'transcripts-filtered' use only filtered transcripts, 'spatialdata' and 'xeniumranger' use all of them. Pass this flag to force "
         "every element to include all transcripts, or --no-include-all-transcripts to restrict every element to "
         "filtered ones.",
     ),
@@ -383,8 +383,8 @@ def export(
 
     # save outputs
     if "transcripts-filtered" in selected:
-        tx.write_parquet(output_directory / "transcripts.parquet")
-        print(f"Wrote {tx.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
+        tx_filtered.write_parquet(output_directory / "transcripts.parquet")
+        print(f"Wrote {tx_filtered.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
 
     if "boundaries" in selected:
         gdf.to_parquet(output_directory / "cell_boundaries.parquet")

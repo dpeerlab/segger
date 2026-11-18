@@ -27,6 +27,9 @@ checkpoint.
 From ``segger export``
 ------------------------
 
+``segger segment --export <elements>`` runs this automatically and writes to ``<output>/export``
+(default ``anndata``). Or run it yourself:
+
 .. code-block:: bash
 
    segger export anndata \

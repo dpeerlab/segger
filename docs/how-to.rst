@@ -1,8 +1,10 @@
 How To
 ======
 
-Run segger segmentation
--------------------------
+.. _how-to-cli:
+
+Run segger: CLI
+---------------
 
 .. code-block:: bash
 
@@ -25,11 +27,9 @@ See all available options:
 
    segger segment --help
 
-Use data prepared by another tool
------------------------------------
 
-Tools like `Sopa <https://github.com/prism-oncology/sopa>`_ can give segger already
-filtered data in the ``standard`` format, a directory with two files:
+Data prepared by another tool, such as `Sopa <https://github.com/prism-oncology/sopa>`_, can be given to
+segger in the ``standard`` format, a directory with two files:
 
 - ``transcripts.parquet``: ``x``, ``y`` (microns), ``feature_name``, ``cell_id``
   (prior cell, ``0`` = unassigned) and optionally ``cell_compartment``
@@ -44,7 +44,11 @@ polygons, segger falls back to ``--segmentation-mode cell``.
 
    segger segment -i /path/to/standard/dir/ -o /path/to/outputs/ --platform standard
 
-The same data can be passed in memory from Python. ``segger.segment`` takes any
+Run segger: API
+---------------
+
+``segger.segment`` runs segger from Python on in-memory data (the ``standard`` format described under
+:ref:`how-to-cli`, as a transcripts DataFrame and a boundaries GeoDataFrame). It takes any
 ``segger segment`` option by its Python name and returns the content of
 ``segger_segmentation.parquet``:
 
@@ -65,10 +69,15 @@ The same data can be passed in memory from Python. ``segger.segment`` takes any
 ``feature_name`` and ``filtered`` (see :doc:`outputs`). Join it to your transcripts by
 ``row_index`` (the row position in ``transcripts``), or run ``segger export <format>``
 on ``/path/to/outputs/segger_segmentation.parquet`` to turn it into an AnnData table or
-other formats (see below).
+other formats (see `Export results`_).
 
-Export to other formats
---------------------------
+Export results
+--------------
+
+``segger export`` writes segger's results in the format your downstream tool needs.
+
+Overview
+~~~~~~~~
 
 ``segger export`` turns ``segger_segmentation.parquet`` into other formats:
 
@@ -76,6 +85,7 @@ Export to other formats
 - ``boundaries`` — one polygon per cell, as GeoParquet
 - ``transcripts-filtered`` — per-transcript table with assigned cell IDs
 - ``spatialdata`` — adds segger's outputs into an existing SpatialData store
+- ``xeniumranger`` — inputs for ``xeniumranger import-segmentation`` (Xenium only)
 
 For example, to write an AnnData table and cell boundaries:
 
@@ -85,14 +95,18 @@ For example, to write an AnnData table and cell boundaries:
        -s /path/to/save/outputs/segger_segmentation.parquet \
        -o /path/to/export/
 
+You can also export while segmenting: ``segger segment`` runs ``segger export`` for you and writes
+``anndata`` to ``<output>/export`` by default. Choose other elements with ``--export``, e.g.
+``segger segment -i ... -o ... --export anndata boundaries``, or skip it with ``--empty-export``.
+
 See :doc:`outputs` for a description of each file, or:
 
 .. code-block:: bash
 
    segger export --help
 
-Use with SpatialData
-----------------------
+SpatialData
+~~~~~~~~~~~
 
 If you want a `SpatialData <https://spatialdata.scverse.org>`_ object instead of plain files
 (e.g. for squidpy, SOPA, or napari-spatialdata), the recommended workflow is:
@@ -120,8 +134,8 @@ This edits ``sdata.zarr`` in place: it appends segger's per-transcript columns t
 ``transcripts`` points element, and adds ``cell_boundaries_segger`` (shapes) and ``table_segger``
 (table) elements. See :doc:`outputs` for details.
 
-Use with Xenium Explorer
---------------------------
+Xenium Ranger
+~~~~~~~~~~~~~
 
 To bring segger's segmentation back into a Xenium bundle, so it opens in `Xenium Explorer
 <https://www.10xgenomics.com/support/software/xenium-explorer>`_, use `xeniumranger

@@ -50,13 +50,16 @@ to implement segger natively into `sopa <https://github.com/prism-oncology/sopa/
      - delaunay
      - Cell-polygon method for boundaries (``delaunay`` or ``convex_hull``); recommended default.
    * - ``--chaikin-iterations``
-     - 0
+     - 2
      - `Chaikin corner-cutting <https://www.cs.unc.edu/~dm/UNC/COMP258/LECTURES/Chaikins-Algorithm.pdf>`_
        iterations to round boundaries (``0`` disables).
    * - ``--include-all-transcripts``
-     - True
-     - Keep every transcript in the segmentation output, not just the ones segger's ``filtered``
-       column marks as kept.
+     - unset
+     - Overrides each element's default transcript filtering. Unset: ``anndata``, ``boundaries`` and
+       ``transcripts-filtered`` use only transcripts segger's ``filtered`` column marks as kept;
+       ``spatialdata`` and ``xeniumranger`` use all of them.
+       ``--include-all-transcripts`` makes every element use all transcripts;
+       ``--no-include-all-transcripts`` restricts every element to filtered ones.
    * - ``--min-counts``
      - 10
      - Minimum assigned transcripts a cell must have to be included (must be ``>= 3`` for
