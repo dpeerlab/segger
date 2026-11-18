@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- PyPI packaging: package metadata, sdist contents and README image links are set up for publishing `segger` to PyPI, starting with release candidates.
+
 ## [0.3.1] - 2026-10-14
 
 Bugfixes and reader updates for the CUDA 12 install, released before the 0.4.0 move to
