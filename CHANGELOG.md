@@ -19,10 +19,16 @@ the manuscript, which already included the `cuspa` acceleration that is now clea
 - CUDA 13 / Python >=3.13 is the only supported install path. CUDA 12 users: use `v0.3.0` (#91).
 - Lower memory: multiple meassures to lower memory footprint and support large vectors exceeding int32 (#91).
 - The export element `transcripts` is renamed `transcripts-filtered` (#110).
+- `segger export` smooths boundaries by default: `--chaikin-iterations` is now 2 (was 0) (#109).
+- `segger segment` logs its main steps at INFO and keeps Lightning's logs for `--debug`.
+  `scanpy>=1.13` is required (#111).
 
 ### Fixed
 - Predict progress bar uses an estimated batch count and reaches 100% when done (#108).
+- `segger export transcripts-filtered` writes only the `filtered` transcripts by default (#112).
 - `FastTripletSelector` no longer modifies the datamodule's cluster similarity tensor (#105).
+- Warnings printed by `segger segment`: AnnData views modified in place, scanpy's deprecated
+  `normalize_total(layer=...)`, and `torch.jit` and Lightning deprecation notices (#111).
 - RAPIDS dependencies must be `>=26`, otherwise `uv` would resolve to empty placeholder wheels (#91).
 - `gene_missing_strategy="remove"` and the `gene_corr_reference` raw-count and `genes_min_counts`
   checks (#91).
