@@ -2,7 +2,7 @@
 
 GNN-based cell segmentation of spatial transcriptomics data.
 
-![segger overview](segger_overview.png)
+![segger overview](https://raw.githubusercontent.com/dpeerlab/segger/main/segger_overview.png)
 
 > Segger is a graph neural network (GNN)-based method that formulates cell segmentation in imaging-based spatial transcriptomics (iST) as a problem of transcript–cell assignment. Rather than relying solely on geometric proximity, Segger assumes that a transcript belongs to a cell if it is consistent both with its local spatial context and with the gene expression programs that define cell identity, as captured in a shared latent representation.
 >
