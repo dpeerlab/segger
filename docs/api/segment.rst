@@ -20,10 +20,15 @@ I/O
    * - ``-o, --output-directory``
      - *required*
      - Output directory.
+   * - ``--transcripts-cell-id``
+     - None
+     - Usually not needed. Column in the transcripts file with cell assignments (e.g. a custom
+       segmentation column). Defaults to the platform default.
    * - ``--export``
      - anndata
-     - Elements to export once segmentation is done, written to ``<output>/export``. Runs
-       :doc:`segger export <export>`, see there for the elements. ``--empty-export`` skips it.
+     - Elements to export once segmentation is done, written to ``<output>/export``: ``anndata``,
+       ``transcripts-filtered``, ``boundaries`` and ``xeniumranger`` (needs ``-i``). Runs
+       :doc:`segger export <export>`, see there for details. ``--empty-export`` skips it.
    * - ``--transcripts``
      - None
      - Usually not needed. Path to a custom transcripts file (relative paths resolve against the input directory). Requires ``--boundaries`` and ``--platform``.
@@ -100,6 +105,9 @@ Segmentation (prediction) graph
    * - Flag
      - Default
      - Description
+   * - ``--segmentation-mode``
+     - nucleus
+     - Segmentation used as the reference for training edges (``nucleus`` or ``cell``).
    * - ``--prediction-mode``
      - cell
      - Graph structure used during prediction (``nucleus``, ``cell``, ``uniform``).
