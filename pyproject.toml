@@ -23,7 +23,7 @@ dependencies = [
     "pandas",
     "polars",
     "pyarrow",
-    "scanpy",
+    "scanpy>=1.13",
     "scipy",
     "shapely",
     "scikit-image",

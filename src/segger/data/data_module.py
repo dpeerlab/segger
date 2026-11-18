@@ -241,7 +241,7 @@ class ISTDataModule(LightningDataModule):
         bd_fields = StandardBoundaryFields()
 
         # Load standardized IST data
-        self.logger.debug(f"Loading standardized IST data from {self.input_directory}...")
+        self.logger.info("Reading data...")
         if self.transcripts is not None and not isinstance(self.transcripts, (str, Path)):
             if self.platform is not None:
                 self.logger.warning(

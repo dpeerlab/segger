@@ -38,6 +38,7 @@ def setup_logging(
     if debug:
         logging.getLogger("segger").setLevel(logging.DEBUG)
     else:
-        segger_log_level = os.environ.get("SEGGER_LOG_LEVEL")
-        if segger_log_level:
-            logging.getLogger("segger").setLevel(segger_log_level.upper())
+        # lightning sets its own logger to INFO when imported, so import it first, then quiet it
+        import lightning.pytorch  # noqa: F401
+        logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
+        logging.getLogger("segger").setLevel(os.environ.get("SEGGER_LOG_LEVEL", "INFO").upper())

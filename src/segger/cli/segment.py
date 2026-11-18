@@ -501,11 +501,11 @@ def segment(
     )
 
     # Training
-    logger.debug("Starting training")
+    logger.info("Start training")
     trainer.fit(model=model, datamodule=datamodule)
 
     # Prediction
-    logger.debug("Predicting segmentation")
+    logger.info("Start prediction")
     predictions = trainer.predict(model=model, datamodule=datamodule)
 
     # Export, then point to the remaining formats

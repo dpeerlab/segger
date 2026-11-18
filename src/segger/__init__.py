@@ -1,6 +1,22 @@
 import logging
 import os
+import warnings
 from pathlib import Path
+
+# torch_geometric uses torch.jit. issue here: https://github.com/pyg-team/pytorch_geometric/issues/10697
+warnings.filterwarnings("ignore", message=".*torch.jit.script.*is deprecated", category=FutureWarning)
+
+# ignore lightning's pytree warning: https://github.com/Lightning-AI/pytorch-lightning/issues/21326
+warnings.filterwarnings("ignore", message=".*isinstance\\(treespec, LeafSpec\\).*is deprecated")
+
+# ignore batch sampler warning. it returns every tile
+warnings.filterwarnings("ignore", message=".*custom batch sampler `DynamicBatchSamplerPatch` for prediction.*")
+
+# the lazily built model has uninitialized parameters, so lightning's parameter count is approximate
+warnings.filterwarnings("ignore", message=".*total number of parameters detected may be inaccurate.*`UninitializedParameter`.*")
+
+# small datasets only have a few training batches per epoch
+warnings.filterwarnings("ignore", message=".*number of training batches.*is smaller than the logging interval.*")
 
 import cupy as cp
 import torch
