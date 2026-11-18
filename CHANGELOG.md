@@ -12,6 +12,7 @@ the manuscript, which already included the `cuspa` acceleration that is now clea
 - `segger export xeniumranger`: transcript assignment CSV and boundary GeoJSON for
   `xeniumranger import-segmentation` (#89).
 - `segger segment --export <elements>` runs `segger export` after segmentation (default `anndata`) (#110).
+- PyPI packaging: package metadata, sdist contents and README image links are set up for publishing `segger` to PyPI (`uv pip install segger`).
 
 ### Changed
 - cuSpatial is replaced by `cuspa` for point-in-polygon joins and by `fastquadtree` for quadtree

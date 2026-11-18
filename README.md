@@ -9,7 +9,7 @@
 
 Cell segmentation for imaging-based spatial transcriptomics as graph-based transcript–cell assignment.
 
-![segger overview](segger_overview.png)
+![segger overview](https://raw.githubusercontent.com/dpeerlab/segger/main/segger_overview.png)
 
 > Segger is a graph neural network (GNN)-based method that formulates cell segmentation in imaging-based spatial transcriptomics (iST) as a problem of transcript–cell assignment. Rather than relying solely on geometric proximity, Segger assumes that a transcript belongs to a cell if it is consistent both with its local spatial context and with the gene expression programs that define cell identity, as captured in a shared latent representation.
 >
@@ -26,27 +26,11 @@ Full documentation - installation, quickstart, outputs, API reference, etc.:
 
 **segger** requires CUDA 13 and Python 3.13.
 
-Clone the repo, then use `conda` or `pixi`:
-
 ```bash
-git clone https://github.com/dpeerlab/segger.git && cd segger
+uv pip install segger
 ```
 
-```bash
-# conda
-conda env create -n segger -f environment.yml
-conda activate segger
-
-# pixi
-pixi install
-pixi shell
-```
-
-Alternatively, install directly from GitHub without cloning:
-
-```bash
-pip install --extra-index-url https://pypi.nvidia.com --extra-index-url https://download.pytorch.org/whl/cu130 git+https://github.com/dpeerlab/segger.git
-```
+For conda, pixi, installing from source and older CUDA versions, see the [installation docs](https://segger-segmentation.readthedocs.io/en/latest/installation.html).
 
 ## Usage
 
