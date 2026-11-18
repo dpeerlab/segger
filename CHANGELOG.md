@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.0.0] - Unreleased
+
+First stable release with `cuspa` acceleration, scaling to atera-scale datasets and integrating
+with community tools like Sopa. It skips `v0.4.0-manuscript`: a pre-stable version used only for
+the manuscript, which already included the `cuspa` acceleration that is now cleanly integrated here.
+
+### Added
+- `standard` input format for data prepared by other tools (e.g. Sopa), `segger segment --platform`
+  to choose the input format, and `segger.segment()` for in-memory transcripts and boundaries (#107).
+- `segger export xeniumranger`: transcript assignment CSV and boundary GeoJSON for
+  `xeniumranger import-segmentation` (#89).
+- `segger segment --export <elements>` runs `segger export` after segmentation (default `anndata`) (#110).
+
+### Changed
+- cuSpatial is replaced by `cuspa` for point-in-polygon joins and by `fastquadtree` for quadtree
+  tiling; tile indexing uses CSR pointers (#91).
+- CUDA 13 / Python >=3.13 is the only supported install path. CUDA 12 users: use `v0.3.0` (#91).
+- Lower memory: multiple meassures to lower memory footprint and support large vectors exceeding int32 (#91).
+- The export element `transcripts` is renamed `transcripts-filtered` (#110).
+- `segger export` smooths boundaries by default: `--chaikin-iterations` is now 2 (was 0) (#109).
+- `segger segment` logs its main steps at INFO and keeps Lightning's logs for `--debug`.
+  `scanpy>=1.13` is required (#111).
+
+### Fixed
+- Predict progress bar uses an estimated batch count and reaches 100% when done (#108).
+- `segger export transcripts-filtered` writes only the `filtered` transcripts by default (#112).
+- `FastTripletSelector` no longer modifies the datamodule's cluster similarity tensor (#105).
+- Warnings printed by `segger segment`: AnnData views modified in place, scanpy's deprecated
+  `normalize_total(layer=...)`, and `torch.jit` and Lightning deprecation notices (#111).
+- RAPIDS dependencies must be `>=26`, otherwise `uv` would resolve to empty placeholder wheels (#91).
+- `gene_missing_strategy="remove"` and the `gene_corr_reference` raw-count and `genes_min_counts`
+  checks (#91).
+
+### Removed
+- `--save-anndata` and `segger_anndata.h5ad`; use `segger export anndata` (#110).
+- `--cells-boundaries-file` and `--nucleus-boundaries-file`; use `--boundaries` and `--transcripts` (#107).
+- The cuda121 environment (#91).
+
+Thanks to @Intron7 for `cuspa`, @jtetrea for the CSR tile indexing design, and @alihamraoui
+for the segger API.
+
+[1.0.0]: https://github.com/dpeerlab/segger/releases/tag/v1.0.0
+
+
 ## [0.3.1] - 2026-10-14
 
 Bugfixes and reader updates for the CUDA 12 install, released before the 0.4.0 move to
