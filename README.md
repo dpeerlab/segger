@@ -19,6 +19,10 @@ GNN-based cell segmentation of spatial transcriptomics data.
 > pixi install   # or: conda env create -n segger -f environment.yml
 > ```
 >
+> `cuspa` is compiled only for the GPU of the machine you install on. To run on other GPU types (e.g. a cluster
+> with A100, L40S and H100 nodes), rebuild it for all of them, otherwise segger fails with `CUDA error: no kernel
+> image is available for execution on the device`. See [Common issues](docs/common-issues.rst#no-kernel-image-is-available-on-some-gpus).
+>
 > The instructions below install the stable release on `main`.
 
 Full documentation - installation, quickstart, outputs, API reference, etc.:
