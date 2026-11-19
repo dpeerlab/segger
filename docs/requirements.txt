@@ -2,3 +2,4 @@ sphinx<8
 pydata-sphinx-theme
 nbsphinx
 ipython
+myst-parser

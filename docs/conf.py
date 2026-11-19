@@ -4,7 +4,7 @@ project = "segger"
 author = "Elyas Heidari, Andrew Moorman"
 maintainer = "Tobias Krause"
 
-extensions = ["nbsphinx"]
+extensions = ["nbsphinx", "myst_parser"]
 
 # Adds a "View on GitHub / Download notebook" link at the top of every notebook page.
 nbsphinx_prolog = r"""

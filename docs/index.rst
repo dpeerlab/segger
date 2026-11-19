@@ -51,3 +51,4 @@ If you use segger in your research, please cite:
    outputs
    common-issues
    api/index
+   changelog
