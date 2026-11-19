@@ -12,7 +12,10 @@ the manuscript, which already included the `cuspa` acceleration that is now clea
 - `segger export xeniumranger`: transcript assignment CSV and boundary GeoJSON for
   `xeniumranger import-segmentation` (#89).
 - `segger segment --export <elements>` runs `segger export` after segmentation (default `anndata`) (#110).
-- PyPI packaging: package metadata, sdist contents and README image links are set up for publishing `segger` to PyPI (`uv pip install segger`).
+- PyPI packaging: package metadata, sdist contents and README image links are set up for publishing `segger` to PyPI (`uv pip install segger`) (#113).
+- MIT license (#112).
+- Docs: PyData theme, restructured how-to (#112), and a common-issues entry on rebuilding `cuspa`
+  for multiple GPU architectures (#114).
 
 ### Changed
 - cuSpatial is replaced by `cuspa` for point-in-polygon joins and by `fastquadtree` for quadtree
@@ -25,7 +28,9 @@ the manuscript, which already included the `cuspa` acceleration that is now clea
   `scanpy>=1.13` is required (#111).
 
 ### Fixed
-- Predict progress bar uses an estimated batch count and reaches 100% when done (#108).
+- Predict shows a progress bar with an estimated batch count and reaches 100% when done (#108, #115).
+- Predict no longer crashes on empty batches and keeps the full graph off the GPU; label counting
+  supports more than 2^31 entries on GPU (#115).
 - `segger export transcripts-filtered` writes only the `filtered` transcripts by default (#112).
 - `FastTripletSelector` no longer modifies the datamodule's cluster similarity tensor (#105).
 - Warnings printed by `segger segment`: AnnData views modified in place, scanpy's deprecated
@@ -39,11 +44,17 @@ the manuscript, which already included the `cuspa` acceleration that is now clea
 - `--cells-boundaries-file` and `--nucleus-boundaries-file`; use `--boundaries` and `--transcripts` (#107).
 - The cuda121 environment (#91).
 
-Thanks to @Intron7 for `cuspa`, @jtetrea for the CSR tile indexing design, and @alihamraoui
-for the segger API.
+Thanks to @Intron7 for `cuspa`, @jtetrea for the CSR tile indexing design, @alihamraoui
+for the segger API, @lemonardo1 for the `FastTripletSelector` fix, and @aelhossiny for the
+multi-GPU `cuspa` build.
 
 [1.0.0]: https://github.com/dpeerlab/segger/releases/tag/v1.0.0
 
+## [0.4.0-manuscript] - 2026-10-30
+
+Pre-stable precursor of 1.0.0, branched off the main history; the version used for the revised manuscript.
+
+[0.4.0-manuscript]: https://github.com/dpeerlab/segger/releases/tag/v0.4.0-manuscript
 
 ## [0.3.1] - 2026-10-14
 
