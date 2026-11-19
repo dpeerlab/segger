@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-19
 
 First stable release with `cuspa` acceleration, scaling to atera-scale datasets and integrating
 with community tools like Sopa. It skips `v0.4.0-manuscript`: a pre-stable version used only for
