@@ -9,7 +9,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-export UV_CACHE_DIR="/usersoftware/peerd/${USER}/.uv_cache"
+: "${UV_CACHE_DIR:=$REPO_ROOT/.uv_cache}"
+export UV_CACHE_DIR
 mkdir -p "$UV_CACHE_DIR"
 
 ## ---- Test PIP ----
