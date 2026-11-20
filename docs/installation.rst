@@ -18,6 +18,34 @@ Alternatively, `pip` installation works as well:
 
    pip install segger
 
+Use a container
+---------------
+
+Prebuilt images are on Docker Hub as ``sailmskcc/segger``. They include CUDA 13, so the host only
+needs an NVIDIA driver (version 580 or newer). Use ``latest`` or pin a release, e.g. ``:1.0.0``.
+
+**Apptainer / Singularity** (HPC clusters). Pull the image once into a SIF file; this takes about
+10-20 minutes. Set the cache to a disk with ~20 GB free:
+
+.. code-block:: bash
+
+   export APPTAINER_CACHEDIR=/path/to/cachedir
+   apptainer pull segger.sif docker://sailmskcc/segger:latest
+
+Run it on a GPU node. ``--nv`` passes the GPU driver into the container, and ``--bind`` mounts data
+outside your home directory:
+
+.. code-block:: bash
+
+   apptainer exec --nv --bind /path/to/data segger.sif segger segment -i ... -o ...
+
+**Docker**. The image's entrypoint is ``segger``:
+
+.. code-block:: bash
+
+   docker run --rm --gpus all --user "$(id -u):$(id -g)" -v /path/to/data:/data \
+     sailmskcc/segger:latest segment -i /data/input -o /data/output
+
 Clone the repository
 --------------------
 
