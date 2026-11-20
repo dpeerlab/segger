@@ -7,7 +7,6 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_ROOT=/data1/collab002/sail/projects/ongoing/segger_dev/tools/segger
 cd "$REPO_ROOT"
 
 export UV_CACHE_DIR="/usersoftware/peerd/${USER}/.uv_cache"
