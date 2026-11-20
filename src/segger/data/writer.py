@@ -5,13 +5,13 @@ from lightning.pytorch.callbacks import BasePredictionWriter
 from skimage.filters import threshold_yen
 from .utils.threshold import threshold_li_custom
 from lightning.pytorch import Trainer, LightningModule
+from torch_geometric.data import HeteroData
 from typing import Sequence, Any
 from pathlib import Path
 import polars as pl
 import torch
 from ..io import TrainingTranscriptFields, TrainingBoundaryFields
 from . import ISTDataModule
-from .utils.anndata import anndata_from_transcripts
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +27,11 @@ class ISTSegmentationWriter(BasePredictionWriter):
     def __init__(
             self,
             output_directory: Path,
-            save_anndata: bool = True,
             debug: bool = False
         ):
         # "write" callback at the end of prediction epoch
         super().__init__(write_interval="epoch")
         self.output_directory = Path(output_directory)
-        self.save_anndata = save_anndata
 
         # setup debugging
         self.debug = debug
@@ -93,67 +91,15 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
 
         # write transcripts
-        logger.debug(f"Writing segmentation output to {self.output_directory}...")
+        logger.info(f"Writing results to {self.output_directory}...")
         segmentation.write_parquet(self.output_directory / 'segger_segmentation.parquet')
-
-        # write anndata
-        logger.debug("Writing AnnData output...")
-        if self.save_anndata:
-            self.write_anndata(trainer, segmentation)
-
-    def write_anndata(
-            self,
-            trainer: Trainer,
-            segmentation: pl.DataFrame
-        ):
-        # Get fields
-        tx_fields = TrainingTranscriptFields()
-
-        tx = trainer.datamodule.tx
-        coordinate_columns = [tx_fields.x, tx_fields.y]
-        if tx_fields.z in tx.columns:
-            coordinate_columns.append(tx_fields.z)
-
-        transcripts = (
-            segmentation
-            .filter(
-                pl.col("segger_similarity") >= pl.col("similarity_threshold"),
-            )
-            .join(
-                tx.select([
-                    tx_fields.row_index,
-                    *coordinate_columns,
-                    tx_fields.feature,
-                ]),
-                on=tx_fields.row_index,
-                how='left',
-            )
-            .rename({tx_fields.feature: "segger_gene"})
-            .select([
-                tx_fields.row_index,
-                "segger_gene",
-                "segger_cell_id",
-                "segger_similarity",
-                "similarity_threshold",
-                *coordinate_columns,
-            ])
-        )
-
-        adata = anndata_from_transcripts(
-            transcripts,
-            feature_column="segger_gene",
-            cell_id_column="segger_cell_id",
-            score_column="segger_similarity",
-            coordinate_columns=coordinate_columns,
-        )
-        adata.write_h5ad(self.output_directory / 'segger_anndata.h5ad')
 
     @classmethod
     def assign_transcripts_to_cells(
         cls,
         obs: pl.DataFrame,
         predictions: Sequence[list],
-        logger: logging.Logger = None,
+        logger: logging.Logger | None = None,
     ) -> pl.DataFrame:
         """TODO: Description
 
@@ -224,7 +170,7 @@ class ISTSegmentationWriter(BasePredictionWriter):
         )
         
         # Per-gene thresholding (iterative to reduce memory usage)
-        logger.debug(f"Calculating per-gene similarity thresholds, using {segmentation.shape[0]/1e6:.1f}M transcripts...")
+        logger.info(f"Finding per-gene similarity thresholds, using {segmentation.shape[0]/1e6:.1f}M transcripts...")
         
         segmentation_group = (
             segmentation
@@ -288,7 +234,15 @@ class ISTSegmentationWriter(BasePredictionWriter):
 
     
     # Debugging callbacks
-    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+    def on_predict_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: Any,
+        batch: HeteroData,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
         mask = batch['tx']['predict_mask']
         self.n_tx_predicted += mask.sum().item()
         if not self.debug:
@@ -299,13 +253,13 @@ class ISTSegmentationWriter(BasePredictionWriter):
                 f"Finished prediction batch '{batch_idx}'. # TX so far {self.n_tx_predicted / 1e6:.1f}M"
             )
     
-    def on_fit_start(self, trainer, pl_module):
+    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if not self.debug:
             return
         logger.debug(f"Saving adata to {self.path_debug / 'adata_debug.h5ad'}")
         trainer.datamodule.ad.write_h5ad(self.path_debug / "adata_debug.h5ad")
 
-    def on_fit_end(self, trainer, pl_module):
+    def on_fit_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if not self.debug:
             return
         if self.debug:

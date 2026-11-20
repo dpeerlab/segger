@@ -4,7 +4,7 @@ import sys
 
 
 class MemFilter(logging.Filter):
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             from segger import free_mem_str
             record.mem = f" | {free_mem_str()}"
@@ -13,7 +13,9 @@ class MemFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: str = "WARNING", log_file: str = None, debug: bool = False):
+def setup_logging(
+    level: str = "WARNING", log_file: str | None = None, debug: bool = False
+) -> None:
     fmt = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d%(mem)s - %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -36,6 +38,7 @@ def setup_logging(level: str = "WARNING", log_file: str = None, debug: bool = Fa
     if debug:
         logging.getLogger("segger").setLevel(logging.DEBUG)
     else:
-        segger_log_level = os.environ.get("SEGGER_LOG_LEVEL")
-        if segger_log_level:
-            logging.getLogger("segger").setLevel(segger_log_level.upper())
+        # lightning sets its own logger to INFO when imported, so import it first, then quiet it
+        import lightning.pytorch  # noqa: F401
+        logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
+        logging.getLogger("segger").setLevel(os.environ.get("SEGGER_LOG_LEVEL", "INFO").upper())

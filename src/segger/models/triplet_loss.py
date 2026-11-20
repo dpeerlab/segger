@@ -19,6 +19,7 @@ class FastTripletSelector():
     ):
         super().__init__()
         _min_sampling_prob = 1e-8
+        cluster_similarity = cluster_similarity.clone()  # don't mutate caller's tensor
         cluster_similarity.fill_diagonal_(1)
         self.similarity = cluster_similarity.clamp_min(_min_sampling_prob)
         self.dissimilarity = (-cluster_similarity).clamp_min(_min_sampling_prob)

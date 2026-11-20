@@ -13,10 +13,9 @@ From ``segger segment``
 - ``x``, ``y``, ``feature_name``
 - ``filtered`` — assigned, converged, and above threshold; the recommended keep mask
 
-Segger also writes ``segger_anndata.h5ad``, a cell x gene AnnData table, unless ``--save-anndata``
-is disabled (this default will be deprecated soon — use ``segger export anndata`` instead). With
-``--debug``, it additionally writes a ``debug/`` directory with run params, tiles, predictions, and
-the trainer checkpoint.
+For an AnnData table or other formats, use ``segger export`` (see below). With ``--debug``, segger
+additionally writes a ``debug/`` directory with run params, tiles, predictions, and the trainer
+checkpoint.
 
 .. code-block:: python
 
@@ -27,6 +26,9 @@ the trainer checkpoint.
 
 From ``segger export``
 ------------------------
+
+``segger segment --export <elements>`` runs this automatically and writes to ``<output>/export``
+(default ``anndata``). Or run it yourself:
 
 .. code-block:: bash
 
@@ -49,7 +51,7 @@ From ``segger export``
      - ``cell_boundaries.parquet``
      - One polygon per cell, as GeoParquet
      - ``--method``, ``--chaikin-iterations``
-   * - ``transcripts``
+   * - ``transcripts-filtered``
      - ``transcripts.parquet``
      - Per-transcript table with assigned cell IDs
      - ``--include-all-transcripts``
@@ -57,6 +59,10 @@ From ``segger export``
      - ``<sdata>.zarr`` (in place)
      - Adds segger's outputs into an existing SpatialData store
      - ``--sdata``, ``--sdata-transcripts-name``, ``--sdata-cell-boundaries-name``, ``--sdata-table-name``
+   * - ``xeniumranger``
+     - ``xenium_transcript_assignment.csv``, ``xenium_cell_boundaries.geojson``
+     - Inputs for ``xeniumranger import-segmentation`` (Xenium only); prints the command to run (see :doc:`how-to`)
+     - ``-i``
 
 See :doc:`how-to` for how to build the SpatialData store in the first place, and :doc:`api/export`
 for a full description of every parameter.

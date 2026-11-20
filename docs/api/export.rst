@@ -4,9 +4,12 @@ segger export
 Positional arguments select which elements to write (default: ``anndata boundaries``):
 
 - ``anndata`` — cell x gene table (``adata.h5ad``), obs indexed by cell id.
-- ``transcripts`` — per-transcript cell assignments (``transcripts.parquet``), post-filtering.
+- ``transcripts-filtered`` — per-transcript cell assignments (``transcripts.parquet``), post-filtering.
 - ``boundaries`` — one polygon per cell (``cell_boundaries.parquet``), GeoParquet.
-- ``spatialdata`` — adds the above elements into an existing SpatialData Zarr store.
+- ``spatialdata`` — adds the above elements into an existing SpatialData Zarr store. See :doc:`../how-to`.
+- ``xeniumranger`` — xenium-ranger compatible table (``xenium_transcript_assignment.csv`` and
+  ``xenium_cell_boundaries.geojson``), plus the ``xeniumranger import-segmentation`` command to
+  run after. See :doc:`../how-to`.
 
 ``sopa`` exports: ``anndata`` + ``boundaries`` (the default) is enough. There is an ongoing effort
 to implement segger natively into `sopa <https://github.com/prism-oncology/sopa/issues/431>`_. Run
@@ -24,8 +27,8 @@ to implement segger natively into `sopa <https://github.com/prism-oncology/sopa/
    * - ``-i, --source-path``
      - None
      - The same IST dataset directory passed to ``segger segment -i`` (see :doc:`../how-to`).
-       Only needed for segger v0.2.0 outputs, which predate inline ``x``/``y``/``feature_name``
-       columns.
+       Needed for segger v0.2.0 outputs, which predate inline ``x``/``y``/``feature_name``
+       columns, and for the ``xeniumranger`` element (raw transcript IDs and the import command).
    * - ``-o, --output-directory``
      - None
      - Directory the selected elements are written to. Required unless the only element being
@@ -47,13 +50,16 @@ to implement segger natively into `sopa <https://github.com/prism-oncology/sopa/
      - delaunay
      - Cell-polygon method for boundaries (``delaunay`` or ``convex_hull``); recommended default.
    * - ``--chaikin-iterations``
-     - 0
+     - 2
      - `Chaikin corner-cutting <https://www.cs.unc.edu/~dm/UNC/COMP258/LECTURES/Chaikins-Algorithm.pdf>`_
        iterations to round boundaries (``0`` disables).
    * - ``--include-all-transcripts``
-     - True
-     - Keep every transcript in the segmentation output, not just the ones segger's ``filtered``
-       column marks as kept.
+     - unset
+     - Overrides each element's default transcript filtering. Unset: ``anndata``, ``boundaries`` and
+       ``transcripts-filtered`` use only transcripts segger's ``filtered`` column marks as kept;
+       ``spatialdata`` and ``xeniumranger`` use all of them.
+       ``--include-all-transcripts`` makes every element use all transcripts;
+       ``--no-include-all-transcripts`` restricts every element to filtered ones.
    * - ``--min-counts``
      - 10
      - Minimum assigned transcripts a cell must have to be included (must be ``>= 3`` for

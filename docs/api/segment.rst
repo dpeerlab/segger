@@ -15,13 +15,30 @@ I/O
      - Description
    * - ``-i, --input-directory``
      - *required*
-     - Standardized IST dataset directory.
+     - IST dataset directory. Optional with ``--platform standard`` plus ``--transcripts`` and
+       ``--boundaries``.
    * - ``-o, --output-directory``
      - *required*
      - Output directory.
-   * - ``--save-anndata``
-     - ``True``
-     - Also write ``segger_anndata.h5ad``.
+   * - ``--transcripts-cell-id``
+     - None
+     - Usually not needed. Column in the transcripts file with cell assignments (e.g. a custom
+       segmentation column). Defaults to the platform default.
+   * - ``--export``
+     - anndata
+     - Elements to export once segmentation is done, written to ``<output>/export``: ``anndata``,
+       ``transcripts-filtered``, ``boundaries`` and ``xeniumranger`` (needs ``-i``). Runs
+       :doc:`segger export <export>`, see there for details. ``--empty-export`` skips it.
+   * - ``--transcripts``
+     - None
+     - Usually not needed. Path to a custom transcripts file (relative paths resolve against the input directory). Requires ``--boundaries`` and ``--platform``.
+   * - ``--boundaries``
+     - None
+     - Usually not needed. Path to a custom boundaries file, used as the cell boundaries of the prediction graph
+       (sets ``--prediction-mode cell``). It needs one polygon per training cell ID.
+   * - ``--platform``
+     - None
+     - Input format (e.g. ``10x_xenium``, ``standard``). Auto-detected if not set.
    * - ``--debug``
      - ``False``
      - Save additional debug info (trainer, predictions).
@@ -88,6 +105,9 @@ Segmentation (prediction) graph
    * - Flag
      - Default
      - Description
+   * - ``--segmentation-mode``
+     - nucleus
+     - Segmentation used as the reference for training edges (``nucleus`` or ``cell``).
    * - ``--prediction-mode``
      - cell
      - Graph structure used during prediction (``nucleus``, ``cell``, ``uniform``).

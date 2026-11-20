@@ -10,6 +10,12 @@ Example usage:
     segger export spatialdata \
       -s $PATH_OUTPUT/segger_segmentation.parquet \
       --sdata $PATH_INPUT/sdata.zarr
+
+    # save transcript-assignment CSV + boundaries GeoJSON for `xeniumranger import-segmentation`
+    segger export xeniumranger \
+      -s $PATH_OUTPUT/segger_segmentation.parquet \
+      -i $PATH_INPUT/xenium_bundle \
+      -o $PATH_OUTPUT/xenium_export
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ logger = logging.getLogger(__name__)
 _group_io = Group(name="I/O", sort_key=0)
 _group_opts = Group(name="Options", sort_key=1)
 
-_Element = Literal["anndata", "transcripts", "boundaries", "spatialdata"]
+_Element = Literal["anndata", "transcripts-filtered", "boundaries", "spatialdata", "xeniumranger"]
 _DEFAULT_ELEMENTS = ("anndata", "boundaries")
 
 _Seg = Annotated[Path, Parameter(alias="-s", group=_group_io, validator=validators.Path(exists=True, dir_okay=False))]
@@ -37,7 +43,8 @@ _Source = Annotated[
         alias="-i",
         group=_group_io,
         validator=validators.Path(exists=True, dir_okay=True),
-        help="Source transcripts directory. Only needed for segger v0.2.0 (before x/y/feature_name were included in outputs).",
+        help="Source transcripts directory. Needed for segger v0.2.0 (before x/y/feature_name were included in outputs), "
+        "and for 'xeniumranger' (raw transcript_id and the import command).",
     ),
 ]
 _Out = Annotated[
@@ -58,8 +65,8 @@ _IncludeAll = Annotated[
     Optional[bool],
     Parameter(
         group=_group_opts,
-        help="Override each element's default transcript filtering. Unset (default): 'anndata' and 'boundaries' "
-        "use only filtered transcripts, 'transcripts' and 'spatialdata' use all of them. Pass this flag to force "
+        help="Override each element's default transcript filtering. Unset (default): 'anndata', 'boundaries' "
+        "and 'transcripts-filtered' use only filtered transcripts, 'spatialdata' and 'xeniumranger' use all of them. Pass this flag to force "
         "every element to include all transcripts, or --no-include-all-transcripts to restrict every element to "
         "filtered ones.",
     ),
@@ -158,6 +165,33 @@ def _legacy_join(tx: pl.DataFrame, source_path: Optional[Path], std) -> pl.DataF
         )
     
     return tx
+
+# -- XENIUMRANGER IMPORT-SEGMENTATION SUPPORT --
+def _build_xenium_transcript_csv(tx: "pl.DataFrame", source_path: Path, cell_labels: dict) -> "pl.DataFrame":
+    """Columns for `xeniumranger import-segmentation`: transcript_id,cell,is_noise
+
+    `row_index` is the row position in the raw Xenium transcripts file, so the real
+    `transcript_id` is joined back from `source_path`. Takes `tx` (not `assigned`) since
+    `filtered` is only kept there. `cell_labels` maps segger cell IDs to the xeniumranger
+    labels of cells with a polygon. A transcript is assigned if it is filtered and its cell has
+    a label; all others get an empty `cell` and `is_noise=true`.
+    """
+    from ..io.fields import XeniumTranscriptFields
+
+    std = StandardTranscriptFields()
+    ids = pl.read_parquet(source_path / XeniumTranscriptFields().filename, columns=["transcript_id"]).with_row_index(std.row_index)
+    labels = pl.DataFrame({"segger_cell_id": list(cell_labels), "cell": list(cell_labels.values())})
+    assigned = pl.col("filtered") & pl.col("cell").is_not_null()
+    return (
+        tx.join(ids, on=std.row_index, how="left")
+        .join(labels, on="segger_cell_id", how="left")
+        .select(
+            "transcript_id",
+            pl.when(assigned).then(pl.col("cell")).alias("cell"),
+            assigned.not_().alias("is_noise"),
+        )
+    )
+
 
 # -- SPATIAL DATA SUPPORT --
 def _check_sdata_elements(
@@ -286,14 +320,14 @@ def export(
     ] = "delaunay",
     chaikin_iterations: Annotated[
         int, Parameter(group=_group_opts, help="Chaikin corner-cutting iterations to round boundaries (0 disables).")
-    ] = 0,
+    ] = 2,
     include_all_transcripts: _IncludeAll = None,
     sdata_transcripts_name: _SdataTranscriptsName = "transcripts",
     sdata_cell_boundaries_name: _SdataCellBoundariesName = "cell_boundaries_segger",
     sdata_table_name: _SdataTableName = "table_segger",
     min_counts: _MinCounts = 10,
 ):
-    """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts, boundaries, spatialdata)."""
+    """Write a segger segmentation as scverse SpatialData elements (anndata, transcripts-filtered, boundaries, spatialdata, xeniumranger)."""
     selected = elements or _DEFAULT_ELEMENTS
 
     sdata = None
@@ -310,6 +344,9 @@ def export(
     if set(selected) - {"spatialdata"} and output_directory is None:
         raise ValueError("-o/--output-directory is required unless the only element being exported is 'spatialdata'.")
 
+    if "xeniumranger" in selected and source_path is None:
+        raise ValueError("-i/--source-path is required for 'xeniumranger': it provides the raw Xenium transcript_id and the --xenium-bundle path.")
+
     # load tx
     tx = load_transcripts(segmentation_path, source_path)
     tx_filtered = tx.filter(pl.col("filtered"))
@@ -325,7 +362,7 @@ def export(
 
     # compute outputs
     gdf = None
-    if "boundaries" in selected or "spatialdata" in selected:
+    if "boundaries" in selected or "spatialdata" in selected or "xeniumranger" in selected:
         from ..export import generate_boundaries
         gdf = generate_boundaries(tx_filtered, cell_id="segger_cell_id", method=method, smoothing=chaikin_iterations)
 
@@ -345,9 +382,9 @@ def export(
             adata = adata[adata.obs_names.isin(gdf.index)].copy()
 
     # save outputs
-    if "transcripts" in selected:
-        tx.write_parquet(output_directory / "transcripts.parquet")
-        print(f"Wrote {tx.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
+    if "transcripts-filtered" in selected:
+        tx_filtered.write_parquet(output_directory / "transcripts.parquet")
+        print(f"Wrote {tx_filtered.height} assigned transcripts: {output_directory / 'transcripts.parquet'}")
 
     if "boundaries" in selected:
         gdf.to_parquet(output_directory / "cell_boundaries.parquet")
@@ -366,4 +403,31 @@ def export(
             transcripts_element=sdata_transcripts_name,
             cell_boundaries_element=sdata_cell_boundaries_name,
             table_element=sdata_table_name,
+        )
+
+    if "xeniumranger" in selected:
+        # xeniumranger needs "<prefix>-<n>" cell IDs with one shared prefix and a unique n,
+        # for cells that have both a polygon and assigned transcripts
+        assigned_cells = set(tx.filter(pl.col("filtered"))["segger_cell_id"].drop_nulls())
+        gdf_xr = gdf[gdf.index.isin(assigned_cells)]
+        cell_labels = {cell_id: f"segger-{i}" for i, cell_id in enumerate(gdf_xr.index, start=1)}
+        xenium_tx = _build_xenium_transcript_csv(tx, source_path, cell_labels)
+        transcript_assignment_path = output_directory / "xenium_transcript_assignment.csv"
+        xenium_tx.write_csv(transcript_assignment_path)
+        print(f"Wrote {xenium_tx.height} transcripts for xeniumranger: {transcript_assignment_path}")
+
+        viz_polygons_path = output_directory / "xenium_cell_boundaries.geojson"
+        # features carry "id" = cell label, as xeniumranger expects; `cell_id` keeps the segger ID
+        viz_polygons_path.write_text(gdf_xr.rename(index=cell_labels).to_json())
+        print(f"Wrote {len(gdf_xr)} cell boundaries for xeniumranger: {viz_polygons_path}")
+
+        print(
+            "\nRun this to import the segmentation into a Xenium bundle "
+            f"(writes its output under {output_directory}/xeniumranger_import):\n"
+            f"\tcd {output_directory} && xeniumranger import-segmentation \\\n"
+            f"\t\t--id=xeniumranger_import \\\n"
+            f"\t\t--xenium-bundle={source_path} \\\n"
+            f"\t\t--transcript-assignment={transcript_assignment_path} \\\n"
+            f"\t\t--viz-polygons={viz_polygons_path} \\\n"
+            f"\t\t--units=microns"
         )

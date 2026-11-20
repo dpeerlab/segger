@@ -51,3 +51,58 @@ To pick a specific GPU, set:
 .. code-block:: bash
 
    export CUDA_VISIBLE_DEVICES=0
+
+Installing rapids-singlecell in the same environment
+-----------------------------------------------------
+
+If `pip install rapids-singlecell-cu13` does not work out of the box, you can try to explicitly
+define the CUDA toolkit like this
+
+.. code-block:: bash
+
+   conda install -c conda-forge "cuda-version=13.4"
+   pip install "rapids-singlecell-cu13[rapids]"
+
+If this doesn't work for you, please open an issue at
+`dpeerlab/segger/issues <https://github.com/dpeerlab/segger/issues>`_.
+
+.. _no-kernel-image:
+
+"no kernel image is available" on some GPUs
+-------------------------------------------
+
+`v0.4.0-manuscript <https://github.com/dpeerlab/segger/releases/tag/v0.4.0-manuscript>`_ compiles
+``cuspa`` from source for the GPU of the machine you install on. Running segger on a different GPU
+architecture (e.g. A40, A100, H100) then fails with:
+
+.. code-block:: text
+
+   CUDA error: no kernel image is available for execution on the device
+
+So v0.4.0 may need a cuspa reinstall for each GPU architecture you use. We haven't checked whether
+this still happens in v1.0.0.
+
+To fix it, clone cuspa inside the segger environment:
+
+.. code-block:: bash
+
+   conda activate segger   # or: pixi shell
+   git clone https://github.com/NVIDIA/cuspa && cd cuspa
+
+In ``pyproject.toml``, replace
+
+.. code-block:: toml
+
+   cmake.define.CMAKE_CUDA_ARCHITECTURES = "native"
+
+with the architectures of all your GPUs, e.g. for A100 (``80``), A40 (``86``) and H100 (``90``) and similar:
+
+.. code-block:: toml
+
+   cmake.define.CMAKE_CUDA_ARCHITECTURES = "80-real;86-real;90-real;90"
+
+Then reinstall:
+
+.. code-block:: bash
+
+   uv pip install --no-deps --reinstall .

@@ -1,4 +1,5 @@
 sphinx<8
-sphinx_rtd_theme
+pydata-sphinx-theme
 nbsphinx
 ipython
+myst-parser

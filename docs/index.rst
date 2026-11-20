@@ -1,7 +1,7 @@
 segger
 ======
 
-GNN-based cell segmentation of spatial transcriptomics data.
+Cell segmentation for imaging-based spatial transcriptomics as graph-based transcript–cell assignment.
 
 .. image:: ../segger_overview.png
    :alt: segger overview
@@ -12,13 +12,10 @@ GNN-based cell segmentation of spatial transcriptomics data.
 
    -- `Heidari, Moorman, et al., segger methods description <https://github.com/dpeerlab/segger/blob/main/segger_methods.pdf>`_
 
-.. important::
+.. note::
 
-   **Latest cuspa-accelerated segger:** the version used for the manuscript, which scales to
-   billion-transcript whole-transcriptome datasets (e.g. Atera) using NVIDIA ``cuspa``, is available as
-   `release v0.4.0-manuscript <https://github.com/dpeerlab/segger/releases/tag/v0.4.0-manuscript>`_.
-   It requires CUDA 13 and Python 3.13 and is **not yet stable**. Install it with
-   ``git clone --branch v0.4.0-manuscript https://github.com/dpeerlab/segger.git && cd segger && pixi install``.
+   This release uses `cuspa <https://github.com/NVIDIA/cuspa>`_, which we developed together with NVIDIA, to support atera-scale,
+   billion-transcript whole-transcriptome datasets. It requires CUDA 13 and Python 3.13.
 
 `Methods description <https://github.com/dpeerlab/segger/blob/main/segger_methods.pdf>`_ | `GitHub <https://github.com/dpeerlab/segger>`_
 
@@ -46,12 +43,12 @@ If you use segger in your research, please cite:
 
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :hidden:
 
    installation
    how-to
    outputs
-   notebook
    common-issues
    api/index
+   changelog
