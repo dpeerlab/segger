@@ -32,6 +32,18 @@ uv pip install segger
 
 For conda, pixi, installing from source and older CUDA versions, see the [installation docs](https://segger-segmentation.readthedocs.io/en/latest/installation.html).
 
+### Container
+
+On HPC clusters, run the Docker image with Apptainer/Singularity. Pull it once (about 10-20 minutes), then run on a GPU node with `--nv`:
+
+```bash
+export APPTAINER_CACHEDIR=/path/to/cachedir
+apptainer pull segger.sif docker://sailmskcc/segger:latest
+apptainer exec --nv segger.sif segger --help
+```
+
+For Docker, see [Use a container](https://segger-segmentation.readthedocs.io/en/latest/installation.html#use-a-container).
+
 ## Usage
 
 ```bash
