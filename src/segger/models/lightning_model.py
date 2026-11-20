@@ -1,4 +1,4 @@
-from torch.nn import Embedding, BCEWithLogitsLoss, TripletMarginLoss
+from torch.nn import BCEWithLogitsLoss, TripletMarginLoss
 from torch_geometric.data import Batch
 from lightning import LightningModule
 from torch.nn import functional as F
@@ -11,7 +11,6 @@ import math
 import os
 
 from .triplet_loss import TripletLoss, MetricLoss
-from ..io.fields import StandardTranscriptFields
 from ..data.data_module import ISTDataModule
 from .ist_encoder import ISTEncoder
 from .torch_scatter_plugin import scatter_max
@@ -42,7 +41,6 @@ class LitISTEncoder(LightningModule):
         bd_weight_end: float = 1.,
         sg_weight_start: float = 0.,
         sg_weight_end: float = 0.5,
-        update_gene_embedding: bool = True,
         use_positional_embeddings: bool = True,
         normalize_embeddings: bool = True,
     ):
@@ -81,7 +79,6 @@ class LitISTEncoder(LightningModule):
             bd_weight_end,
             sg_weight_end,
         ])
-        self._freeze_gene_embedding = not update_gene_embedding
 
     def setup(self, stage: str) -> None:
         # LitISTEncoder needs supp. data from ISTDataModule to train
@@ -89,20 +86,6 @@ class LitISTEncoder(LightningModule):
             raise TypeError(
                 f"Expected data module to be `ISTDataModule` but got "
                 f"{type(self.trainer.datamodule).__name__}."
-            )
-
-        # Only set gene embeddings if exist in data module
-        if hasattr(self.trainer.datamodule, "gene_embedding"):
-            tx_fields = StandardTranscriptFields()
-            embedding_weights = (
-                self.trainer.datamodule.gene_embedding
-                .drop(tx_fields.feature)
-                .to_torch()
-                .to(torch.float)
-            )
-            self.model.lin_first['tx'] = Embedding.from_pretrained(
-                embedding_weights,
-                freeze=self._freeze_gene_embedding,
             )
 
         # Setup loss functions
