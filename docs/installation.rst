@@ -8,7 +8,8 @@ Recommended: install from PyPI
 
 Use `uv` for faster installation into an existing or new python environment.
 
-... code-block:: bash
+.. code-block:: bash
+
    uv pip install segger
 
 Alternatively, `pip` installation works as well:
