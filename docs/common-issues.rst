@@ -55,7 +55,7 @@ To pick a specific GPU, set:
 Installing rapids-singlecell in the same environment
 -----------------------------------------------------
 
-If `pip install rapids-singlecell-cu13` does not work out of the box, you can try to explicitely
+If `pip install rapids-singlecell-cu13` does not work out of the box, you can try to explicitly
 define the CUDA toolkit like this
 
 .. code-block:: bash
