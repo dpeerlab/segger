@@ -1,0 +1,26 @@
+Bootstrap: docker
+From: python:3.13.18-slim-bookworm
+
+%files
+    pyproject.toml /src/pyproject.toml
+    README.md /src/README.md
+    LICENSE /src/LICENSE
+    src /src/src
+
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+    rm -rf /var/lib/apt/lists/*
+
+    pip install --no-cache-dir uv==0.13.9
+    uv venv /opt/venv
+    cd /src && VIRTUAL_ENV=/opt/venv UV_COMPILE_BYTECODE=1 UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never uv pip install .
+    pip uninstall -y uv
+    rm -rf /src
+
+%environment
+    export PATH=/opt/venv/bin:$PATH
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec segger "$@"
