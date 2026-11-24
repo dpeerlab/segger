@@ -2,13 +2,17 @@
 FROM python:3.13.18-slim-bookworm
 
 # system libraries for opencv
+# nf-core spatialaxe support:
+# - install procps for ps
+# - set upy cache dir (no write access to ~)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 procps \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
+    CUPY_CACHE_DIR=/tmp/cupy_cache \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \

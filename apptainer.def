@@ -9,7 +9,7 @@ From: python:3.13.18-slim-bookworm
 
 %post
     apt-get update
-    apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 procps
     rm -rf /var/lib/apt/lists/*
 
     pip install --no-cache-dir uv==0.13.9
@@ -21,6 +21,7 @@ From: python:3.13.18-slim-bookworm
 %environment
     export PATH=/opt/venv/bin:$PATH
     export PYTHONUNBUFFERED=1
+    export CUPY_CACHE_DIR=/tmp/cupy_cache
 
 %runscript
     exec segger "$@"
